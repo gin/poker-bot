@@ -10,7 +10,7 @@ from poker_bot.strategies.adaptive import (
     preflop_score,
 )
 
-type ActionDecision = tuple[str | None, int | None, str]
+ActionDecision = tuple[str | None, int | None, str]
 
 
 def active_opponents(table, my_seat):
