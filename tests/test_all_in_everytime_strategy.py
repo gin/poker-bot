@@ -21,9 +21,9 @@ def make_table(available_actions, **allowed_overrides):
 
 
 def test_all_in_raises_to_max_commit_when_raise_available():
-    action, amount, message = choose_action(
-        make_table(["fold", "call", "raise"]), "my-agent"
-    )
+    table = make_table(["fold", "call", "raise"])
+
+    action, amount, message = choose_action(table, table["seats"][0])
 
     assert action == "raise"
     assert amount == 1000
@@ -31,9 +31,9 @@ def test_all_in_raises_to_max_commit_when_raise_available():
 
 
 def test_all_in_bets_to_max_commit_when_bet_available():
-    action, amount, message = choose_action(
-        make_table(["fold", "check", "bet"]), "my-agent"
-    )
+    table = make_table(["fold", "check", "bet"])
+
+    action, amount, message = choose_action(table, table["seats"][0])
 
     assert action == "bet"
     assert amount == 1000
@@ -41,7 +41,9 @@ def test_all_in_bets_to_max_commit_when_bet_available():
 
 
 def test_all_in_calls_when_only_call_can_continue():
-    action, amount, message = choose_action(make_table(["fold", "call"]), "my-agent")
+    table = make_table(["fold", "call"])
+
+    action, amount, message = choose_action(table, table["seats"][0])
 
     assert action == "call"
     assert amount == 75
@@ -49,7 +51,9 @@ def test_all_in_calls_when_only_call_can_continue():
 
 
 def test_all_in_falls_back_to_check_when_no_bet_available():
-    action, amount, message = choose_action(make_table(["fold", "check"]), "my-agent")
+    table = make_table(["fold", "check"])
+
+    action, amount, message = choose_action(table, table["seats"][0])
 
     assert action == "check"
     assert amount is None
@@ -59,7 +63,7 @@ def test_all_in_falls_back_to_check_when_no_bet_available():
 def test_all_in_folds_when_seat_is_missing():
     table = make_table(["fold", "call"])
 
-    action, amount, message = choose_action(table, "missing-agent")
+    action, amount, message = choose_action(table, None)
 
     assert action == "fold"
     assert amount is None
@@ -70,7 +74,7 @@ def test_all_in_uses_seat_stack_when_max_commit_is_missing():
     table = make_table(["fold", "call", "raise"])
     table["allowedActions"].pop("maxCommit")
 
-    action, amount, message = choose_action(table, "my-agent")
+    action, amount, message = choose_action(table, table["seats"][0])
 
     assert action == "raise"
     assert amount == 1000

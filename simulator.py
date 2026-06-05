@@ -227,7 +227,8 @@ def prompt_player_action(allowed):
             minimum = allowed["minRaiseTo"] if action == "raise" else allowed["minBet"]
             prompt = (
                 f"Enter amount to {action_label} "
-                f"(minimum {format_money(minimum)}. 0 to go back and choose action again): "
+                f"(minimum {format_money(minimum)}. "
+                "0 to go back and choose action again): "
             )
             entry = input(prompt).strip()
             if entry == "0":
@@ -344,7 +345,7 @@ def run_betting_round(
 
         provider = action_providers.get(seat["agentId"])
         if provider is not None:
-            action, amount, message = provider(table, seat["agentId"])
+            action, amount, message = provider(table, seat)
             if verbose:
                 label = "YOU" if seat["agentId"] == PLAYER_AGENT_ID else "BOT"
                 print(
@@ -355,7 +356,7 @@ def run_betting_round(
         elif seat["agentId"] == PLAYER_AGENT_ID:
             action, amount = prompt_player_action(allowed)
         else:
-            action, amount, message = choose_action(table, BOT_AGENT_ID)
+            action, amount, message = choose_action(table, seat)
             if verbose:
                 print(
                     f"BOT: {action.upper()}"
