@@ -1,6 +1,6 @@
 [project]
 name = "poker-bot"
-version = "0.1.0"
+version = "1.0.0"
 description = "Poker bot to enter dev.fun's arena"
 readme = "README.md"
 requires-python = ">=3.13"
