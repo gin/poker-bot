@@ -1,0 +1,20 @@
+[project]
+name = "poker-bot"
+version = "0.1.0"
+description = "Poker bot to enter dev.fun's arena"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "ruff>=0.15.16",
+    "ty>=0.0.43",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "src"]
