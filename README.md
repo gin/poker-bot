@@ -38,3 +38,126 @@ uv run simulator --strat all_in_everytime
 # Eval bot using strat against baseline strat
 uv run selfplay --strat all_in_everytime --seed 1
 ```
+
+### Benchmark
+I ran benchmark of different strategies against simple strategy, where each new strategy is an iteration of the one before. It appears that poker playing strategy can be self-improved in a closed-loop with instruction "create a new strategy based on the previous one but ensure the new strategy consistently beats the ones that came before it". `all_in_everytime` and `monte_carlo` strategies are used as edge cases where `simple` (`src/poker_bot/strategies/simple.py`) strategy is used as baseline. The total cost of this self-improvement poker playing experiment including agentically competing with other bots on dev.fun arena until we lost is **$0.68** (12.6M tokens using DeepSeek V4 Flash via OpenRouter):
+```
+# bb/100 self-improvement progression starting at adaptive strategy
+simple                     +2.9  | ██
+all_in_everytime         -123.2  | ██████████████████████████████████████████████████ -
+monte_carlo               -15.0  | ██████ -
+--------------------------------------------------------------------------------
+adaptive                  +18.5  | ███████
+counter_adaptive          +27.4  | ███████████
+profiled_counter_adaptive +27.4  | ███████████
+threshold_pressure        +28.0  | ███████████
+anti_threshold            +42.9  | █████████████████
+
+
+# Ranking by bb/100
+1. anti_threshold              +42.9
+2. threshold_pressure          +28.0
+3. profiled_counter_adaptive   +27.4
+4. counter_adaptive            +27.4
+5. adaptive                    +18.5
+6. simple                       +2.9
+7. monte_carlo                 -15.0
+8. all_in_everytime           -123.2
+
+
+# Net Chips
+simple                     +71,650   | █
+all_in_everytime        -3,079,650   | ██████████████████████████████████████████████████ -
+monte_carlo                  -375    | -
+adaptive                  +462,325   | ███████
+counter_adaptive          +684,890   | ███████████
+profiled_counter_adaptive +684,890   | ███████████
+threshold_pressure        +700,450   | ███████████
+anti_threshold          +1,072,698   | █████████████████
+
+
+# Win Rate
+simple                    50.1% | █████████████████████████
+all_in_everytime          89.6% | █████████████████████████████████████████████
+monte_carlo               40.0% | ████████████████████
+adaptive                  55.2% | ████████████████████████████
+counter_adaptive          61.0% | ██████████████████████████████
+profiled_counter_adaptive 61.0% | ██████████████████████████████
+threshold_pressure        61.0% | ██████████████████████████████
+anti_threshold            67.1% | ██████████████████████████████████
+```
+
+Recreate the benchmark data with:
+```sh
+$ uv run selfplay --strat simple --hands 50000 --seed 1
+
+  hands       : 50000
+  opponent    : simple x1
+  wins/losses : 25068/24878  (push: 54)
+  net chips   : +71650
+  bb/100      : +2.9
+  elapsed     : 0.6s  (78792 hands/s)
+
+$ uv run selfplay --strat all_in_everytime --hands 50000 --seed 1
+
+  hands       : 50000
+  opponent    : simple x1
+  wins/losses : 44776/5091  (push: 133)
+  net chips   : -3079650
+  bb/100      : -123.2
+  elapsed     : 1.3s  (39025 hands/s)
+
+$ uv run selfplay --strat monte_carlo --hands 50 --seed 1
+
+  hands       : 50
+  opponent    : simple x1
+  wins/losses : 20/30  (push: 0)
+  net chips   : -375
+  bb/100      : -15.0
+  elapsed     : 1.3s  (38 hands/s)
+
+$ uv run selfplay --strat adaptive --hands 50000 --seed 1
+
+  hands       : 50000
+  opponent    : simple x1
+  wins/losses : 27602/22358  (push: 40)
+  net chips   : +462325
+  bb/100      : +18.5
+  elapsed     : 0.9s  (58645 hands/s)
+
+$ uv run selfplay --strat counter_adaptive --hands 50000 --seed 1
+
+  hands       : 50000
+  opponent    : simple x1
+  wins/losses : 30477/19487  (push: 36)
+  net chips   : +684890
+  bb/100      : +27.4
+  elapsed     : 0.8s  (62677 hands/s)
+
+$ uv run selfplay --strat profiled_counter_adaptive --hands 50000 --seed 1
+
+  hands       : 50000
+  opponent    : simple x1
+  wins/losses : 30477/19487  (push: 36)
+  net chips   : +684890
+  bb/100      : +27.4
+  elapsed     : 0.9s  (57313 hands/s)
+
+$ uv run selfplay --strat threshold_pressure --hands 50000 --seed 1
+
+  hands       : 50000
+  opponent    : simple x1
+  wins/losses : 30477/19487  (push: 36)
+  net chips   : +700450
+  bb/100      : +28.0
+  elapsed     : 0.8s  (61176 hands/s)
+
+$ uv run selfplay --strat anti_threshold --hands 50000 --seed 1
+
+  hands       : 50000
+  opponent    : simple x1
+  wins/losses : 33567/16380  (push: 53)
+  net chips   : +1072698
+  bb/100      : +42.9
+  elapsed     : 1.1s  (45679 hands/s)
+```
