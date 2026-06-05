@@ -3,7 +3,7 @@
 import importlib
 from collections.abc import Callable
 
-type Strategy = Callable[[dict, dict | None], tuple[str | None, int | None, str]]
+Strategy = Callable[[dict, dict | None], tuple[str | None, int | None, str]]
 
 
 def load_strategy(name) -> Strategy:

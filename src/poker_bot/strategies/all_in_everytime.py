@@ -1,6 +1,6 @@
 """All-in everytime strategy."""
 
-type ActionDecision = tuple[str | None, int | None, str]
+ActionDecision = tuple[str | None, int | None, str]
 
 
 def choose_action(table, my_seat) -> ActionDecision:

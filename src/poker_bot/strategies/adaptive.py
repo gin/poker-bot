@@ -2,9 +2,9 @@
 
 from poker_bot.hand_eval import evaluate_hand
 
-type ActionDecision = tuple[str | None, int | None, str]
+ActionDecision = tuple[str | None, int | None, str]
 
-BIG_BLIND = 50
+BIG_BLIND = 2
 RANK_VALUES = {rank: index for index, rank in enumerate("23456789TJQKA", start=2)}
 
 

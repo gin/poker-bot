@@ -6,7 +6,7 @@ import time
 
 from poker_bot.hand_eval import DECK, compare_hands, evaluate_hand
 
-type ActionDecision = tuple[str | None, int | None, str]
+ActionDecision = tuple[str | None, int | None, str]
 
 MAX_EQUITY_SECONDS = 10.0
 DEFAULT_SIMULATIONS = 400
