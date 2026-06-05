@@ -11,6 +11,48 @@ def make_seat(agent_id, stack=1000, current_bet=0, seat_number=1):
     }
 
 
+def test_simulator_parser_defaults_to_simple_strategy():
+    args = simulator.build_parser().parse_args([])
+
+    assert args.strat == "simple"
+
+
+def test_simulator_parser_accepts_strategy_flag():
+    args = simulator.build_parser().parse_args(["--strat", "all_in_everytime"])
+
+    assert args.strat == "all_in_everytime"
+
+
+def test_simulator_main_uses_selected_bot_strategy(monkeypatch):
+    selected_strategy = object()
+    captured = {}
+
+    def fake_load_strategy(name):
+        captured["strategy_name"] = name
+        return selected_strategy
+
+    def fake_play_hand(
+        player_stack,
+        bot_stack,
+        player_is_small_blind=True,
+        player_strategy=None,
+        bot_strategy=None,
+        rng=None,
+        verbose=True,
+    ):
+        captured["bot_strategy"] = bot_strategy
+        return 0, bot_stack
+
+    monkeypatch.setattr(simulator, "load_strategy", fake_load_strategy)
+    monkeypatch.setattr(simulator, "play_hand", fake_play_hand)
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
+
+    simulator.main(["--strat", "all_in_everytime"])
+
+    assert captured["strategy_name"] == "all_in_everytime"
+    assert captured["bot_strategy"] is selected_strategy
+
+
 def test_short_stack_cannot_raise_without_enough_for_minimum_raise():
     seat = make_seat(
         simulator.PLAYER_AGENT_ID,
@@ -315,10 +357,59 @@ def test_short_all_in_call_closes_betting_round(monkeypatch):
     assert bot["currentBetChips"] == 0
 
 
+def test_player_cannot_check_when_bot_bets_all_in(monkeypatch):
+    player = make_seat(
+        simulator.PLAYER_AGENT_ID,
+        stack=1000,
+        current_bet=0,
+        seat_number=1,
+    )
+    bot = make_seat(
+        simulator.BOT_AGENT_ID,
+        stack=300,
+        current_bet=0,
+        seat_number=2,
+    )
+    player_actions = []
+
+    def bot_all_in(table, agent_id):
+        return "bet", table["allowedActions"]["maxCommit"], "test all-in"
+
+    def player_fold(allowed, call_amount):
+        player_actions.append((allowed.copy(), call_amount))
+        return "fold"
+
+    monkeypatch.setattr(simulator, "print_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(simulator, "prompt_user_action", player_fold)
+
+    fold_winner, pot = simulator.run_betting_round(
+        [player, bot],
+        board=["4S", "6D", "9C"],
+        pot=100,
+        current_bet=0,
+        street="Flop",
+        first_actor_idx=1,
+        action_providers={simulator.BOT_AGENT_ID: bot_all_in},
+    )
+
+    assert player_actions == [(["fold", "call"], 300)]
+    assert fold_winner == simulator.BOT_AGENT_ID
+    assert pot == 400
+
+
 def test_play_hand_posts_player_small_blind_by_default(monkeypatch):
     rounds = []
 
-    def capture_round(seats, board, pot, current_bet, street, first_actor_idx):
+    def capture_round(
+        seats,
+        board,
+        pot,
+        current_bet,
+        street,
+        first_actor_idx,
+        action_providers=None,
+        verbose=True,
+    ):
         rounds.append(
             {
                 "seats": [seat.copy() for seat in seats],
@@ -350,7 +441,16 @@ def test_play_hand_posts_player_small_blind_by_default(monkeypatch):
 def test_play_hand_can_post_bot_small_blind(monkeypatch):
     rounds = []
 
-    def capture_round(seats, board, pot, current_bet, street, first_actor_idx):
+    def capture_round(
+        seats,
+        board,
+        pot,
+        current_bet,
+        street,
+        first_actor_idx,
+        action_providers=None,
+        verbose=True,
+    ):
         rounds.append(
             {
                 "seats": [seat.copy() for seat in seats],
@@ -410,7 +510,15 @@ def test_bot_stack_increases_when_player_folds_preflop(monkeypatch):
 def test_main_alternates_blinds_between_hands(monkeypatch):
     blind_roles = []
 
-    def fake_play_hand(player_stack, bot_stack, player_is_small_blind=True):
+    def fake_play_hand(
+        player_stack,
+        bot_stack,
+        player_is_small_blind=True,
+        player_strategy=None,
+        bot_strategy=None,
+        rng=None,
+        verbose=True,
+    ):
         blind_roles.append(player_is_small_blind)
         if len(blind_roles) == 1:
             return player_stack, bot_stack
@@ -419,6 +527,6 @@ def test_main_alternates_blinds_between_hands(monkeypatch):
     monkeypatch.setattr(simulator, "play_hand", fake_play_hand)
     monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
 
-    simulator.main()
+    simulator.main([])
 
     assert blind_roles == [True, False]

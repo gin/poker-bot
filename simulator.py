@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Terminal poker simulator for playing heads-up against the poker bot."""
 
+import argparse
 import itertools
 import random
 import sys
@@ -10,7 +11,10 @@ SRC_DIR = Path(__file__).resolve().parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from poker_bot.strategies.simple import choose_action  # noqa: E402
+from poker_bot.strategies.loader import load_strategy  # noqa: E402
+
+DEFAULT_STRATEGY = "simple"
+choose_action = load_strategy(DEFAULT_STRATEGY)
 
 RANKS = "23456789TJQKA"
 SUITS = "CDHS"
@@ -26,9 +30,10 @@ def format_cards(cards):
     return " ".join(cards)
 
 
-def build_deck():
+def build_deck(rng=None):
     deck = DECK.copy()
-    random.shuffle(deck)
+    shuffler = rng if rng is not None else random
+    shuffler.shuffle(deck)
     return deck
 
 
@@ -138,7 +143,7 @@ def compare_hands(hand1, hand2):
     return 0
 
 
-def build_allowed_actions(seat, current_bet, min_raise=BIG_BLIND):
+def build_allowed_actions(seat, current_bet, min_raise=BIG_BLIND, can_raise=True):
     call_shortfall = max(0, current_bet - seat["currentBetChips"])
     call_amount = min(call_shortfall, seat["stackChips"])
     max_commit = seat["currentBetChips"] + seat["stackChips"]
@@ -151,7 +156,7 @@ def build_allowed_actions(seat, current_bet, min_raise=BIG_BLIND):
     else:
         available = ["fold", "call"]
         min_raise_to = current_bet + min_raise
-        if max_commit >= min_raise_to:
+        if can_raise and max_commit >= min_raise_to:
             available.append("raise")
 
     min_raise_to = None
@@ -179,6 +184,15 @@ def collect_live_bets(pot, seats):
     seats[0]["currentBetChips"] = 0
     seats[1]["currentBetChips"] = 0
     return pot
+
+
+def all_in_betting_is_closed(seats, current_bet):
+    if not any(seat["stackChips"] == 0 for seat in seats):
+        return False
+    return not any(
+        seat["stackChips"] > 0 and seat["currentBetChips"] < current_bet
+        for seat in seats
+    )
 
 
 def format_money(amount):
@@ -210,12 +224,10 @@ def prompt_player_action(allowed):
 
         while True:
             action_label = "raise to" if action == "raise" else "bet"
-            minimum = (
-                allowed["minRaiseTo"] if action == "raise" else allowed["minBet"]
-            )
+            minimum = allowed["minRaiseTo"] if action == "raise" else allowed["minBet"]
             prompt = (
                 f"Enter amount to {action_label} "
-                f"(minimum {format_money(minimum)}, 0 to choose again): "
+                f"(minimum {format_money(minimum)}. 0 to go back and choose action again): "
             )
             entry = input(prompt).strip()
             if entry == "0":
@@ -297,7 +309,17 @@ def print_table(seats, board, pot, street, current_bet, active_id):
     print("=" * 60)
 
 
-def run_betting_round(seats, board, pot, current_bet, street, first_actor_idx):
+def run_betting_round(
+    seats,
+    board,
+    pot,
+    current_bet,
+    street,
+    first_actor_idx,
+    action_providers=None,
+    verbose=True,
+):
+    action_providers = action_providers or {}
     active_idx = first_actor_idx
     min_raise = BIG_BLIND
     last_actions = {PLAYER_AGENT_ID: None, BOT_AGENT_ID: None}
@@ -308,23 +330,42 @@ def run_betting_round(seats, board, pot, current_bet, street, first_actor_idx):
             pot = collect_live_bets(pot, seats)
             return None, pot
 
-        allowed = build_allowed_actions(seat, current_bet, min_raise)
+        allowed = build_allowed_actions(
+            seat,
+            current_bet,
+            min_raise,
+            can_raise=opponent["stackChips"] > 0,
+        )
         table = build_table(seats, board, pot, current_bet, street, seat["seatNumber"])
         table["allowedActions"] = allowed
 
-        print_table(seats, board, pot, street, current_bet, seat["agentId"])
-        if seat["agentId"] == PLAYER_AGENT_ID:
+        if verbose:
+            print_table(seats, board, pot, street, current_bet, seat["agentId"])
+
+        provider = action_providers.get(seat["agentId"])
+        if provider is not None:
+            action, amount, message = provider(table, seat["agentId"])
+            if verbose:
+                label = "YOU" if seat["agentId"] == PLAYER_AGENT_ID else "BOT"
+                print(
+                    f"{label}: {action.upper()}"
+                    + (f" {format_money(amount)}" if amount else "")
+                    + f" | {message}"
+                )
+        elif seat["agentId"] == PLAYER_AGENT_ID:
             action, amount = prompt_player_action(allowed)
         else:
             action, amount, message = choose_action(table, BOT_AGENT_ID)
-            print(
-                f"BOT: {action.upper()}"
-                + (f" {format_money(amount)}" if amount else "")
-                + f" | {message}"
-            )
+            if verbose:
+                print(
+                    f"BOT: {action.upper()}"
+                    + (f" {format_money(amount)}" if amount else "")
+                    + f" | {message}"
+                )
 
         if action == "fold":
-            print(f"{seat['agentId']} folds.")
+            if verbose:
+                print(f"{seat['agentId']} folds.")
             return opponent["agentId"], pot + seat["currentBetChips"] + opponent[
                 "currentBetChips"
             ]
@@ -337,7 +378,7 @@ def run_betting_round(seats, board, pot, current_bet, street, first_actor_idx):
         if action in ("bet", "raise") and current_bet > previous_current_bet:
             min_raise = current_bet - previous_current_bet
 
-        if any(seat["stackChips"] == 0 for seat in seats):
+        if all_in_betting_is_closed(seats, current_bet):
             break
 
         # End the betting round when all active players have matched the
@@ -379,8 +420,16 @@ def post_blind(stack, blind):
     return stack - posted, posted
 
 
-def play_hand(player_stack, bot_stack, player_is_small_blind=True):
-    deck = build_deck()
+def play_hand(
+    player_stack,
+    bot_stack,
+    player_is_small_blind=True,
+    player_strategy=None,
+    bot_strategy=None,
+    rng=None,
+    verbose=True,
+):
+    deck = build_deck(rng)
     board = []
     player_blind = SMALL_BLIND if player_is_small_blind else BIG_BLIND
     bot_blind = BIG_BLIND if player_is_small_blind else SMALL_BLIND
@@ -405,6 +454,11 @@ def play_hand(player_stack, bot_stack, player_is_small_blind=True):
     street = "Preflop"
     preflop_first_actor_idx = 0 if player_is_small_blind else 1
     postflop_first_actor_idx = 1 - preflop_first_actor_idx
+    action_providers = {}
+    if player_strategy is not None:
+        action_providers[PLAYER_AGENT_ID] = player_strategy
+    if bot_strategy is not None:
+        action_providers[BOT_AGENT_ID] = bot_strategy
 
     fold_winner, pot = run_betting_round(
         [player, bot],
@@ -413,6 +467,8 @@ def play_hand(player_stack, bot_stack, player_is_small_blind=True):
         current_bet,
         street,
         first_actor_idx=preflop_first_actor_idx,
+        action_providers=action_providers,
+        verbose=verbose,
     )
     if fold_winner:
         if fold_winner == PLAYER_AGENT_ID:
@@ -429,6 +485,8 @@ def play_hand(player_stack, bot_stack, player_is_small_blind=True):
             current_bet,
             street,
             first_actor_idx=postflop_first_actor_idx,
+            action_providers=action_providers,
+            verbose=verbose,
         )
         if fold_winner:
             if fold_winner == PLAYER_AGENT_ID:
@@ -436,30 +494,51 @@ def play_hand(player_stack, bot_stack, player_is_small_blind=True):
             return player["stackChips"], bot["stackChips"] + pot
 
     ties, best_score = showdown([player, bot], board)
-    print_table([player, bot], board, pot, 0, "Showdown", None)
-    print(f"Your hand: {format_cards(player['holeCards'])}")
-    print(f"Bot hand: {format_cards(bot['holeCards'])}")
+    if verbose:
+        print_table([player, bot], board, pot, 0, "Showdown", None)
+        print(f"Your hand: {format_cards(player['holeCards'])}")
+        print(f"Bot hand: {format_cards(bot['holeCards'])}")
     if len(ties) > 1:
-        print("The hand is a tie. Pot is split.")
+        if verbose:
+            print("The hand is a tie. Pot is split.")
         split = pot // len(ties)
         player_stack = player["stackChips"] + split
         bot_stack = bot["stackChips"] + split
     else:
         winner = ties[0]
         if winner["agentId"] == PLAYER_AGENT_ID:
-            print("You win the showdown!")
+            if verbose:
+                print("You win the showdown!")
             player_stack = player["stackChips"] + pot
             bot_stack = bot["stackChips"]
         else:
-            print("Bot wins the showdown.")
+            if verbose:
+                print("Bot wins the showdown.")
             player_stack = player["stackChips"]
             bot_stack = bot["stackChips"] + pot
     return player_stack, bot_stack
 
 
-def main():
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Play heads-up Texas Hold'em against a bot strategy."
+    )
+    parser.add_argument(
+        "--strat",
+        default=DEFAULT_STRATEGY,
+        help=(
+            "Bot strategy module under poker_bot.strategies. "
+            f"Defaults to {DEFAULT_STRATEGY}."
+        ),
+    )
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    bot_strategy = load_strategy(args.strat)
     print("Welcome to the poker bot simulator!")
-    print("You will play heads-up Texas Hold'em against the bot.")
+    print(f"You will play heads-up Texas Hold'em against the {args.strat} bot.")
     player_stack = INITIAL_STACK
     bot_stack = INITIAL_STACK
     player_is_small_blind = True
@@ -470,14 +549,15 @@ def main():
         bot_money = format_money(bot_stack)
         print(f"Stacks -> You: {player_money} | Bot: {bot_money}")
         player_stack, bot_stack = play_hand(
-            player_stack, bot_stack, player_is_small_blind
+            player_stack,
+            bot_stack,
+            player_is_small_blind,
+            bot_strategy=bot_strategy,
         )
         player_is_small_blind = not player_is_small_blind
         player_money = format_money(player_stack)
         bot_money = format_money(bot_stack)
-        print(
-            f"Hand complete. New stacks -> You: {player_money} | Bot: {bot_money}"
-        )
+        print(f"Hand complete. New stacks -> You: {player_money} | Bot: {bot_money}")
         if player_stack <= 0:
             print("You are busted. Game over.")
             break
