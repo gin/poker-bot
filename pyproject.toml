@@ -6,6 +6,10 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = []
 
+[project.scripts]
+selfplay = "eval.selfplay:main"
+simulator = "eval.simulator_cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
@@ -18,3 +22,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "src"]
+
+[tool.uv]
+package = true
