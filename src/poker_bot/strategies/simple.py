@@ -1,11 +1,9 @@
 """Simple baseline Texas Hold'em strategy."""
 
-from poker_bot.table import find_agent_seat
-
 type ActionDecision = tuple[str | None, int | None, str]
 
 
-def choose_action(table, agent_id) -> ActionDecision:
+def choose_action(table, my_seat) -> ActionDecision:
     """Choose a legal action using a simple hole-card strength heuristic."""
     allowed = table.get("allowedActions", {})
     available = allowed.get("availableActions", [])
@@ -13,8 +11,6 @@ def choose_action(table, agent_id) -> ActionDecision:
         return None, None, "No legal actions available"
 
     street = table.get("street", "Preflop")
-    my_seat = find_agent_seat(table, agent_id)
-
     if not my_seat:
         if "fold" in available:
             return "fold", None, "Fallback: seat not found"

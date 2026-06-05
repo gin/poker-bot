@@ -21,7 +21,7 @@ def test_choose_action_strong_pair():
         "potChips": 200,
     }
 
-    action, amount, message = choose_action(table, "my-agent")
+    action, amount, message = choose_action(table, table["seats"][0])
 
     assert action == "raise"
     assert isinstance(amount, int)
@@ -29,7 +29,7 @@ def test_choose_action_strong_pair():
 
 
 def test_choose_action_returns_message_when_no_actions_available():
-    action, amount, message = choose_action({"allowedActions": {}}, "my-agent")
+    action, amount, message = choose_action({"allowedActions": {}}, None)
 
     assert action is None
     assert amount is None
