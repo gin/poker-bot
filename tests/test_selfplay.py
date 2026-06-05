@@ -24,8 +24,17 @@ def test_parser_defaults_hands_to_200():
     args = build_parser().parse_args(["--strat", "all_in_everytime"])
 
     assert args.strat == "all_in_everytime"
+    assert args.opponent == "simple"
     assert args.hands == DEFAULT_HANDS
     assert args.seed is None
+
+
+def test_parser_accepts_opponent_strategy():
+    args = build_parser().parse_args(
+        ["--strat", "all_in_everytime", "--opponent", "adaptive"]
+    )
+
+    assert args.opponent == "adaptive"
 
 
 def test_run_selfplay_is_reproducible_with_seed():

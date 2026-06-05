@@ -122,12 +122,17 @@ def format_result(result):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Run heads-up self-play against the simple strategy."
+        description="Run heads-up self-play between poker strategies."
     )
     parser.add_argument(
         "--strat",
         required=True,
         help="Strategy module under poker_bot.strategies, e.g. all_in_everytime.",
+    )
+    parser.add_argument(
+        "--opponent",
+        default=DEFAULT_OPPONENT,
+        help=f"Opponent strategy module. Defaults to {DEFAULT_OPPONENT}.",
     )
     parser.add_argument(
         "--hands",
@@ -146,7 +151,12 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    result = run_selfplay(args.strat, hands=args.hands, seed=args.seed)
+    result = run_selfplay(
+        args.strat,
+        hands=args.hands,
+        seed=args.seed,
+        opponent_name=args.opponent,
+    )
     print(format_result(result))
 
 
