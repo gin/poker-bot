@@ -12,7 +12,8 @@ SRC_DIR = Path(__file__).resolve().parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from poker_bot.strategies.simple import choose_action  # noqa: E402
+# from poker_bot.strategies.simple import choose_action  # noqa: E402
+from poker_bot.strategies.profiled_counter_adaptive import choose_action  # noqa: E402
 from poker_bot.table import find_agent_seat, is_our_turn  # noqa: E402
 
 BASE_URL = "https://arena.dev.fun/api/arena"
