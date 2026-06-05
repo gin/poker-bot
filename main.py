@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 SRC_DIR = Path(__file__).resolve().parent / "src"
@@ -13,7 +14,8 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 # from poker_bot.strategies.simple import choose_action  # noqa: E402
-from poker_bot.strategies.profiled_counter_adaptive import choose_action  # noqa: E402
+# from poker_bot.strategies.profiled_counter_adaptive import choose_action  # noqa: E402
+from poker_bot.strategies.anti_threshold import choose_action  # noqa: E402
 from poker_bot.table import find_agent_seat, is_our_turn  # noqa: E402
 
 BASE_URL = "https://arena.dev.fun/api/arena"
@@ -112,6 +114,10 @@ def main():
 
     while True:
         try:
+            # Heartbeat: mark main loop as alive for cron tick fallback
+            state["last_heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+            save_state(state)
+
             # Poll for pending actions
             pending = api_fn(
                 "GET", f"/texas/pending-actions?competitionId={competition_id}"
@@ -126,17 +132,24 @@ def main():
 
             if not tables:
                 consecutive_empty += 1
-                if consecutive_empty % 30 == 0:
+                if consecutive_empty % 60 == 0:
                     print(
                         f"  ...waiting for table ({consecutive_empty} polls)",
                         flush=True,
                     )
+                if consecutive_empty == 30:  # ~1 min of no tables — try rejoining
+                    join_resp = api_fn("POST", "/texas/join", {"competitionId": competition_id})
+                    kind = join_resp.get("kind", "")
+                    if kind == "queued":
+                        pos = join_resp.get("lobby", {}).get("position", "?")
+                        print(f"  Joined queue at position {pos}", flush=True)
+                    elif "error" in join_resp and "chips" in join_resp.get("error", "").lower():
+                        print(f"  Bankroll empty, waiting...", flush=True)
                 time.sleep(2)
                 continue
 
-            consecutive_empty = 0
-
             # Sort by earliest action deadline
+            consecutive_empty = 0
             tables.sort(key=lambda t: t.get("actionDeadlineAt", float("inf")))
 
             for table in tables:
