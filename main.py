@@ -1,27 +1,40 @@
 #!/usr/bin/env python3
-"""DevFun Arena Texas Hold'em poker loop."""
+"""DevFun Arena Poker loop: Playground"""
 
 import json
 import os
+import secrets
+import string
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 SRC_DIR = Path(__file__).resolve().parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-# from poker_bot.strategies.simple import choose_action  # noqa: E402
-# from poker_bot.strategies.profiled_counter_adaptive import choose_action  # noqa: E402
-from poker_bot.strategies.anti_threshold import choose_action  # noqa: E402
+
+from poker_bot.opponent_store import (  # noqa: E402
+    connect,
+    create_telemetry_run,
+    increment_hand_seen,
+    load_profiles_for_agents,
+    record_decision_telemetry,
+    record_observed_action,
+)
+from poker_bot.strategies.loader import load_strategy  # noqa: E402
 from poker_bot.table import find_agent_seat, is_our_turn  # noqa: E402
 
 BASE_URL = "https://arena.dev.fun/api/arena"
 STATE_FILE = os.path.expanduser("~/.arena-poker-state")
 CRED_FILE = os.path.expanduser("~/.arena-credentials")
+STRATEGY_CONFIG_FILE = os.path.expanduser("~/.arena-poker-strategy")
+STRATEGY_ENV_VAR = "POKER_BOT_STRATEGY"
 DEFAULT_AGENT_ID = "cmpzvsdsavulpc7zaxq9t2j6c"
+DEFAULT_STRATEGY_NAME = "survival_lookahead"
+PUBLIC_MESSAGE_ALPHABET = string.ascii_letters + string.digits
 
 
 def load_credentials(path=CRED_FILE):
@@ -56,6 +69,44 @@ def load_credentials(path=CRED_FILE):
     return api_key, competition_id, agent_id
 
 
+def load_strategy_name(path=STRATEGY_CONFIG_FILE, environ=os.environ):
+    env_strategy = environ.get(STRATEGY_ENV_VAR, "").strip()
+    if env_strategy:
+        return env_strategy
+
+    try:
+        with open(path) as f:
+            raw = f.read().strip()
+    except OSError:
+        return DEFAULT_STRATEGY_NAME
+
+    if not raw:
+        return DEFAULT_STRATEGY_NAME
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        for line in raw.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                return line
+        return DEFAULT_STRATEGY_NAME
+
+    if isinstance(data, str):
+        return data.strip() or DEFAULT_STRATEGY_NAME
+    if isinstance(data, dict):
+        for key in ("strategy", "strategyName", "STRATEGY"):
+            value = str(data.get(key, "")).strip()
+            if value:
+                return value
+    return DEFAULT_STRATEGY_NAME
+
+
+def load_configured_strategy(path=STRATEGY_CONFIG_FILE, environ=os.environ):
+    strategy_name = load_strategy_name(path=path, environ=environ)
+    return strategy_name, load_strategy(strategy_name)
+
+
 def make_headers(api_key):
     return [
         "-H",
@@ -74,7 +125,7 @@ def api(
     cmd = ["curl", "-s", "-X", method, f"{base_url}{path}"] + make_headers(api_key)
     if data:
         cmd += ["-d", json.dumps(data)]
-    result = runner(cmd, capture_output=True, text=True, timeout=30)
+    result = runner(cmd, capture_output=True, text=True, timeout=90)
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -85,6 +136,22 @@ def make_api_client(api_key, runner=subprocess.run):
     return lambda method, path, data=None: api(
         method, path, data=data, api_key=api_key, runner=runner
     )
+
+
+def public_action_message(length=16):
+    return "".join(secrets.choice(PUBLIC_MESSAGE_ALPHABET) for _ in range(length))
+
+
+def action_request_body(competition_id, table_id, action, amount=None):
+    body = {
+        "competitionId": competition_id,
+        "tableId": table_id,
+        "action": action,
+        "message": public_action_message(),
+    }
+    if amount is not None:
+        body["amount"] = amount
+    return body
 
 
 def load_state(path=STATE_FILE):
@@ -100,6 +167,410 @@ def save_state(state, path=STATE_FILE):
         json.dump(state, f, indent=2)
 
 
+def telemetry_enabled():
+    return os.environ.get("POKER_BOT_TELEMETRY", "1").lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def init_live_telemetry(state, competition_id, strategy_name=DEFAULT_STRATEGY_NAME):
+    if not telemetry_enabled():
+        return None, None
+    conn = connect()
+    if state.get("telemetry_strategy") != strategy_name:
+        state.pop("telemetry_run_id", None)
+        state["telemetry_decision_indexes"] = {}
+        state["telemetry_strategy"] = strategy_name
+    run_id = state.get("telemetry_run_id")
+    run_id = create_telemetry_run(
+        conn,
+        strategy=strategy_name,
+        opponent="arena",
+        players=None,
+        platform="arena",
+        metadata_json=json.dumps({"competitionId": competition_id}),
+        run_id=run_id,
+    )
+    state["telemetry_run_id"] = run_id
+    state.setdefault("telemetry_decision_indexes", {})
+    return conn, run_id
+
+
+def record_live_decision(
+    telemetry_conn,
+    telemetry_run_id,
+    state,
+    table,
+    my_seat,
+    action,
+    amount,
+    message,
+    strategy_name=DEFAULT_STRATEGY_NAME,
+):
+    if telemetry_conn is None or telemetry_run_id is None:
+        return
+    table_id = str(table.get("tableId") or table.get("id") or "unknown-table")
+    indexes = state.setdefault("telemetry_decision_indexes", {})
+    decision_index = int(indexes.get(table_id, 0))
+    allowed = table.get("allowedActions", {})
+    call_amount = int(allowed.get("callAmount") or allowed.get("callChips") or 0)
+    try:
+        record_decision_telemetry(
+            telemetry_conn,
+            run_id=telemetry_run_id,
+            hand_id=table_id,
+            decision_index=decision_index,
+            strategy=strategy_name,
+            table=table,
+            seat=my_seat,
+            action=action,
+            amount=amount,
+            message=message,
+            facing_bet=call_amount > 0,
+            voluntary=action in {"call", "bet", "raise"},
+        )
+        indexes[table_id] = decision_index + 1
+    except Exception as exc:
+        print(f"  Telemetry write failed: {exc}", flush=True)
+
+
+def record_live_opponents_seen(telemetry_conn, state, table, agent_id):
+    if telemetry_conn is None:
+        return 0
+    table_id = str(table.get("tableId") or table.get("id") or "unknown-table")
+    seen_key = f"opponents_seen:{table_id}"
+    if state.get(seen_key):
+        return 0
+
+    recorded = 0
+    try:
+        for seat in table.get("seats", []):
+            seat_agent_id = seat.get("agentId")
+            if not seat_agent_id or seat_agent_id == agent_id:
+                continue
+            increment_hand_seen(
+                telemetry_conn,
+                "arena",
+                seat_agent_id,
+                handle=seat.get("name") or seat.get("handle"),
+            )
+            recorded += 1
+        state[seen_key] = True
+    except Exception as exc:
+        print(f"  Opponent telemetry write failed: {exc}", flush=True)
+    return recorded
+
+
+def normalize_live_table_metadata(table):
+    """Normalize arena aliases into fields the strategies and telemetry expect."""
+    if table.get("buttonSeatNumber") is None:
+        for key in (
+            "dealerButtonSeatNumber",
+            "dealerSeatNumber",
+            "buttonSeat",
+            "dealerSeat",
+            "button",
+        ):
+            value = table.get(key)
+            if isinstance(value, dict):
+                value = value.get("seatNumber")
+            if value is not None:
+                table["buttonSeatNumber"] = value
+                break
+    return table
+
+
+def enrich_table_with_opponent_profiles(
+    telemetry_conn, table, agent_id, platform="arena"
+):
+    if telemetry_conn is None:
+        return table
+    agent_ids = [
+        seat.get("agentId")
+        for seat in table.get("seats", [])
+        if seat.get("agentId") and seat.get("agentId") != agent_id
+    ]
+    if not agent_ids:
+        return table
+    profiles = load_profiles_for_agents(telemetry_conn, platform, agent_ids)
+    if profiles:
+        table["opponentProfiles"] = profiles
+    return table
+
+
+def _normalize_action_name(raw_action):
+    if raw_action is None:
+        return None
+    action = str(raw_action).strip().lower().replace("_", "-")
+    if "raise" in action:
+        return "raise"
+    if "bet" in action:
+        return "bet"
+    if "call" in action:
+        return "call"
+    if "fold" in action:
+        return "fold"
+    if "check" in action:
+        return "check"
+    if "all-in" in action or "allin" in action:
+        return "raise"
+    return None
+
+
+def _first_present(mapping, keys):
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _event_summary(event):
+    summary = event.get("summary")
+    if isinstance(summary, dict):
+        return summary
+    return {}
+
+
+def _event_value(event, keys):
+    value = _first_present(event, keys)
+    if value is not None:
+        return value
+    return _first_present(_event_summary(event), keys)
+
+
+def _event_agent_id(event, seat_by_number):
+    agent_id = _event_value(
+        event,
+        (
+            "agentId",
+            "actorAgentId",
+            "playerAgentId",
+            "participantId",
+            "agent_id",
+        ),
+    )
+    if agent_id:
+        return str(agent_id)
+
+    seat_number = _event_value(
+        event,
+        ("seatNumber", "actorSeatNumber", "playerSeatNumber", "seat"),
+    )
+    if seat_number is None:
+        return None
+    try:
+        return seat_by_number.get(int(seat_number))
+    except (TypeError, ValueError):
+        return None
+
+
+def _event_amount(event, action=None):
+    if action == "raise":
+        keys = (
+            "toAmount",
+            "raiseTo",
+            "totalBetChips",
+            "amount",
+            "chips",
+            "betChips",
+            "currentBetChips",
+        )
+    else:
+        keys = (
+            "amount",
+            "chips",
+            "betChips",
+            "toAmount",
+            "raiseTo",
+            "totalBetChips",
+            "currentBetChips",
+        )
+    amount = _event_value(event, keys)
+    if amount is None:
+        return None
+    try:
+        return int(amount)
+    except (TypeError, ValueError):
+        return None
+
+
+def _event_message(event):
+    message = _event_value(
+        event,
+        (
+            "message",
+            "chat",
+            "tableTalk",
+            "table_talk",
+            "speech",
+            "comment",
+            "reasoning",
+        ),
+    )
+    if message is None:
+        return None
+    message = str(message).strip()
+    return message or None
+
+
+def _safe_int(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _iter_live_action_events(table):
+    history_keys = (
+        "actionHistory",
+        "actions",
+        "handActions",
+        "bettingActions",
+        "actionLog",
+        "events",
+        "recentEvents",
+    )
+    for key in history_keys:
+        events = table.get(key)
+        if not isinstance(events, list):
+            continue
+        for index, event in enumerate(events):
+            if not isinstance(event, dict):
+                continue
+            yield f"{key}:{index}", event
+
+    for seat in table.get("seats", []):
+        raw_action = _first_present(
+            seat, ("lastAction", "last_action", "action", "previousAction")
+        )
+        if raw_action is None:
+            continue
+        seat_number = seat.get("seatNumber")
+        key = (
+            f"seat:{seat_number}:{raw_action}:"
+            f"{seat.get('currentBetChips')}:{seat.get('stackChips')}"
+        )
+        yield (
+            key,
+            {
+                "agentId": seat.get("agentId"),
+                "seatNumber": seat_number,
+                "action": raw_action,
+                "amount": seat.get("currentBetChips"),
+                "message": _first_present(
+                    seat,
+                    (
+                        "lastMessage",
+                        "last_message",
+                        "message",
+                        "chat",
+                        "tableTalk",
+                        "table_talk",
+                    ),
+                ),
+                "street": table.get("street"),
+            },
+        )
+
+
+def _event_key(table, source_key, event, agent_id, action, amount):
+    event_id = _event_value(event, ("id", "actionId", "eventId"))
+    hand_id = str(table.get("handId") or table.get("tableId") or table.get("id"))
+    if event_id is not None:
+        return f"{hand_id}:{event_id}"
+    sequence = _event_value(event, ("sequence", "seq"))
+    timestamp = _event_value(event, ("occurredAt", "createdAt", "timestamp", "at"))
+    street = _event_value(event, ("street",)) or table.get("street")
+    if sequence is not None:
+        return f"{hand_id}:seq:{sequence}:{agent_id}:{street}:{action}:{amount}"
+    return f"{hand_id}:{source_key}:{agent_id}:{street}:{action}:{amount}:{timestamp}"
+
+
+def record_live_observed_actions(telemetry_conn, state, table, hero_agent_id):
+    if telemetry_conn is None:
+        return 0
+
+    seat_by_number = {}
+    for seat in table.get("seats", []):
+        seat_number = _safe_int(seat.get("seatNumber"))
+        if seat_number is not None and seat.get("agentId"):
+            seat_by_number[seat_number] = seat.get("agentId")
+    seat_by_agent = {
+        seat.get("agentId"): seat
+        for seat in table.get("seats", [])
+        if seat.get("agentId")
+    }
+    prior_keys = list(state.get("observed_action_event_keys", []))
+    seen = set(prior_keys)
+    newly_seen = []
+    hand_id = str(table.get("handId") or table.get("tableId") or table.get("id"))
+    recorded = 0
+
+    try:
+        for source_key, event in _iter_live_action_events(table):
+            agent_id = _event_agent_id(event, seat_by_number)
+            if not agent_id or agent_id == hero_agent_id:
+                continue
+            action = _normalize_action_name(
+                _event_value(event, ("action", "actionType"))
+            )
+            if action is None:
+                action = _normalize_action_name(_first_present(event, ("type",)))
+            if action is None:
+                continue
+            amount = _event_amount(event, action)
+            dedupe_key = _event_key(table, source_key, event, agent_id, action, amount)
+            if dedupe_key in seen:
+                continue
+
+            seat = seat_by_agent.get(agent_id, {})
+            facing_bet = bool(
+                _event_value(event, ("facingBet", "facing_bet", "facing_bet_bool"))
+                or _event_value(event, ("callAmount", "callChips"))
+            )
+            pot = _safe_int(
+                _event_value(event, ("potChips", "pot")) or table.get("potChips")
+            )
+            record_observed_action(
+                telemetry_conn,
+                platform="arena",
+                agent_id=agent_id,
+                handle=seat.get("name")
+                or seat.get("handle")
+                or _event_value(
+                    event,
+                    ("agentName", "handle", "name"),
+                ),
+                hand_id=hand_id,
+                street=_event_value(event, ("street",)) or table.get("street"),
+                action=action,
+                amount=amount,
+                pot=pot,
+                message=_event_message(event),
+                facing_bet=facing_bet,
+                stack_chips=seat.get("stackChips"),
+                hero_stack_chips=(seat_by_agent.get(hero_agent_id) or {}).get(
+                    "stackChips"
+                ),
+                voluntary=action in {"call", "bet", "raise"},
+            )
+            seen.add(dedupe_key)
+            newly_seen.append(dedupe_key)
+            recorded += 1
+    except Exception as exc:
+        print(f"  Opponent action telemetry write failed: {exc}", flush=True)
+
+    if newly_seen:
+        state["observed_action_event_keys"] = (prior_keys + newly_seen)[-2000:]
+    return recorded
+
+
 def main():
     try:
         api_key, competition_id, agent_id = load_credentials()
@@ -107,15 +578,29 @@ def main():
         print(f"Failed loading credentials: {exc}", flush=True)
         sys.exit(1)
 
+    try:
+        strategy_name, choose_action = load_configured_strategy()
+    except Exception as exc:
+        print(f"Failed loading strategy: {exc}", flush=True)
+        sys.exit(1)
+
     api_fn = make_api_client(api_key)
     print("🃏 Poker playing loop starting...", flush=True)
+    print(f"  Strategy: {strategy_name}", flush=True)
     state = load_state()
+    telemetry_conn, telemetry_run_id = init_live_telemetry(
+        state,
+        competition_id,
+        strategy_name,
+    )
+    save_state(state)
+
     consecutive_empty = 0
 
     while True:
         try:
             # Heartbeat: mark main loop as alive for cron tick fallback
-            state["last_heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+            state["last_heartbeat_at"] = datetime.now(UTC).isoformat()
             save_state(state)
 
             # Poll for pending actions
@@ -137,14 +622,24 @@ def main():
                         f"  ...waiting for table ({consecutive_empty} polls)",
                         flush=True,
                     )
+                elif consecutive_empty % 10 == 0:
+                    print(".", end="", flush=True)
                 if consecutive_empty == 30:  # ~1 min of no tables — try rejoining
-                    join_resp = api_fn("POST", "/texas/join", {"competitionId": competition_id})
+                    join_resp = api_fn(
+                        "POST", "/texas/join", {"competitionId": competition_id}
+                    )
                     kind = join_resp.get("kind", "")
                     if kind == "queued":
                         pos = join_resp.get("lobby", {}).get("position", "?")
                         print(f"  Joined queue at position {pos}", flush=True)
-                    elif "error" in join_resp and "chips" in join_resp.get("error", "").lower():
-                        print(f"  Bankroll empty, waiting...", flush=True)
+                    elif (
+                        "error" in join_resp
+                        and "chips" in join_resp.get("error", "").lower()
+                    ):
+                        print(
+                            "  ❌ Bankroll empty — let me know when you want a rebuy",
+                            flush=True,
+                        )
                 time.sleep(2)
                 continue
 
@@ -153,11 +648,20 @@ def main():
             tables.sort(key=lambda t: t.get("actionDeadlineAt", float("inf")))
 
             for table in tables:
+                normalize_live_table_metadata(table)
                 table_id = table.get("tableId", "?")
                 street = table.get("street", "?")
                 pot = table.get("potChips", 0)
 
                 print(f"\n📍 Table {table_id} | {street} | Pot: {pot}", flush=True)
+                recorded_opponents = record_live_opponents_seen(
+                    telemetry_conn, state, table, agent_id
+                )
+                recorded_actions = record_live_observed_actions(
+                    telemetry_conn, state, table, agent_id
+                )
+                if recorded_opponents or recorded_actions:
+                    save_state(state)
 
                 if not is_our_turn(table, agent_id):
                     acting = table.get("actingSeatNumber")
@@ -170,6 +674,7 @@ def main():
                     )
                     continue
 
+                enrich_table_with_opponent_profiles(telemetry_conn, table, agent_id)
                 my_seat = find_agent_seat(table, agent_id)
                 result = choose_action(table, my_seat)
                 if result[0] is None:
@@ -184,33 +689,50 @@ def main():
                     flush=True,
                 )
 
-                body = {
-                    "competitionId": competition_id,
-                    "tableId": table_id,
-                    "action": action,
-                    "message": message,
-                }
-                if amount is not None:
-                    body["amount"] = amount
+                body = action_request_body(competition_id, table_id, action, amount)
 
                 resp = api_fn("POST", "/texas/action", body)
 
                 if "error" in resp:
                     error = resp.get("error")
-                    message = resp.get("message", "")
+                    error_message = resp.get("message", "")
                     print(
-                        f"  ✗ Action rejected: {error} - {message}",
+                        f"  ✗ Action rejected: {error} - {error_message}",
                         flush=True,
                     )
                     if action != "fold":
+                        fallback_message = "Fallback fold after rejection"
                         body["action"] = "fold"
-                        body["message"] = "Fallback fold after rejection"
+                        body["message"] = public_action_message()
                         body.pop("amount", None)
                         resp = api_fn("POST", "/texas/action", body)
                         if "error" not in resp:
                             print("  → Fallback: fold accepted", flush=True)
+                            record_live_decision(
+                                telemetry_conn,
+                                telemetry_run_id,
+                                state,
+                                table,
+                                my_seat,
+                                "fold",
+                                None,
+                                fallback_message,
+                                strategy_name,
+                            )
+                            save_state(state)
                 else:
                     print("  ✓ Action accepted", flush=True)
+                    record_live_decision(
+                        telemetry_conn,
+                        telemetry_run_id,
+                        state,
+                        table,
+                        my_seat,
+                        action,
+                        amount,
+                        message,
+                        strategy_name,
+                    )
                     new_street = resp.get("street", "?")
                     new_pot = resp.get("potChips", 0)
                     print(f"    Street: {new_street} | Pot: {new_pot}", flush=True)
