@@ -7,6 +7,7 @@ from eval.selfplay import (
     format_result,
     run_selfplay,
 )
+from poker_bot.opponent_store import connect, load_profile
 from poker_bot.strategies.all_in_everytime import choose_action as all_in
 from poker_bot.strategies.loader import load_strategy
 
@@ -26,6 +27,7 @@ def test_parser_defaults_hands_to_200():
     assert args.strat == "all_in_everytime"
     assert args.opponent == "simple"
     assert args.hands == DEFAULT_HANDS
+    assert args.players == 2
     assert args.seed is None
 
 
@@ -54,6 +56,33 @@ def test_run_selfplay_counts_every_hand():
     assert result.wins + result.losses + result.pushes == 10
 
 
+def test_run_selfplay_supports_six_max():
+    result = run_selfplay("survival_sixmax", hands=10, seed=3, players=6)
+
+    assert result.players == 6
+    assert result.opponent == "simple"
+    assert result.wins + result.losses + result.pushes == 10
+
+
+def test_run_selfplay_can_persist_opponent_profiles(tmp_path):
+    db_path = tmp_path / "opponents.sqlite"
+
+    result = run_selfplay(
+        "survival_lookahead",
+        opponent_name="simple",
+        hands=5,
+        seed=3,
+        players=6,
+        opponent_db=db_path,
+    )
+    profile = load_profile(connect(db_path), "selfplay", "bot-agent-1")
+
+    assert result.hands == 5
+    assert profile is not None
+    assert profile.hands_seen == 5
+    assert profile.calls + profile.bets + profile.raises + profile.folds > 0
+
+
 def test_format_result_matches_expected_shape():
     result = SelfPlayResult(
         hands=200,
@@ -72,6 +101,7 @@ def test_format_result_matches_expected_shape():
             "  opponent    : simple x1",
             "  wins/losses : 148/50  (push: 2)",
             "  net chips   : +144",
+            "  chips/hand  : +0.7",
             "  bb/100      : +1.4",
             "  elapsed     : 2.2s  (88 hands/s)",
         ]
