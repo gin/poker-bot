@@ -8,6 +8,7 @@ from main import (
     PUBLIC_MESSAGE_ALPHABET,
     STRATEGY_ENV_VAR,
     action_request_body,
+    describe_idle_state,
     enrich_table_with_opponent_profiles,
     init_live_telemetry,
     load_configured_strategy,
@@ -16,9 +17,12 @@ from main import (
     make_api_client,
     normalize_live_table_metadata,
     public_action_message,
+    record_join_attempt,
     record_live_decision,
     record_live_observed_actions,
     record_live_opponents_seen,
+    should_attempt_join,
+    update_queue_state,
 )
 from poker_bot.opponent_store import (
     connect,
@@ -133,6 +137,109 @@ class PokerBotTests(unittest.TestCase):
         api_fn = make_api_client("arena_sk_test", runner=fake_runner)
         result = api_fn("GET", "/test")
         self.assertEqual(result, {"success": True})
+
+    def test_should_attempt_join_only_when_available_not_active_or_queued(self):
+        pending = {
+            "tables": [],
+            "lobby": None,
+            "participant": {"chipState": "available"},
+            "runner": {"activeTableCount": 0},
+        }
+
+        self.assertTrue(should_attempt_join(pending, {}, now=100))
+
+        queued = {**pending, "lobby": {"position": 1, "total": 3}}
+        self.assertFalse(should_attempt_join(queued, {}, now=100))
+
+        active = {**pending, "runner": {"activeTableCount": 1}}
+        self.assertFalse(should_attempt_join(active, {}, now=100))
+
+        busted = {**pending, "participant": {"chipState": "busted"}}
+        self.assertFalse(should_attempt_join(busted, {}, now=100))
+
+        locked = {**pending, "participant": {"chipState": "locked_in_play"}}
+        self.assertFalse(should_attempt_join(locked, {}, now=100))
+
+    def test_should_attempt_join_respects_retry_window(self):
+        pending = {
+            "tables": [],
+            "lobby": None,
+            "participant": {"chipState": "available"},
+            "runner": {"activeTableCount": 0},
+        }
+        state = {"last_join_attempt_epoch": 90}
+
+        self.assertFalse(should_attempt_join(pending, state, now=100))
+        self.assertTrue(should_attempt_join(pending, state, now=121))
+
+    def test_update_queue_state_records_pending_lifecycle_fields(self):
+        state = {}
+        pending = {
+            "tables": [],
+            "lobby": {"position": 2, "total": 7, "joinedAt": 1780875000000},
+            "participant": {
+                "chipState": "locked_in_play",
+                "bankrollChips": 12,
+                "tableChips": 988,
+            },
+            "runner": {"activeTableCount": 1, "canStopSafely": False},
+        }
+
+        update_queue_state(state, pending)
+
+        self.assertEqual(state["participant_chip_state"], "locked_in_play")
+        self.assertEqual(state["participant_bankroll_chips"], 12)
+        self.assertEqual(state["participant_table_chips"], 988)
+        self.assertEqual(state["runner_active_table_count"], 1)
+        self.assertFalse(state["runner_can_stop_safely"])
+        self.assertEqual(state["lobby_position"], 2)
+        self.assertEqual(state["lobby_total"], 7)
+
+    def test_record_join_attempt_tracks_response(self):
+        state = {}
+        join_resp = {
+            "kind": "queued",
+            "lobby": {"position": 3, "total": 9},
+        }
+
+        record_join_attempt(state, join_resp, now=100)
+
+        self.assertEqual(state["last_join_attempt_epoch"], 100)
+        self.assertEqual(state["last_join_response_kind"], "queued")
+        self.assertEqual(state["last_join_lobby_position"], 3)
+        self.assertEqual(state["last_join_lobby_total"], 9)
+
+    def test_describe_idle_state_uses_api_lifecycle_fields(self):
+        self.assertEqual(
+            describe_idle_state(
+                {
+                    "lobby": {"position": 1, "total": 4},
+                    "participant": {"chipState": "available"},
+                    "runner": {"activeTableCount": 0},
+                }
+            ),
+            "queued position 1/4",
+        )
+        self.assertEqual(
+            describe_idle_state(
+                {
+                    "lobby": None,
+                    "participant": {"chipState": "locked_in_play"},
+                    "runner": {"activeTableCount": 1},
+                }
+            ),
+            "chips locked in play, waiting for our turn or settlement",
+        )
+        self.assertEqual(
+            describe_idle_state(
+                {
+                    "lobby": None,
+                    "participant": {"chipState": "busted"},
+                    "runner": {"activeTableCount": 0},
+                }
+            ),
+            "busted, rebuy required",
+        )
 
     def test_action_request_body_uses_public_random_message(self):
         body = action_request_body("cmp-test", "table-1", "raise", amount=150)

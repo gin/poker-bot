@@ -28,13 +28,22 @@ from poker_bot.strategies.loader import load_strategy  # noqa: E402
 from poker_bot.table import find_agent_seat, is_our_turn  # noqa: E402
 
 BASE_URL = "https://arena.dev.fun/api/arena"
-STATE_FILE = os.path.expanduser("~/.arena-poker-state")
-CRED_FILE = os.path.expanduser("~/.arena-credentials")
+STATE_FILE = os.environ.get(
+    "POKER_BOT_STATE",
+    os.path.expanduser("~/.arena-poker-state"),
+)
+CRED_FILE = os.environ.get(
+    "POKER_BOT_CREDENTIALS",
+    os.path.expanduser("~/.arena-credentials"),
+)
 STRATEGY_CONFIG_FILE = os.path.expanduser("~/.arena-poker-strategy")
 STRATEGY_ENV_VAR = "POKER_BOT_STRATEGY"
 DEFAULT_AGENT_ID = "cmpzvsdsavulpc7zaxq9t2j6c"
-DEFAULT_STRATEGY_NAME = "survival_lookahead"
+DEFAULT_STRATEGY_NAME = "survival_balanced_pp_pd_pr_patch1"
 PUBLIC_MESSAGE_ALPHABET = string.ascii_letters + string.digits
+POLL_INTERVAL_SECONDS = 2
+ERROR_POLL_INTERVAL_SECONDS = 5
+JOIN_RETRY_SECONDS = 30
 
 
 def load_credentials(path=CRED_FILE):
@@ -165,6 +174,80 @@ def load_state(path=STATE_FILE):
 def save_state(state, path=STATE_FILE):
     with open(path, "w") as f:
         json.dump(state, f, indent=2)
+
+
+def update_queue_state(state, pending, now=None):
+    now = now or datetime.now(UTC)
+    participant = pending.get("participant") or {}
+    lobby = pending.get("lobby")
+    runner = pending.get("runner") or {}
+
+    state["last_pending_at"] = now.isoformat()
+    state["participant_chip_state"] = participant.get("chipState")
+    state["participant_bankroll_chips"] = participant.get("bankrollChips")
+    state["participant_table_chips"] = participant.get("tableChips")
+    state["runner_active_table_count"] = runner.get("activeTableCount")
+    state["runner_can_stop_safely"] = runner.get("canStopSafely")
+
+    if lobby:
+        state["lobby_position"] = lobby.get("position")
+        state["lobby_total"] = lobby.get("total")
+        state["lobby_joined_at"] = lobby.get("joinedAt")
+    else:
+        state["lobby_position"] = None
+        state["lobby_total"] = None
+        state["lobby_joined_at"] = None
+
+
+def should_attempt_join(pending, state=None, now=None):
+    state = state or {}
+    now = time.time() if now is None else now
+    if pending.get("tables"):
+        return False
+    if pending.get("lobby") is not None:
+        return False
+
+    participant = pending.get("participant") or {}
+    runner = pending.get("runner") or {}
+    if participant.get("chipState") != "available":
+        return False
+    if int(runner.get("activeTableCount") or 0) != 0:
+        return False
+
+    last_attempt = float(state.get("last_join_attempt_epoch") or 0)
+    return now - last_attempt >= JOIN_RETRY_SECONDS
+
+
+def record_join_attempt(state, join_resp, now=None):
+    now = time.time() if now is None else now
+    state["last_join_attempt_epoch"] = now
+    state["last_join_attempt_at"] = datetime.fromtimestamp(now, UTC).isoformat()
+    state["last_join_response_kind"] = join_resp.get("kind")
+    state["last_join_response_error"] = join_resp.get("error")
+    state["last_join_response_message"] = join_resp.get("message")
+
+    lobby = join_resp.get("lobby") or {}
+    state["last_join_lobby_position"] = lobby.get("position")
+    state["last_join_lobby_total"] = lobby.get("total")
+
+
+def describe_idle_state(pending):
+    participant = pending.get("participant") or {}
+    runner = pending.get("runner") or {}
+    lobby = pending.get("lobby")
+    chip_state = participant.get("chipState") or "unknown"
+
+    if lobby:
+        position = lobby.get("position", "?")
+        total = lobby.get("total", "?")
+        return f"queued position {position}/{total}"
+    if chip_state == "locked_in_play" or int(runner.get("activeTableCount") or 0) > 0:
+        return "chips locked in play, waiting for our turn or settlement"
+    if chip_state == "available":
+        return "available for matchmaking"
+    if chip_state == "busted":
+        return "busted, rebuy required"
+    return f"idle chip_state={chip_state}"
 
 
 def telemetry_enabled():
@@ -610,41 +693,53 @@ def main():
 
             if "error" in pending and "tables" not in pending:
                 print(f"Error polling: {pending}", flush=True)
-                time.sleep(5)
+                time.sleep(ERROR_POLL_INTERVAL_SECONDS)
                 continue
 
+            update_queue_state(state, pending)
             tables = pending.get("tables", [])
 
             if not tables:
                 consecutive_empty += 1
-                if consecutive_empty % 60 == 0:
+                idle_description = describe_idle_state(pending)
+                if consecutive_empty % 30 == 0:
                     print(
-                        f"  ...waiting for table ({consecutive_empty} polls)",
+                        f"  ...idle: {idle_description} "
+                        f"({consecutive_empty} polls)",
                         flush=True,
                     )
-                elif consecutive_empty % 10 == 0:
-                    print(".", end="", flush=True)
-                if consecutive_empty == 30:  # ~1 min of no tables — try rejoining
+
+                now = time.time()
+                if should_attempt_join(pending, state, now=now):
                     join_resp = api_fn(
                         "POST", "/texas/join", {"competitionId": competition_id}
                     )
+                    record_join_attempt(state, join_resp, now=now)
                     kind = join_resp.get("kind", "")
                     if kind == "queued":
                         pos = join_resp.get("lobby", {}).get("position", "?")
-                        print(f"  Joined queue at position {pos}", flush=True)
-                    elif (
-                        "error" in join_resp
-                        and "chips" in join_resp.get("error", "").lower()
-                    ):
+                        total = join_resp.get("lobby", {}).get("total", "?")
+                        print(f"  Joined queue at position {pos}/{total}", flush=True)
+                    elif kind == "waiting_for_settlement":
+                        print("  Waiting for table settlement", flush=True)
+                    elif "error" in join_resp:
                         print(
-                            "  ❌ Bankroll empty — let me know when you want a rebuy",
+                            "  Join skipped/rejected: "
+                            f"{join_resp.get('error')} - "
+                            f"{join_resp.get('message', '')}",
                             flush=True,
                         )
-                time.sleep(2)
+                elif state.get("last_reported_idle_state") != idle_description:
+                    print(f"  Idle: {idle_description}", flush=True)
+                    state["last_reported_idle_state"] = idle_description
+
+                save_state(state)
+                time.sleep(POLL_INTERVAL_SECONDS)
                 continue
 
             # Sort by earliest action deadline
             consecutive_empty = 0
+            state["last_reported_idle_state"] = None
             tables.sort(key=lambda t: t.get("actionDeadlineAt", float("inf")))
 
             for table in tables:
@@ -740,12 +835,15 @@ def main():
                     state["last_table_id"] = table_id
                     save_state(state)
 
+            save_state(state)
+            time.sleep(POLL_INTERVAL_SECONDS)
+
         except KeyboardInterrupt:
             print("\n🛑 Poker loop stopped", flush=True)
             break
         except Exception as e:
             print(f"Exception: {e}", flush=True)
-            time.sleep(5)
+            time.sleep(ERROR_POLL_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":
