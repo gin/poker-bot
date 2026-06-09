@@ -11,6 +11,7 @@ from main import (
     describe_idle_state,
     enrich_table_with_opponent_profiles,
     init_live_telemetry,
+    is_not_turn_rejection,
     load_configured_strategy,
     load_credentials,
     load_strategy_name,
@@ -21,7 +22,9 @@ from main import (
     record_live_decision,
     record_live_observed_actions,
     record_live_opponents_seen,
+    seat_display_name,
     should_attempt_join,
+    table_action_skip_reason,
     update_queue_state,
 )
 from poker_bot.opponent_store import (
@@ -233,6 +236,16 @@ class PokerBotTests(unittest.TestCase):
         self.assertEqual(
             describe_idle_state(
                 {
+                    "lobby": {"position": 10, "total": 20},
+                    "participant": {"chipState": "locked_in_play"},
+                    "runner": {"activeTableCount": 1},
+                }
+            ),
+            "chips locked in play, waiting for our turn or settlement",
+        )
+        self.assertEqual(
+            describe_idle_state(
+                {
                     "lobby": None,
                     "participant": {"chipState": "busted"},
                     "runner": {"activeTableCount": 0},
@@ -241,10 +254,78 @@ class PokerBotTests(unittest.TestCase):
             "busted, rebuy required",
         )
 
+    def test_not_turn_rejection_detection(self):
+        self.assertTrue(
+            is_not_turn_rejection(
+                {
+                    "error": "It is not this agent's turn",
+                    "message": "",
+                }
+            )
+        )
+        self.assertTrue(
+            is_not_turn_rejection(
+                {
+                    "error": "invalid_action",
+                    "message": "It is not this agent's turn",
+                }
+            )
+        )
+        self.assertFalse(
+            is_not_turn_rejection(
+                {
+                    "error": "invalid_action",
+                    "message": "raise is too small",
+                }
+            )
+        )
+
+    def test_table_action_skip_reason_rejects_stale_or_non_turn_snapshots(self):
+        table = {
+            "seats": [
+                {"agentId": "hero"},
+                {"agentId": "villain", "seatNumber": 2},
+            ],
+            "allowedActions": {"availableActions": ["fold", "call"]},
+        }
+
+        self.assertIn("not our turn", table_action_skip_reason(table, "hero"))
+
+        table["seats"][0]["seatNumber"] = 1
+        table["actingSeatNumber"] = 2
+
+        self.assertIn("not our turn", table_action_skip_reason(table, "hero"))
+
+        table["actingSeatNumber"] = 1
+        table["allowedActions"] = {"availableActions": []}
+
+        self.assertEqual(
+            table_action_skip_reason(table, "hero"),
+            "no available actions in table snapshot",
+        )
+
+        table["allowedActions"] = {"availableActions": ["fold", "call"]}
+
+        self.assertIsNone(table_action_skip_reason(table, "hero"))
+
+    def test_seat_display_name_prefers_updated_api_identity_fields(self):
+        self.assertEqual(
+            seat_display_name(
+                {
+                    "agentHandle": "handle-first",
+                    "agentName": "Agent Name",
+                    "handle": "old-handle",
+                    "name": "old-name",
+                }
+            ),
+            "handle-first",
+        )
+        self.assertEqual(seat_display_name({"agentName": "Agent Name"}), "Agent Name")
+
     def test_action_request_body_uses_public_random_message(self):
         body = action_request_body("cmp-test", "table-1", "raise", amount=150)
 
-        self.assertEqual(body["competitionId"], "cmp-test")
+        self.assertNotIn("competitionId", body)
         self.assertEqual(body["tableId"], "table-1")
         self.assertEqual(body["action"], "raise")
         self.assertEqual(body["amount"], 150)

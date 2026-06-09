@@ -16,6 +16,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 
+from poker_bot.arena_stats import (  # noqa: E402
+    ArenaStatsFetcher,
+    schedule_table_opponent_stats,
+)
 from poker_bot.opponent_store import (  # noqa: E402
     connect,
     create_telemetry_run,
@@ -39,7 +43,7 @@ CRED_FILE = os.environ.get(
 STRATEGY_CONFIG_FILE = os.path.expanduser("~/.arena-poker-strategy")
 STRATEGY_ENV_VAR = "POKER_BOT_STRATEGY"
 DEFAULT_AGENT_ID = "cmpzvsdsavulpc7zaxq9t2j6c"
-DEFAULT_STRATEGY_NAME = "survival_balanced_pp_pd_pr_patch1"
+DEFAULT_STRATEGY_NAME = "auto_research_v003"
 PUBLIC_MESSAGE_ALPHABET = string.ascii_letters + string.digits
 POLL_INTERVAL_SECONDS = 2
 ERROR_POLL_INTERVAL_SECONDS = 5
@@ -151,9 +155,8 @@ def public_action_message(length=16):
     return "".join(secrets.choice(PUBLIC_MESSAGE_ALPHABET) for _ in range(length))
 
 
-def action_request_body(competition_id, table_id, action, amount=None):
+def action_request_body(_competition_id, table_id, action, amount=None):
     body = {
-        "competitionId": competition_id,
         "tableId": table_id,
         "action": action,
         "message": public_action_message(),
@@ -237,17 +240,42 @@ def describe_idle_state(pending):
     lobby = pending.get("lobby")
     chip_state = participant.get("chipState") or "unknown"
 
+    if chip_state == "locked_in_play" or int(runner.get("activeTableCount") or 0) > 0:
+        return "chips locked in play, waiting for our turn or settlement"
     if lobby:
         position = lobby.get("position", "?")
         total = lobby.get("total", "?")
         return f"queued position {position}/{total}"
-    if chip_state == "locked_in_play" or int(runner.get("activeTableCount") or 0) > 0:
-        return "chips locked in play, waiting for our turn or settlement"
     if chip_state == "available":
         return "available for matchmaking"
     if chip_state == "busted":
         return "busted, rebuy required"
     return f"idle chip_state={chip_state}"
+
+
+def is_not_turn_rejection(response):
+    error = str(response.get("error") or "").lower()
+    message = str(response.get("message") or "").lower()
+    text = f"{error} {message}"
+    return (
+        ("not this agent" in text and "turn" in text)
+        or "not your turn" in text
+        or "not this player's turn" in text
+    )
+
+
+def table_action_skip_reason(table, agent_id):
+    my_seat = find_agent_seat(table, agent_id)
+    if my_seat is None:
+        return "agent is not seated at table"
+    if not is_our_turn(table, agent_id):
+        acting = table.get("actingSeatNumber") or table.get("actingAgentId")
+        my_seat_num = my_seat.get("seatNumber")
+        return f"not our turn (acting {acting}, we are {my_seat_num})"
+    available = (table.get("allowedActions") or {}).get("availableActions") or []
+    if not available:
+        return "no available actions in table snapshot"
+    return None
 
 
 def telemetry_enabled():
@@ -338,7 +366,7 @@ def record_live_opponents_seen(telemetry_conn, state, table, agent_id):
                 telemetry_conn,
                 "arena",
                 seat_agent_id,
-                handle=seat.get("name") or seat.get("handle"),
+                handle=seat_display_name(seat),
             )
             recorded += 1
         state[seen_key] = True
@@ -364,6 +392,15 @@ def normalize_live_table_metadata(table):
                 table["buttonSeatNumber"] = value
                 break
     return table
+
+
+def seat_display_name(seat):
+    return (
+        seat.get("agentHandle")
+        or seat.get("agentName")
+        or seat.get("handle")
+        or seat.get("name")
+    )
 
 
 def enrich_table_with_opponent_profiles(
@@ -624,11 +661,10 @@ def record_live_observed_actions(telemetry_conn, state, table, hero_agent_id):
                 telemetry_conn,
                 platform="arena",
                 agent_id=agent_id,
-                handle=seat.get("name")
-                or seat.get("handle")
+                handle=seat_display_name(seat)
                 or _event_value(
                     event,
-                    ("agentName", "handle", "name"),
+                    ("agentHandle", "agentName", "handle", "name"),
                 ),
                 hand_id=hand_id,
                 street=_event_value(event, ("street",)) or table.get("street"),
@@ -676,6 +712,11 @@ def main():
         competition_id,
         strategy_name,
     )
+    stats_fetcher = (
+        ArenaStatsFetcher(api_fn, competition_id)
+        if telemetry_conn is not None
+        else None
+    )
     save_state(state)
 
     consecutive_empty = 0
@@ -704,8 +745,7 @@ def main():
                 idle_description = describe_idle_state(pending)
                 if consecutive_empty % 30 == 0:
                     print(
-                        f"  ...idle: {idle_description} "
-                        f"({consecutive_empty} polls)",
+                        f"  ...idle: {idle_description} ({consecutive_empty} polls)",
                         flush=True,
                     )
 
@@ -749,6 +789,14 @@ def main():
                 pot = table.get("potChips", 0)
 
                 print(f"\n📍 Table {table_id} | {street} | Pot: {pot}", flush=True)
+                queued_stats = schedule_table_opponent_stats(
+                    stats_fetcher, table, agent_id
+                )
+                if queued_stats:
+                    print(
+                        f"  Queued Arena stats for {queued_stats} opponent(s)",
+                        flush=True,
+                    )
                 recorded_opponents = record_live_opponents_seen(
                     telemetry_conn, state, table, agent_id
                 )
@@ -758,15 +806,9 @@ def main():
                 if recorded_opponents or recorded_actions:
                     save_state(state)
 
-                if not is_our_turn(table, agent_id):
-                    acting = table.get("actingSeatNumber")
-                    my_seat_num = (find_agent_seat(table, agent_id) or {}).get(
-                        "seatNumber"
-                    )
-                    print(
-                        f"  Not our turn (seat {acting}, we are {my_seat_num})",
-                        flush=True,
-                    )
+                skip_reason = table_action_skip_reason(table, agent_id)
+                if skip_reason:
+                    print(f"  Skipping table: {skip_reason}", flush=True)
                     continue
 
                 enrich_table_with_opponent_profiles(telemetry_conn, table, agent_id)
@@ -795,6 +837,13 @@ def main():
                         f"  ✗ Action rejected: {error} - {error_message}",
                         flush=True,
                     )
+                    if is_not_turn_rejection(resp):
+                        state["last_not_turn_rejection_at"] = datetime.now(
+                            UTC
+                        ).isoformat()
+                        state["last_not_turn_rejection_table_id"] = table_id
+                        save_state(state)
+                        continue
                     if action != "fold":
                         fallback_message = "Fallback fold after rejection"
                         body["action"] = "fold"
@@ -840,6 +889,8 @@ def main():
 
         except KeyboardInterrupt:
             print("\n🛑 Poker loop stopped", flush=True)
+            if stats_fetcher is not None:
+                stats_fetcher.close()
             break
         except Exception as e:
             print(f"Exception: {e}", flush=True)

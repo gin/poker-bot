@@ -31,3 +31,39 @@ def test_is_our_turn_matches_acting_seat():
     assert is_our_turn(table, "my-agent")
     assert not is_our_turn(table, "other")
     assert not is_our_turn(table, "missing-agent")
+
+
+def test_is_our_turn_requires_explicit_acting_and_seat_numbers():
+    table = {
+        "seats": [
+            {"agentId": "my-agent"},
+            {"agentId": "other", "seatNumber": 1},
+        ],
+    }
+
+    assert not is_our_turn(table, "my-agent")
+
+
+def test_is_our_turn_handles_string_seat_numbers():
+    table = {
+        "actingSeatNumber": "2",
+        "seats": [
+            {"agentId": "my-agent", "seatNumber": 2},
+            {"agentId": "other", "seatNumber": "1"},
+        ],
+    }
+
+    assert is_our_turn(table, "my-agent")
+
+
+def test_is_our_turn_can_use_acting_agent_id():
+    table = {
+        "actingAgentId": "my-agent",
+        "seats": [
+            {"agentId": "my-agent"},
+            {"agentId": "other"},
+        ],
+    }
+
+    assert is_our_turn(table, "my-agent")
+    assert not is_our_turn(table, "other")
