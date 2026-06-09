@@ -1,4 +1,4 @@
-"""Run quiet heads-up self-play evaluations between poker strategies."""
+"""Run quiet self-play evaluations between poker strategies."""
 
 import argparse
 import random
@@ -32,6 +32,7 @@ from simulator import (  # noqa: E402
 DEFAULT_HANDS = 200
 DEFAULT_OPPONENT = "simple"
 DEFAULT_PLAYERS = 2
+OPPONENT_LINEUP_SEPARATOR = "+"
 
 
 @dataclass(frozen=True)
@@ -82,8 +83,10 @@ def run_selfplay(
     if players < 2 or players > 6:
         raise ValueError("--players must be between 2 and 6")
 
+    opponent_names = resolve_opponent_lineup(opponent_name, players)
+    opponent_label = format_opponent_label(opponent_names)
     strat = load_strategy(strat_name)
-    opponent = load_strategy(opponent_name)
+    opponent_strategies = tuple(load_strategy(name) for name in opponent_names)
     rng = random.Random(seed)
     db_conn = connect(opponent_db) if opponent_db is not None else None
     should_track = track_opponents or db_conn is not None
@@ -95,7 +98,7 @@ def run_selfplay(
         run_id = create_telemetry_run(
             db_conn,
             strategy=strat_name,
-            opponent=opponent_name,
+            opponent=opponent_label,
             players=players,
             seed=seed,
             platform=platform,
@@ -171,7 +174,7 @@ def run_selfplay(
                 INITIAL_STACK,
                 player_is_small_blind=player_is_small_blind,
                 player_strategy=strat,
-                bot_strategy=opponent,
+                bot_strategy=opponent_strategies[0],
                 rng=rng,
                 verbose=False,
             )
@@ -185,7 +188,7 @@ def run_selfplay(
             hand_id = f"{seed or 'run'}-{hand_index}"
             stacks = play_hand_multiway(
                 [INITIAL_STACK] * players,
-                [strat] + [opponent] * (players - 1),
+                [strat, *opponent_strategies],
                 button_index=hand_index % players,
                 rng=rng,
                 opponent_profiles=opponent_profiles if should_track else None,
@@ -218,7 +221,7 @@ def run_selfplay(
     return SelfPlayResult(
         hands=hands,
         strat=strat_name,
-        opponent=opponent_name,
+        opponent=opponent_label,
         wins=wins,
         losses=losses,
         pushes=pushes,
@@ -226,6 +229,36 @@ def run_selfplay(
         elapsed=elapsed,
         players=players,
     )
+
+
+def parse_opponent_lineup(value):
+    if isinstance(value, str):
+        return tuple(
+            part.strip()
+            for part in value.split(OPPONENT_LINEUP_SEPARATOR)
+            if part.strip()
+        )
+    return tuple(value)
+
+
+def resolve_opponent_lineup(opponent_name, players):
+    names = parse_opponent_lineup(opponent_name)
+    if not names:
+        raise ValueError("opponent lineup must include at least one strategy")
+    if len(names) == 1:
+        return names * (players - 1)
+    if len(names) != players - 1:
+        raise ValueError(
+            "mixed opponent lineups must provide exactly one strategy per "
+            f"opponent seat: got {len(names)} for {players} players"
+        )
+    return names
+
+
+def format_opponent_label(opponent_names):
+    if len(set(opponent_names)) == 1:
+        return opponent_names[0]
+    return OPPONENT_LINEUP_SEPARATOR.join(opponent_names)
 
 
 def format_signed_number(value):
@@ -237,10 +270,13 @@ def format_signed_float(value):
 
 
 def format_result(result):
+    opponent = result.opponent
+    if OPPONENT_LINEUP_SEPARATOR not in opponent:
+        opponent = f"{opponent} x{result.players - 1}"
     return "\n".join(
         [
             f"  hands       : {result.hands}",
-            f"  opponent    : {result.opponent} x{result.players - 1}",
+            f"  opponent    : {opponent}",
             (
                 f"  wins/losses : {result.wins}/{result.losses}  "
                 f"(push: {result.pushes})"
@@ -258,7 +294,7 @@ def format_result(result):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Run heads-up self-play between poker strategies."
+        description="Run self-play between poker strategies."
     )
     parser.add_argument(
         "--strat",
@@ -268,7 +304,11 @@ def build_parser():
     parser.add_argument(
         "--opponent",
         default=DEFAULT_OPPONENT,
-        help=f"Opponent strategy module. Defaults to {DEFAULT_OPPONENT}.",
+        help=(
+            "Opponent strategy module. For multiway mixed lineups, separate "
+            f"one strategy per opponent seat with '{OPPONENT_LINEUP_SEPARATOR}'. "
+            f"Defaults to {DEFAULT_OPPONENT}."
+        ),
     )
     parser.add_argument(
         "--hands",

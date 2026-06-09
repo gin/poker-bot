@@ -5,6 +5,7 @@ from eval.selfplay import (
     SelfPlayResult,
     build_parser,
     format_result,
+    resolve_opponent_lineup,
     run_selfplay,
 )
 from poker_bot.opponent_store import connect, load_profile
@@ -64,6 +65,39 @@ def test_run_selfplay_supports_six_max():
     assert result.wins + result.losses + result.pushes == 10
 
 
+def test_run_selfplay_supports_mixed_multiway_lineup():
+    result = run_selfplay(
+        "survival_sixmax",
+        hands=5,
+        seed=3,
+        opponent_name=(
+            "simple+adaptive+royal_adaptive+threshold_pressure+anti_threshold"
+        ),
+        players=6,
+    )
+
+    assert result.players == 6
+    assert result.opponent == (
+        "simple+adaptive+royal_adaptive+threshold_pressure+anti_threshold"
+    )
+    assert result.wins + result.losses + result.pushes == 5
+
+
+def test_resolve_opponent_lineup_repeats_single_opponent():
+    assert resolve_opponent_lineup("simple", players=6) == (
+        "simple",
+        "simple",
+        "simple",
+        "simple",
+        "simple",
+    )
+
+
+def test_resolve_opponent_lineup_requires_one_strategy_per_opponent_seat():
+    with pytest.raises(ValueError, match="exactly one strategy per opponent seat"):
+        resolve_opponent_lineup("simple+adaptive", players=6)
+
+
 def test_run_selfplay_can_persist_opponent_profiles(tmp_path):
     db_path = tmp_path / "opponents.sqlite"
 
@@ -106,3 +140,20 @@ def test_format_result_matches_expected_shape():
             "  elapsed     : 2.2s  (88 hands/s)",
         ]
     )
+
+
+def test_format_result_shows_mixed_lineup_without_repeat_suffix():
+    result = SelfPlayResult(
+        hands=20,
+        strat="candidate",
+        opponent="simple+adaptive",
+        wins=10,
+        losses=8,
+        pushes=2,
+        net_chips=50,
+        elapsed=1.0,
+        players=3,
+    )
+
+    assert "  opponent    : simple+adaptive" in format_result(result)
+    assert "simple+adaptive x2" not in format_result(result)

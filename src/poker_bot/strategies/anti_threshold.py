@@ -110,7 +110,7 @@ def choose_action(table, my_seat) -> ActionDecision:
     # Raise with strong hands
     if "raise" in available and strong:
         amount = raise_amount(table, allowed, strong=made_rank >= 3)
-        return "raise", amount, f"Value raise rank {made_rank}"
+        return "raise", amount, f"value raise rank {made_rank}"
 
     # Check-raise / donk bet with strong hands when out of position
     if "bet" in available and "check" in available and strong:
@@ -122,12 +122,12 @@ def choose_action(table, my_seat) -> ActionDecision:
         if strong:
             return "call", call_amount, f"Calling with value rank {made_rank}"
         if opponents <= 1 and required <= 0.25 and medium:
-            return "call", call_amount, "Defending medium heads-up"
+            return "call", call_amount, "Defending medium hand heads-up"
         if required <= 0.10:
             return "call", call_amount, "Good price for hand"
         if "check" in available:
             return "check", None, "Checking marginal hand"
-        return "fold", None, f"Folding rank {made_rank}"
+        return "fold", None, f"Declining bad price, folding rank {made_rank}"
 
     # Bet decisions (when check isn't available — in position as preflop aggressor)
     if "bet" in available:
