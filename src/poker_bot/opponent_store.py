@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import uuid
@@ -15,7 +16,8 @@ from poker_bot.strategies.adaptive import (
     preflop_score,
 )
 
-DEFAULT_DB_PATH = Path("~/.poker_bot/opponents.sqlite").expanduser()
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DB_PATH = REPO_ROOT / "gameplay.sqlite"
 
 
 def default_db_path():
@@ -77,6 +79,16 @@ def init_db(conn):
             stack_chips integer,
             hero_stack_chips integer,
             created_at text not null default current_timestamp
+        );
+
+        create table if not exists opponent_external_stats (
+            id integer primary key,
+            opponent_id integer not null references opponents(id),
+            competition_id text not null,
+            source text not null,
+            stats_json text not null,
+            fetched_at text not null default current_timestamp,
+            unique(opponent_id, competition_id, source)
         );
 
         create table if not exists telemetry_runs (
@@ -147,6 +159,8 @@ def init_db(conn):
             on decision_telemetry(street, hand_bucket, table_style);
         create index if not exists idx_decisions_action
             on decision_telemetry(chosen_action, street);
+        create index if not exists idx_external_stats_competition
+            on opponent_external_stats(competition_id, source);
         """
     )
     _ensure_columns(
@@ -226,6 +240,35 @@ def increment_hand_seen(conn, platform, agent_id, handle=None):
         where opponent_id = ?
         """,
         (opponent_id,),
+    )
+    conn.commit()
+    return opponent_id
+
+
+def record_external_agent_stats(
+    conn,
+    *,
+    platform,
+    agent_id,
+    competition_id,
+    stats,
+    handle=None,
+    source="arena_agent_stats",
+):
+    opponent_id = upsert_opponent(conn, platform, agent_id, handle)
+    payload = stats if isinstance(stats, dict) else {"value": stats}
+    stats_json = json.dumps(payload, sort_keys=True)
+    conn.execute(
+        """
+        insert into opponent_external_stats(
+            opponent_id, competition_id, source, stats_json
+        )
+        values (?, ?, ?, ?)
+        on conflict(opponent_id, competition_id, source) do update set
+            stats_json = excluded.stats_json,
+            fetched_at = current_timestamp
+        """,
+        (opponent_id, competition_id, source, stats_json),
     )
     conn.commit()
     return opponent_id
