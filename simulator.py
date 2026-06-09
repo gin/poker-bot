@@ -14,6 +14,7 @@ from poker_bot.hand_eval import (  # noqa: E402
     deal_cards,
     evaluate_hand,
 )
+from poker_bot.opponents import OpponentProfile, record_action  # noqa: E402
 from poker_bot.strategies.loader import load_strategy  # noqa: E402
 
 DEFAULT_STRATEGY = "simple"
@@ -34,6 +35,7 @@ def build_allowed_actions(seat, current_bet, min_raise=BIG_BLIND, can_raise=True
     call_shortfall = max(0, current_bet - seat["currentBetChips"])
     call_amount = min(call_shortfall, seat["stackChips"])
     max_commit = seat["currentBetChips"] + seat["stackChips"]
+    min_bet = min(BIG_BLIND, seat["stackChips"])
     if seat["stackChips"] == 0:
         available = []
     elif call_shortfall == 0:
@@ -49,13 +51,24 @@ def build_allowed_actions(seat, current_bet, min_raise=BIG_BLIND, can_raise=True
     min_raise_to = None
     if "raise" in available:
         min_raise_to = current_bet + min_raise
+    bet_range = {"min": min_bet, "max": max_commit} if "bet" in available else None
+    raise_range = (
+        {"min": min_raise_to, "max": max_commit} if "raise" in available else None
+    )
 
     return {
         "availableActions": available,
         "callAmount": call_amount,
+        "callChips": call_amount,
+        "callToAmount": seat["currentBetChips"] + call_amount,
+        "canCheck": "check" in available,
+        "canBet": "bet" in available,
+        "canRaise": "raise" in available,
         "minRaiseTo": min_raise_to,
-        "minBet": min(BIG_BLIND, seat["stackChips"]),
+        "minBet": min_bet,
         "maxCommit": max_commit,
+        "betRange": bet_range,
+        "raiseRange": raise_range,
     }
 
 
@@ -163,7 +176,15 @@ def resolve_action(seat, action, amount, current_bet, min_raise_to=None):
     return max(current_bet, seat["currentBetChips"])
 
 
-def build_table(seats, board, pot, current_bet, street, acting_seat):
+def build_table(
+    seats,
+    board,
+    pot,
+    current_bet,
+    street,
+    acting_seat,
+    button_seat_number=None,
+):
     return {
         "street": street,
         "seats": seats,
@@ -171,6 +192,8 @@ def build_table(seats, board, pot, current_bet, street, acting_seat):
         "potChips": pot,
         "currentBet": current_bet,
         "actingSeatNumber": acting_seat,
+        "selfSeatNumber": acting_seat,
+        "buttonSeatNumber": button_seat_number,
     }
 
 
@@ -289,10 +312,197 @@ def run_betting_round(
     return None, pot
 
 
+def live_seats(seats):
+    return [seat for seat in seats if not seat.get("folded", False)]
+
+
+def active_seats(seats):
+    return [seat for seat in live_seats(seats) if seat["stackChips"] > 0]
+
+
+def collect_live_bets_multiway(pot, seats):
+    for seat in seats:
+        pot += seat["currentBetChips"]
+        seat["currentBetChips"] = 0
+    return pot
+
+
+def next_actor_index(seats, start_idx):
+    if not seats:
+        return None
+    for offset in range(1, len(seats) + 1):
+        idx = (start_idx + offset) % len(seats)
+        seat = seats[idx]
+        if not seat.get("folded", False) and seat["stackChips"] > 0:
+            return idx
+    return None
+
+
+def first_active_from(seats, start_idx):
+    if not seats:
+        return None
+    for offset in range(len(seats)):
+        idx = (start_idx + offset) % len(seats)
+        seat = seats[idx]
+        if not seat.get("folded", False) and seat["stackChips"] > 0:
+            return idx
+    return None
+
+
+def betting_round_closed_multiway(seats, current_bet, last_actions):
+    for seat in live_seats(seats):
+        if seat["stackChips"] == 0:
+            continue
+        if seat["currentBetChips"] < current_bet:
+            return False
+        if last_actions.get(seat["agentId"]) is None:
+            return False
+    return True
+
+
+def run_betting_round_multiway(
+    seats,
+    board,
+    pot,
+    current_bet,
+    street,
+    first_actor_idx,
+    button_seat_number,
+    action_providers=None,
+    opponent_profiles=None,
+    action_observer=None,
+    hand_id=None,
+    verbose=False,
+):
+    action_providers = action_providers or {}
+    active_idx = first_active_from(seats, first_actor_idx)
+    if active_idx is None:
+        return None, collect_live_bets_multiway(pot, seats)
+
+    min_raise = BIG_BLIND
+    last_actions = {
+        seat["agentId"]: None for seat in seats if not seat.get("folded", False)
+    }
+    while True:
+        if len(live_seats(seats)) <= 1:
+            winner = live_seats(seats)[0]
+            return winner["agentId"], pot + sum(s["currentBetChips"] for s in seats)
+
+        seat = seats[active_idx]
+        if seat.get("folded", False) or seat["stackChips"] == 0:
+            next_idx = next_actor_index(seats, active_idx)
+            if next_idx is None:
+                break
+            active_idx = next_idx
+            continue
+
+        can_raise = len(active_seats(seats)) > 1
+        allowed = build_allowed_actions(
+            seat,
+            current_bet,
+            min_raise,
+            can_raise=can_raise,
+        )
+        table = build_table(
+            seats,
+            board,
+            pot,
+            current_bet,
+            street,
+            seat["seatNumber"],
+            button_seat_number=button_seat_number,
+        )
+        table["allowedActions"] = allowed
+        if opponent_profiles is not None:
+            table["opponentProfiles"] = {
+                agent_id: profile
+                for agent_id, profile in opponent_profiles.items()
+                if agent_id != seat["agentId"]
+            }
+
+        if verbose:
+            print_table(seats, board, pot, street, current_bet, seat["agentId"])
+
+        provider = action_providers.get(seat["agentId"])
+        if provider is None:
+            action, amount, message = choose_action(table, seat)
+        else:
+            action, amount, message = provider(table, seat)
+
+        if action not in allowed["availableActions"]:
+            action = "check" if "check" in allowed["availableActions"] else "fold"
+            amount = None
+            message = "Fallback legal action"
+
+        if verbose:
+            print(
+                f"{seat['agentId']}: {action.upper()}"
+                + (f" {format_money(amount)}" if amount else "")
+                + f" | {message}"
+            )
+
+        facing_bet = int(allowed.get("callAmount") or allowed.get("callChips") or 0) > 0
+        voluntary = action in {"call", "bet", "raise"}
+        if opponent_profiles is not None:
+            profile = opponent_profiles.setdefault(
+                seat["agentId"], OpponentProfile(agent_id=seat["agentId"])
+            )
+            record_action(
+                profile,
+                action,
+                street=street,
+                facing_bet=facing_bet,
+                voluntary=voluntary,
+            )
+        if action_observer is not None:
+            action_observer(
+                hand_id=hand_id,
+                table=table,
+                seat=seat,
+                allowed=allowed,
+                action=action,
+                amount=amount,
+                message=message,
+                facing_bet=facing_bet,
+                voluntary=voluntary,
+            )
+
+        if action == "fold":
+            seat["folded"] = True
+            last_actions[seat["agentId"]] = "fold"
+            if len(live_seats(seats)) == 1:
+                winner = live_seats(seats)[0]
+                return winner["agentId"], pot + sum(
+                    s["currentBetChips"] for s in seats
+                )
+        else:
+            previous_current_bet = current_bet
+            current_bet = resolve_action(
+                seat, action, amount, current_bet, allowed["minRaiseTo"]
+            )
+            last_actions[seat["agentId"]] = action
+            if action in ("bet", "raise") and current_bet > previous_current_bet:
+                min_raise = current_bet - previous_current_bet
+                for other in live_seats(seats):
+                    if other["agentId"] != seat["agentId"] and other["stackChips"] > 0:
+                        last_actions[other["agentId"]] = None
+
+        if betting_round_closed_multiway(seats, current_bet, last_actions):
+            break
+
+        next_idx = next_actor_index(seats, active_idx)
+        if next_idx is None:
+            break
+        active_idx = next_idx
+
+    pot = collect_live_bets_multiway(pot, seats)
+    return None, pot
+
+
 def showdown(seats, board):
     best_score = None
     ties = []
-    for seat in seats:
+    for seat in live_seats(seats):
         hand_value = evaluate_hand(seat["holeCards"] + board)
         if best_score is None or hand_value > best_score:
             best_score = hand_value
@@ -405,6 +615,115 @@ def play_hand(
             player_stack = player["stackChips"]
             bot_stack = bot["stackChips"] + pot
     return player_stack, bot_stack
+
+
+def play_hand_multiway(
+    stacks,
+    strategies,
+    button_index=0,
+    rng=None,
+    opponent_profiles=None,
+    action_observer=None,
+    hand_id=None,
+    verbose=False,
+):
+    if len(stacks) < 2 or len(stacks) > 6:
+        raise ValueError("play_hand_multiway supports 2 to 6 players")
+    if len(strategies) != len(stacks):
+        raise ValueError("strategies must match stacks")
+
+    deck = build_deck(rng)
+    board = []
+    player_count = len(stacks)
+    small_blind_idx = (button_index + 1) % player_count
+    big_blind_idx = (button_index + 2) % player_count
+
+    seats = []
+    for index, stack in enumerate(stacks):
+        blind = 0
+        if index == small_blind_idx:
+            blind = SMALL_BLIND
+        elif index == big_blind_idx:
+            blind = BIG_BLIND
+        remaining, current_bet = post_blind(stack, blind)
+        seats.append(
+            {
+                "agentId": PLAYER_AGENT_ID if index == 0 else f"bot-agent-{index}",
+                "seatNumber": index + 1,
+                "holeCards": deal_cards(deck),
+                "stackChips": remaining,
+                "currentBetChips": current_bet,
+                "folded": remaining == 0 and current_bet == 0,
+            }
+        )
+
+    if opponent_profiles is not None:
+        for seat in seats:
+            profile = opponent_profiles.setdefault(
+                seat["agentId"], OpponentProfile(agent_id=seat["agentId"])
+            )
+            profile.hands_seen += 1
+
+    action_providers = {
+        seat["agentId"]: strategy
+        for seat, strategy in zip(seats, strategies, strict=True)
+        if strategy is not None
+    }
+    pot = 0
+    current_bet = max(seat["currentBetChips"] for seat in seats)
+    button_seat_number = button_index + 1
+
+    fold_winner, pot = run_betting_round_multiway(
+        seats,
+        board,
+        pot,
+        current_bet,
+        "Preflop",
+        first_actor_idx=(big_blind_idx + 1) % player_count,
+        button_seat_number=button_seat_number,
+        action_providers=action_providers,
+        opponent_profiles=opponent_profiles,
+        action_observer=action_observer,
+        hand_id=hand_id,
+        verbose=verbose,
+    )
+    if fold_winner:
+        for seat in seats:
+            if seat["agentId"] == fold_winner:
+                seat["stackChips"] += pot
+                break
+        return [seat["stackChips"] for seat in seats]
+
+    for street, new_cards in [("Flop", 3), ("Turn", 1), ("River", 1)]:
+        board.extend(deck.pop() for _ in range(new_cards))
+        fold_winner, pot = run_betting_round_multiway(
+            seats,
+            board,
+            pot,
+            0,
+            street,
+            first_actor_idx=(button_index + 1) % player_count,
+            button_seat_number=button_seat_number,
+            action_providers=action_providers,
+            opponent_profiles=opponent_profiles,
+            action_observer=action_observer,
+            hand_id=hand_id,
+            verbose=verbose,
+        )
+        if fold_winner:
+            for seat in seats:
+                if seat["agentId"] == fold_winner:
+                    seat["stackChips"] += pot
+                    break
+            return [seat["stackChips"] for seat in seats]
+
+    ties, _best_score = showdown(seats, board)
+    if ties:
+        split = pot // len(ties)
+        remainder = pot % len(ties)
+        for index, seat in enumerate(ties):
+            seat["stackChips"] += split + (1 if index < remainder else 0)
+    return [seat["stackChips"] for seat in seats]
 
 
 def build_parser():
