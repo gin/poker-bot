@@ -1,0 +1,243 @@
+import json
+
+from eval import benchmark
+from eval.selfplay import SelfPlayResult
+
+
+def fake_runner(
+    strat,
+    *,
+    hands,
+    seed,
+    opponent_name,
+    players,
+    track_opponents=False,
+    opponent_db=None,
+):
+    net = seed * 10 if opponent_name == "simple" else -seed * 5
+    if strat == "baseline":
+        net -= seed * 4
+    if strat == "weak_candidate":
+        net -= seed * 20
+    return SelfPlayResult(
+        hands=hands,
+        strat=strat,
+        opponent=opponent_name,
+        wins=seed,
+        losses=players,
+        pushes=1,
+        net_chips=net,
+        elapsed=0.01,
+        players=players,
+    )
+
+
+def test_parse_csv_helpers():
+    assert benchmark.parse_csv_strings("simple, adaptive") == ("simple", "adaptive")
+    assert benchmark.parse_csv_ints("1,2, 3") == (1, 2, 3)
+
+
+def test_build_cases_crosses_opponents_players_and_seeds():
+    cases = benchmark.build_cases(
+        "candidate",
+        opponents=("simple", "adaptive"),
+        players=(2, 6),
+        seeds=(1, 2),
+        hands=100,
+    )
+
+    assert len(cases) == 8
+    assert cases[0] == benchmark.BenchmarkCase(
+        strat="candidate",
+        opponent="simple",
+        players=2,
+        seed=1,
+        hands=100,
+    )
+    assert cases[-1].opponent == "adaptive"
+    assert cases[-1].players == 6
+    assert cases[-1].seed == 2
+
+
+def test_resolve_options_loads_config_and_allows_cli_overrides(tmp_path):
+    config_path = tmp_path / "benchmark.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "hands": 500,
+                "opponents": ["simple", "adaptive"],
+                "players": [2, 6],
+                "seeds": [7, 11],
+                "track_opponents": True,
+                "baseline": "baseline",
+                "min_delta_bb100": 1.5,
+                "fail_under_bb100": -10.0,
+            }
+        )
+    )
+    args = benchmark.build_parser().parse_args(
+        [
+            "--strat",
+            "candidate",
+            "--config",
+            str(config_path),
+            "--players",
+            "6",
+        ]
+    )
+
+    options = benchmark.resolve_options(args)
+
+    assert options["hands"] == 500
+    assert options["opponents"] == ("simple", "adaptive")
+    assert options["players"] == (6,)
+    assert options["seeds"] == (7, 11)
+    assert options["track_opponents"] is True
+    assert options["baseline"] == "baseline"
+    assert options["min_delta_bb100"] == 1.5
+    assert options["fail_under_bb100"] == -10.0
+
+
+def test_run_benchmark_aggregates_by_opponent_and_player_count():
+    report = benchmark.run_benchmark(
+        "candidate",
+        opponents=("simple",),
+        players=(2, 6),
+        seeds=(1, 2),
+        hands=100,
+        runner=fake_runner,
+    )
+
+    assert len(report.cases) == 4
+    assert len(report.results) == 4
+    rows = {(row.opponent, row.players): row for row in report.aggregates}
+    assert rows[("simple", 2)].hands == 200
+    assert rows[("simple", 2)].seeds == (1, 2)
+    assert rows[("simple", 2)].net_chips == 30
+    assert rows[("simple", 6)].wins == 3
+    assert rows[("simple", 6)].losses == 12
+
+
+def test_run_benchmark_compares_candidate_to_baseline():
+    report = benchmark.run_benchmark(
+        "candidate",
+        opponents=("simple",),
+        players=(2,),
+        seeds=(1, 2),
+        hands=100,
+        baseline_strat="baseline",
+        min_delta_bb100=0.0,
+        runner=fake_runner,
+    )
+
+    assert report.passed is True
+    assert report.baseline_strat == "baseline"
+    assert len(report.baseline_results) == 2
+    assert len(report.comparisons) == 1
+    assert report.comparisons[0].delta_bb_per_100 > 0
+
+
+def test_run_benchmark_fails_when_candidate_lags_baseline():
+    report = benchmark.run_benchmark(
+        "weak_candidate",
+        opponents=("simple",),
+        players=(2,),
+        seeds=(1,),
+        hands=100,
+        baseline_strat="baseline",
+        min_delta_bb100=0.0,
+        runner=fake_runner,
+    )
+
+    assert report.passed is False
+    assert report.comparisons[0].passed is False
+
+
+def test_build_cases_accepts_mixed_lineup_expression():
+    cases = benchmark.build_cases(
+        "candidate",
+        opponents=("simple+adaptive+royal_adaptive+threshold_pressure+anti_threshold",),
+        players=(6,),
+        seeds=(1,),
+        hands=100,
+    )
+
+    assert cases[0].opponent == (
+        "simple+adaptive+royal_adaptive+threshold_pressure+anti_threshold"
+    )
+
+
+def test_format_report_includes_gate_status():
+    report = benchmark.run_benchmark(
+        "candidate",
+        opponents=("simple",),
+        players=(2,),
+        seeds=(1,),
+        hands=100,
+        fail_under_bb100=0.0,
+        runner=fake_runner,
+    )
+
+    text = benchmark.format_report(report)
+
+    assert "benchmark   : candidate" in text
+    assert "simple" in text
+    assert "gate        : PASS bb/100 >= 0.0" in text
+
+
+def test_format_report_includes_baseline_comparison():
+    report = benchmark.run_benchmark(
+        "candidate",
+        opponents=("simple",),
+        players=(2,),
+        seeds=(1,),
+        hands=100,
+        baseline_strat="baseline",
+        min_delta_bb100=0.0,
+        runner=fake_runner,
+    )
+
+    text = benchmark.format_report(report)
+
+    assert "baseline    : baseline" in text
+    assert "delta vs baseline >= 0.0" in text
+
+
+def test_write_json_report(tmp_path):
+    report = benchmark.run_benchmark(
+        "candidate",
+        opponents=("simple",),
+        players=(2,),
+        seeds=(1,),
+        hands=100,
+        fail_under_bb100=0.0,
+        runner=fake_runner,
+    )
+    output_path = tmp_path / "report.json"
+
+    benchmark.write_json_report(report, output_path)
+
+    payload = json.loads(output_path.read_text())
+    assert payload["strat"] == "candidate"
+    assert payload["passed"] is True
+    assert payload["aggregates"][0]["opponent"] == "simple"
+
+
+def test_write_json_report_includes_baseline_comparison(tmp_path):
+    report = benchmark.run_benchmark(
+        "candidate",
+        opponents=("simple",),
+        players=(2,),
+        seeds=(1,),
+        hands=100,
+        baseline_strat="baseline",
+        min_delta_bb100=0.0,
+        runner=fake_runner,
+    )
+    output_path = tmp_path / "report.json"
+
+    benchmark.write_json_report(report, output_path)
+
+    payload = json.loads(output_path.read_text())
+    assert payload["baseline_strat"] == "baseline"
+    assert payload["comparisons"][0]["passed"] is True
