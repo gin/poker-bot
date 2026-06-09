@@ -1,5 +1,11 @@
 from eval.selfplay import run_selfplay
-from poker_bot.strategies.adaptive import choose_action
+from poker_bot.strategies.adaptive import (
+    RANK_VALUES,
+    choose_action,
+    has_top_pair_good_kicker,
+    top_pair_defense_price_cap,
+    top_pair_kicker_value,
+)
 
 
 def make_table(street="Flop", board=None, actions=None, **allowed_overrides):
@@ -62,6 +68,23 @@ def test_adaptive_bets_top_pair_for_value():
     assert action == "bet"
     assert amount >= 50
     assert "Thin value" in message
+
+
+def test_adaptive_identifies_top_pair_good_kicker():
+    hole_cards = ["AS", "KC"]
+    board_cards = ["TD", "9D", "2H", "KS"]
+
+    assert top_pair_kicker_value(hole_cards, board_cards) == RANK_VALUES["A"]
+    assert has_top_pair_good_kicker(hole_cards, board_cards)
+    assert (
+        top_pair_defense_price_cap(
+            hole_cards,
+            board_cards,
+            street="Turn",
+            active_opponents=5,
+        )
+        > 34 / (84 + 34)
+    )
 
 
 def test_adaptive_folds_marginal_hand_to_bad_price():

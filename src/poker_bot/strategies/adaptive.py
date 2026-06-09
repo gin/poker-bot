@@ -68,6 +68,64 @@ def has_top_pair_or_better(hole_cards, board_cards):
     )
 
 
+def top_pair_kicker_value(hole_cards, board_cards):
+    if len(hole_cards) != 2 or not board_cards:
+        return None
+
+    board_values = card_values(board_cards)
+    board_high = max(board_values)
+    hole_values = card_values(hole_cards)
+    if board_values.count(board_high) != 1 or hole_values.count(board_high) != 1:
+        return None
+    if board_high not in hole_values:
+        return None
+    return max(value for value in hole_values if value != board_high)
+
+
+def has_top_pair_good_kicker(hole_cards, board_cards):
+    kicker = top_pair_kicker_value(hole_cards, board_cards)
+    return kicker is not None and kicker >= RANK_VALUES["Q"]
+
+
+def top_pair_defense_price_cap(
+    hole_cards,
+    board_cards,
+    *,
+    street="Flop",
+    active_opponents=1,
+):
+    kicker = top_pair_kicker_value(hole_cards, board_cards)
+    if kicker is None:
+        return 0.24
+
+    cap = 0.30
+    if kicker == RANK_VALUES["A"]:
+        cap += 0.06
+    elif kicker >= RANK_VALUES["Q"]:
+        cap += 0.03
+
+    if street == "Flop":
+        cap += 0.01
+    elif street == "Turn":
+        cap += 0.02
+    elif street == "River":
+        cap -= 0.02
+
+    active_opponents = max(1, int(active_opponents or 1))
+    if active_opponents <= 2:
+        cap += 0.02
+    elif active_opponents >= 4:
+        cap -= 0.02
+
+    texture = board_texture(board_cards)
+    if texture.get("wet", False):
+        cap -= 0.03
+    if texture.get("paired", False):
+        cap -= 0.04
+
+    return max(0.24, min(cap, 0.40))
+
+
 def has_overcard_pressure(hole_cards, board_cards):
     if not board_cards:
         return False
