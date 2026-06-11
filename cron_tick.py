@@ -96,7 +96,6 @@ def main():
             if action is None:
                 continue
             body = {
-                "competitionId": competition_id,
                 "tableId": table_id,
                 "action": action,
                 "message": message,

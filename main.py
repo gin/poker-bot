@@ -43,7 +43,7 @@ CRED_FILE = os.environ.get(
 STRATEGY_CONFIG_FILE = os.path.expanduser("~/.arena-poker-strategy")
 STRATEGY_ENV_VAR = "POKER_BOT_STRATEGY"
 DEFAULT_AGENT_ID = "cmpzvsdsavulpc7zaxq9t2j6c"
-DEFAULT_STRATEGY_NAME = "auto_research_v003"
+DEFAULT_STRATEGY_NAME = "auto_research_v007"
 PUBLIC_MESSAGE_ALPHABET = string.ascii_letters + string.digits
 POLL_INTERVAL_SECONDS = 2
 ERROR_POLL_INTERVAL_SECONDS = 5
@@ -212,7 +212,8 @@ def should_attempt_join(pending, state=None, now=None):
 
     participant = pending.get("participant") or {}
     runner = pending.get("runner") or {}
-    if participant.get("chipState") != "available":
+    chip_state = participant.get("chipState")
+    if chip_state is not None and chip_state != "available":
         return False
     if int(runner.get("activeTableCount") or 0) != 0:
         return False
