@@ -16,6 +16,7 @@ BASE_URL = "https://arena.dev.fun/api/arena"
 CRED_FILE = os.path.expanduser("~/.arena-credentials")
 STATE_FILE = os.path.expanduser("~/.arena-poker-state")
 
+
 def load_credentials(path=CRED_FILE):
     with open(path) as f:
         raw = f.read().strip()
@@ -33,10 +34,19 @@ def load_credentials(path=CRED_FILE):
             data[k.strip()] = v.strip()
     return data.get("apiKey"), data.get("competitionId"), data.get("agentId")
 
+
 def api(method, path, data=None, api_key=None):
-    cmd = ["curl", "-s", "-X", method, f"{BASE_URL}{path}",
-           "-H", f"x-arena-api-key: {api_key}",
-           "-H", "Content-Type: application/json"]
+    cmd = [
+        "curl",
+        "-s",
+        "-X",
+        method,
+        f"{BASE_URL}{path}",
+        "-H",
+        f"x-arena-api-key: {api_key}",
+        "-H",
+        "Content-Type: application/json",
+    ]
     if data:
         cmd += ["-d", json.dumps(data)]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -45,6 +55,7 @@ def api(method, path, data=None, api_key=None):
     except json.JSONDecodeError:
         return {"error": r.stdout}
 
+
 def load_state(path=STATE_FILE):
     try:
         with open(path) as f:
@@ -52,9 +63,11 @@ def load_state(path=STATE_FILE):
     except (OSError, json.JSONDecodeError):
         return {}
 
+
 def save_state(state, path=STATE_FILE):
     with open(path, "w") as f:
         json.dump(state, f, indent=2)
+
 
 def main():
     api_key, competition_id, agent_id = load_credentials()
@@ -71,15 +84,18 @@ def main():
             hb_dt = datetime.fromisoformat(hb)
             age = datetime.now(timezone.utc) - hb_dt
             if age.total_seconds() < 120:
-                print(f"Main loop heartbeat {age.total_seconds():.0f}s ago — active, skipping tick",
-                      flush=True)
+                print(
+                    f"Main loop heartbeat {age.total_seconds():.0f}s ago — active, skipping tick",
+                    flush=True,
+                )
                 return
         except (ValueError, TypeError):
             pass  # malformed timestamp — proceed as fallback
 
     # 1. Check pending actions
-    pending = api("GET", f"/texas/pending-actions?competitionId={competition_id}",
-                  api_key=api_key)
+    pending = api(
+        "GET", f"/texas/pending-actions?competitionId={competition_id}", api_key=api_key
+    )
     tables = pending.get("tables", [])
 
     if tables:
@@ -104,19 +120,26 @@ def main():
                 body["amount"] = amount
             resp = api("POST", "/texas/action", body, api_key=api_key)
             if "error" in resp:
-                print(f"Table {table_id}: {action} rejected: {resp.get('error')}", flush=True)
+                print(
+                    f"Table {table_id}: {action} rejected: {resp.get('error')}",
+                    flush=True,
+                )
                 if action != "fold":
                     body["action"] = "fold"
                     body["message"] = "Fallback fold"
                     body.pop("amount", None)
                     api("POST", "/texas/action", body, api_key=api_key)
             else:
-                print(f"Table {table_id}: {action} accepted (pot={resp.get('potChips', '?')})", flush=True)
+                print(
+                    f"Table {table_id}: {action} accepted (pot={resp.get('potChips', '?')})",
+                    flush=True,
+                )
                 state["last_table_id"] = table_id
     else:
         print("No pending actions, checking join status...", flush=True)
-        join_resp = api("POST", "/texas/join",
-                        {"competitionId": competition_id}, api_key=api_key)
+        join_resp = api(
+            "POST", "/texas/join", {"competitionId": competition_id}, api_key=api_key
+        )
         kind = join_resp.get("kind", "")
         if kind == "queued":
             pos = join_resp.get("lobby", {}).get("position", "?")
@@ -132,6 +155,7 @@ def main():
 
     save_state(state)
     print("Tick done", flush=True)
+
 
 if __name__ == "__main__":
     main()

@@ -385,10 +385,14 @@ class PokerBotTests(unittest.TestCase):
                     "test live raise",
                 )
 
-                row = connect(db_path).execute(
-                    "select * from decision_telemetry where run_id = ?",
-                    (run_id,),
-                ).fetchone()
+                row = (
+                    connect(db_path)
+                    .execute(
+                        "select * from decision_telemetry where run_id = ?",
+                        (run_id,),
+                    )
+                    .fetchone()
+                )
                 self.assertIsNotNone(row)
                 self.assertEqual(row["hand_id"], "table-1")
                 self.assertEqual(row["chosen_action"], "raise")
