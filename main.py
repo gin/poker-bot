@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DevFun Arena Poker loop: Playground"""
+"""DevFun Arena Poker loop"""
 
 import json
 import os
@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
+from dataclasses import dataclass
 from pathlib import Path
 
 SRC_DIR = Path(__file__).resolve().parent / "src"
@@ -43,7 +44,7 @@ CRED_FILE = os.environ.get(
 STRATEGY_CONFIG_FILE = os.path.expanduser("~/.arena-poker-strategy")
 STRATEGY_ENV_VAR = "POKER_BOT_STRATEGY"
 DEFAULT_AGENT_ID = "cmpzvsdsavulpc7zaxq9t2j6c"
-DEFAULT_STRATEGY_NAME = "auto_research_v007"
+DEFAULT_STRATEGY_NAME = "auto_research_v008"
 PUBLIC_MESSAGE_ALPHABET = string.ascii_letters + string.digits
 POLL_INTERVAL_SECONDS = 2
 ERROR_POLL_INTERVAL_SECONDS = 5
@@ -691,7 +692,24 @@ def record_live_observed_actions(telemetry_conn, state, table, hero_agent_id):
     return recorded
 
 
-def main():
+@dataclass
+class BotContext:
+    """Holds initialized bot components for the main loop."""
+
+    api_key: str
+    competition_id: str
+    agent_id: str
+    strategy_name: str
+    choose_action: callable
+    api_fn: callable
+    state: dict
+    telemetry_conn: any
+    telemetry_run_id: str
+    stats_fetcher: any
+
+
+def initialize_bot() -> BotContext:
+    """Initialize bot credentials, strategy, state, and telemetry."""
     try:
         api_key, competition_id, agent_id = load_credentials()
     except Exception as exc:
@@ -705,8 +723,6 @@ def main():
         sys.exit(1)
 
     api_fn = make_api_client(api_key)
-    print("🃏 Poker playing loop starting...", flush=True)
-    print(f"  Strategy: {strategy_name}", flush=True)
     state = load_state()
     telemetry_conn, telemetry_run_id = init_live_telemetry(
         state,
@@ -720,17 +736,182 @@ def main():
     )
     save_state(state)
 
+    return BotContext(
+        api_key=api_key,
+        competition_id=competition_id,
+        agent_id=agent_id,
+        strategy_name=strategy_name,
+        choose_action=choose_action,
+        api_fn=api_fn,
+        state=state,
+        telemetry_conn=telemetry_conn,
+        telemetry_run_id=telemetry_run_id,
+        stats_fetcher=stats_fetcher,
+    )
+
+
+def handle_idle_state(ctx: BotContext, pending: dict, consecutive_empty: int) -> int:
+    """Handle idle state: log, attempt to join queue, and update state."""
+    consecutive_empty += 1
+    idle_description = describe_idle_state(pending)
+
+    if consecutive_empty % 30 == 0:
+        print(
+            f"  ...idle: {idle_description} ({consecutive_empty} polls)",
+            flush=True,
+        )
+
+    now = time.time()
+    if should_attempt_join(pending, ctx.state, now=now):
+        join_resp = ctx.api_fn(
+            "POST", "/texas/join", {"competitionId": ctx.competition_id}
+        )
+        record_join_attempt(ctx.state, join_resp, now=now)
+        kind = join_resp.get("kind", "")
+        if kind == "queued":
+            pos = join_resp.get("lobby", {}).get("position", "?")
+            total = join_resp.get("lobby", {}).get("total", "?")
+            print(f"  Joined queue at position {pos}/{total}", flush=True)
+        elif kind == "waiting_for_settlement":
+            print("  Waiting for table settlement", flush=True)
+        elif "error" in join_resp:
+            print(
+                "  Join skipped/rejected: "
+                f"{join_resp.get('error')} - "
+                f"{join_resp.get('message', '')}",
+                flush=True,
+            )
+    elif ctx.state.get("last_reported_idle_state") != idle_description:
+        print(f"  Idle: {idle_description}", flush=True)
+        ctx.state["last_reported_idle_state"] = idle_description
+
+    save_state(ctx.state)
+    time.sleep(POLL_INTERVAL_SECONDS)
+
+    return consecutive_empty
+
+
+def process_single_table(table: dict, ctx: BotContext) -> None:
+    """Process a single table: stats, skip checks, strategy execution, and fallbacks."""
+    normalize_live_table_metadata(table)
+    table_id = table.get("tableId", "?")
+    street = table.get("street", "?")
+    pot = table.get("potChips", 0)
+
+    print(f"\n📍 Table {table_id} | {street} | Pot: {pot}", flush=True)
+
+    queued_stats = schedule_table_opponent_stats(ctx.stats_fetcher, table, ctx.agent_id)
+    if queued_stats:
+        print(f"  Queued Arena stats for {queued_stats} opponent(s)", flush=True)
+
+    recorded_opponents = record_live_opponents_seen(
+        ctx.telemetry_conn, ctx.state, table, ctx.agent_id
+    )
+    recorded_actions = record_live_observed_actions(
+        ctx.telemetry_conn, ctx.state, table, ctx.agent_id
+    )
+    if recorded_opponents or recorded_actions:
+        save_state(ctx.state)
+
+    skip_reason = table_action_skip_reason(table, ctx.agent_id)
+    if skip_reason:
+        print(f"  Skipping table: {skip_reason}", flush=True)
+        return
+
+    enrich_table_with_opponent_profiles(ctx.telemetry_conn, table, ctx.agent_id)
+    my_seat = find_agent_seat(table, ctx.agent_id)
+    result = ctx.choose_action(table, my_seat)
+
+    if result[0] is None:
+        print("  No valid action found, skipping", flush=True)
+        return
+
+    action, amount, message = result
+    print(
+        f"  → {action}" + (f" {amount}" if amount else "") + f" | {message}",
+        flush=True,
+    )
+
+    body = action_request_body(ctx.competition_id, table_id, action, amount)
+    resp = ctx.api_fn("POST", "/texas/action", body)
+
+    if "error" in resp:
+        error = resp.get("error")
+        error_message = resp.get("message", "")
+        print(
+            f"  ✗ Action rejected: {error} - {error_message}",
+            flush=True,
+        )
+        if is_not_turn_rejection(resp):
+            ctx.state["last_not_turn_rejection_at"] = datetime.now(UTC).isoformat()
+            ctx.state["last_not_turn_rejection_table_id"] = table_id
+            save_state(ctx.state)
+            return
+
+        if action != "fold":
+            if action == "call" and "nothing to call" in str(error or "").lower():
+                fallback_message = "Fallback check (nothing to call)"
+                body["action"] = "check"
+                body["message"] = public_action_message()
+                body.pop("amount", None)
+            else:
+                fallback_message = "Fallback fold after rejection"
+                body["action"] = "fold"
+                body["message"] = public_action_message()
+                body.pop("amount", None)
+
+            resp = ctx.api_fn("POST", "/texas/action", body)
+            if "error" not in resp:
+                print(f"  → Fallback: {body['action']} accepted", flush=True)
+                record_live_decision(
+                    ctx.telemetry_conn,
+                    ctx.telemetry_run_id,
+                    ctx.state,
+                    table,
+                    my_seat,
+                    body["action"],
+                    None,
+                    fallback_message,
+                    ctx.strategy_name,
+                )
+                save_state(ctx.state)
+    else:
+        print("  ✓ Action accepted", flush=True)
+        record_live_decision(
+            ctx.telemetry_conn,
+            ctx.telemetry_run_id,
+            ctx.state,
+            table,
+            my_seat,
+            action,
+            amount,
+            message,
+            ctx.strategy_name,
+        )
+        new_street = resp.get("street", "?")
+        new_pot = resp.get("potChips", 0)
+        print(f"    Street: {new_street} | Pot: {new_pot}", flush=True)
+
+        ctx.state["last_table_id"] = table_id
+        save_state(ctx.state)
+
+
+def main():
+    ctx = initialize_bot()
+    print("🃏 Poker playing loop starting...", flush=True)
+    print(f"  Strategy: {ctx.strategy_name}", flush=True)
+
     consecutive_empty = 0
 
     while True:
         try:
             # Heartbeat: mark main loop as alive for cron tick fallback
-            state["last_heartbeat_at"] = datetime.now(UTC).isoformat()
-            save_state(state)
+            ctx.state["last_heartbeat_at"] = datetime.now(UTC).isoformat()
+            save_state(ctx.state)
 
             # Poll for pending actions
-            pending = api_fn(
-                "GET", f"/texas/pending-actions?competitionId={competition_id}"
+            pending = ctx.api_fn(
+                "GET", f"/texas/pending-actions?competitionId={ctx.competition_id}"
             )
 
             if "error" in pending and "tables" not in pending:
@@ -738,160 +919,28 @@ def main():
                 time.sleep(ERROR_POLL_INTERVAL_SECONDS)
                 continue
 
-            update_queue_state(state, pending)
+            update_queue_state(ctx.state, pending)
             tables = pending.get("tables", [])
 
             if not tables:
-                consecutive_empty += 1
-                idle_description = describe_idle_state(pending)
-                if consecutive_empty % 30 == 0:
-                    print(
-                        f"  ...idle: {idle_description} ({consecutive_empty} polls)",
-                        flush=True,
-                    )
-
-                now = time.time()
-                if should_attempt_join(pending, state, now=now):
-                    join_resp = api_fn(
-                        "POST", "/texas/join", {"competitionId": competition_id}
-                    )
-                    record_join_attempt(state, join_resp, now=now)
-                    kind = join_resp.get("kind", "")
-                    if kind == "queued":
-                        pos = join_resp.get("lobby", {}).get("position", "?")
-                        total = join_resp.get("lobby", {}).get("total", "?")
-                        print(f"  Joined queue at position {pos}/{total}", flush=True)
-                    elif kind == "waiting_for_settlement":
-                        print("  Waiting for table settlement", flush=True)
-                    elif "error" in join_resp:
-                        print(
-                            "  Join skipped/rejected: "
-                            f"{join_resp.get('error')} - "
-                            f"{join_resp.get('message', '')}",
-                            flush=True,
-                        )
-                elif state.get("last_reported_idle_state") != idle_description:
-                    print(f"  Idle: {idle_description}", flush=True)
-                    state["last_reported_idle_state"] = idle_description
-
-                save_state(state)
-                time.sleep(POLL_INTERVAL_SECONDS)
+                consecutive_empty = handle_idle_state(ctx, pending, consecutive_empty)
                 continue
 
             # Sort by earliest action deadline
             consecutive_empty = 0
-            state["last_reported_idle_state"] = None
+            ctx.state["last_reported_idle_state"] = None
             tables.sort(key=lambda t: t.get("actionDeadlineAt", float("inf")))
 
             for table in tables:
-                normalize_live_table_metadata(table)
-                table_id = table.get("tableId", "?")
-                street = table.get("street", "?")
-                pot = table.get("potChips", 0)
+                process_single_table(table, ctx)
 
-                print(f"\n📍 Table {table_id} | {street} | Pot: {pot}", flush=True)
-                queued_stats = schedule_table_opponent_stats(
-                    stats_fetcher, table, agent_id
-                )
-                if queued_stats:
-                    print(
-                        f"  Queued Arena stats for {queued_stats} opponent(s)",
-                        flush=True,
-                    )
-                recorded_opponents = record_live_opponents_seen(
-                    telemetry_conn, state, table, agent_id
-                )
-                recorded_actions = record_live_observed_actions(
-                    telemetry_conn, state, table, agent_id
-                )
-                if recorded_opponents or recorded_actions:
-                    save_state(state)
-
-                skip_reason = table_action_skip_reason(table, agent_id)
-                if skip_reason:
-                    print(f"  Skipping table: {skip_reason}", flush=True)
-                    continue
-
-                enrich_table_with_opponent_profiles(telemetry_conn, table, agent_id)
-                my_seat = find_agent_seat(table, agent_id)
-                result = choose_action(table, my_seat)
-                if result[0] is None:
-                    print("  No valid action found, skipping", flush=True)
-                    continue
-
-                action, amount, message = result
-                print(
-                    f"  → {action}"
-                    + (f" {amount}" if amount else "")
-                    + f" | {message}",
-                    flush=True,
-                )
-
-                body = action_request_body(competition_id, table_id, action, amount)
-
-                resp = api_fn("POST", "/texas/action", body)
-
-                if "error" in resp:
-                    error = resp.get("error")
-                    error_message = resp.get("message", "")
-                    print(
-                        f"  ✗ Action rejected: {error} - {error_message}",
-                        flush=True,
-                    )
-                    if is_not_turn_rejection(resp):
-                        state["last_not_turn_rejection_at"] = datetime.now(
-                            UTC
-                        ).isoformat()
-                        state["last_not_turn_rejection_table_id"] = table_id
-                        save_state(state)
-                        continue
-                    if action != "fold":
-                        fallback_message = "Fallback fold after rejection"
-                        body["action"] = "fold"
-                        body["message"] = public_action_message()
-                        body.pop("amount", None)
-                        resp = api_fn("POST", "/texas/action", body)
-                        if "error" not in resp:
-                            print("  → Fallback: fold accepted", flush=True)
-                            record_live_decision(
-                                telemetry_conn,
-                                telemetry_run_id,
-                                state,
-                                table,
-                                my_seat,
-                                "fold",
-                                None,
-                                fallback_message,
-                                strategy_name,
-                            )
-                            save_state(state)
-                else:
-                    print("  ✓ Action accepted", flush=True)
-                    record_live_decision(
-                        telemetry_conn,
-                        telemetry_run_id,
-                        state,
-                        table,
-                        my_seat,
-                        action,
-                        amount,
-                        message,
-                        strategy_name,
-                    )
-                    new_street = resp.get("street", "?")
-                    new_pot = resp.get("potChips", 0)
-                    print(f"    Street: {new_street} | Pot: {new_pot}", flush=True)
-
-                    state["last_table_id"] = table_id
-                    save_state(state)
-
-            save_state(state)
+            save_state(ctx.state)
             time.sleep(POLL_INTERVAL_SECONDS)
 
         except KeyboardInterrupt:
             print("\n🛑 Poker loop stopped", flush=True)
-            if stats_fetcher is not None:
-                stats_fetcher.close()
+            if ctx.stats_fetcher is not None:
+                ctx.stats_fetcher.close()
             break
         except Exception as e:
             print(f"Exception: {e}", flush=True)
