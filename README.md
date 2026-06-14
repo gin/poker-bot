@@ -1,5 +1,50 @@
 # poker-bot
 
+### Setup for running with dev.fun's poker-arena-starter-kit
+I created an adaptor for this poker-bot to work with the [dev.fun's poker-arena-starter-kit](https://github.com/devfun-org/poker-arena-starter-kit) so that others who are already familiar with their CLI and tooling can easily use this bot's strategies as well.
+
+1. Clone the dev.fun's poker-arena-starter-kit and this repository to the same directory
+    ```sh
+    mkdir poker
+    cd poker
+    git clone https://github.com/devfun-org/poker-arena-starter-kit
+    git clone https://github.com/gin/poker-bot.git
+    ```
+
+2. Copy and paste the adaptor file from the root of this repo to the root of the starter-kit repo
+    ```sh
+    cp poker-bot/poker-arena-starter-kit-adaptor/poker_bot_strategy_adaptor.py poker-arena-starter-kit/examples/
+    ```
+
+3. Add my repository as a dependency in `poker-arena-starter-kit/pyproject.toml`  
+For reference, look at [./poker-arena-starter-kit-adaptor/pyproject.toml](./poker-arena-starter-kit-adaptor/pyproject.toml) 
+    - At the bottom, add these lines
+        ```toml
+          [tool.uv.sources]
+          poker-bot = { path = "../../poker/poker-bot", editable = true }
+        ```
+    - In `dependencies` add `"poker-bot"` like this
+        ```toml
+        dependencies = [
+          "httpx>=0.27",
+          "python-dotenv>=1.0",
+          "treys>=0.1.8",
+          "pokerkit>=0.5",
+          "poker-bot",
+        ]
+        ```
+
+4. To run one of this bot's strategies, in the `poker-arena-starter-kit` directory, prepend `POKER_BOT_STRATEGY=<strategy_name>` with the adaptor file as the agent when running `poker-arena-starter-kit`'s `./pokerkit` command like this:
+    ```sh
+    cd poker-arena-starter-kit
+    POKER_BOT_STRATEGY=royal_adaptive ./pokerkit run --agent poker_bot_strategy_adaptor.py --hands 1000 --players 6
+    ```
+    The strategies are at: [src/poker_bot/strategies/](src/poker_bot/strategies/)  
+    The filename is the strategy name.
+
+
+
+----
 ### Setup
 1. Create account from https://dev.fun  
   ```sh
