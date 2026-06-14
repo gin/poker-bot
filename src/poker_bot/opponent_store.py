@@ -184,8 +184,7 @@ def init_db(conn):
 
 def _ensure_columns(conn, table, columns):
     existing = {
-        row["name"]
-        for row in conn.execute(f"pragma table_info({table})").fetchall()
+        row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()
     }
     for name, definition in columns.items():
         if name not in existing:
@@ -487,6 +486,32 @@ def _button_seat_number(table):
         seat_number = _safe_int(value)
         if seat_number is not None:
             return seat_number
+
+    # Arena fallback — no explicit dealer field. Derive the button from blind
+    # posters: the seat whose currentBetChips matches smallBlindChips is the SB,
+    # and the button is the seat immediately before the SB in circular order.
+    # This works reliably at preflop where the blinds are live in currentBetChips.
+    sb_chips = _safe_int(table.get("smallBlindChips"))
+    bb_chips = _safe_int(table.get("bigBlindChips"))
+    if sb_chips is not None and bb_chips is not None and sb_chips > 0 and bb_chips > 0:
+        seats = table.get("seats", [])
+        for s in seats:
+            bet = _safe_int(s.get("currentBetChips"))
+            sb_seat = _safe_int(s.get("seatNumber"))
+            if (
+                bet is not None
+                and sb_seat is not None
+                and bet == sb_chips
+                and bet < bb_chips
+            ):
+                active_seats = sorted(
+                    sn
+                    for seat in seats
+                    if (sn := _safe_int(seat.get("seatNumber"))) is not None
+                )
+                if sb_seat in active_seats and len(active_seats) >= 2:
+                    idx = active_seats.index(sb_seat)
+                    return active_seats[(idx - 1) % len(active_seats)]
     return None
 
 

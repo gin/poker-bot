@@ -28,6 +28,7 @@ from poker_bot.opponent_store import (  # noqa: E402
     load_profiles_for_agents,
     record_decision_telemetry,
     record_observed_action,
+    update_hand_telemetry_outcome,
 )
 from poker_bot.strategies.loader import load_strategy  # noqa: E402
 from poker_bot.table import find_agent_seat, is_our_turn  # noqa: E402
@@ -44,7 +45,23 @@ CRED_FILE = os.environ.get(
 STRATEGY_CONFIG_FILE = os.path.expanduser("~/.arena-poker-strategy")
 STRATEGY_ENV_VAR = "POKER_BOT_STRATEGY"
 DEFAULT_AGENT_ID = "cmpzvsdsavulpc7zaxq9t2j6c"
-DEFAULT_STRATEGY_NAME = "auto_research_v008"
+DEFAULT_STRATEGY_NAME = "flattened_v2"
+
+# Raw arena table payload dump (diagnostic). When enabled, the unmodified table
+# dict received from the arena is written to ./raw-data/ before any local
+# normalization mutates it. Used to discover the real field names the arena uses
+# (e.g. the dealer-button key, which the telemetry recorder currently fails to
+# resolve, leaving button_seat_number / hero_position NULL in live data).
+# Enabled by default; set POKER_BOT_RAW_DUMP=0 to disable. Capped per run so it
+# cannot fill the disk.
+RAW_DUMP_DIR = Path(
+    os.environ.get(
+        "POKER_BOT_RAW_DUMP_DIR",
+        str(Path(__file__).resolve().parent / "raw-data"),
+    )
+)
+RAW_DUMP_MAX_FILES = int(os.environ.get("POKER_BOT_RAW_DUMP_MAX", "200"))
+
 PUBLIC_MESSAGE_ALPHABET = string.ascii_letters + string.digits
 POLL_INTERVAL_SECONDS = 2
 ERROR_POLL_INTERVAL_SECONDS = 5
@@ -393,6 +410,41 @@ def normalize_live_table_metadata(table):
             if value is not None:
                 table["buttonSeatNumber"] = value
                 break
+
+    # Arena fallback — no explicit dealer field. Derive the button from blind
+    # posters (same logic as opponent_store._button_seat_number). The seat whose
+    # currentBetChips matches smallBlindChips is the SB; the button is the seat
+    # before the SB in circular seat order. Reliable at preflop where blinds
+    # are live; always best-effort.
+    if table.get("buttonSeatNumber") is None:
+        sb_chips = _safe_int(table.get("smallBlindChips"))
+        bb_chips = _safe_int(table.get("bigBlindChips"))
+        if (
+            sb_chips is not None
+            and bb_chips is not None
+            and sb_chips > 0
+            and bb_chips > 0
+        ):
+            seats = table.get("seats", [])
+            for s in seats:
+                bet = _safe_int(s.get("currentBetChips"))
+                sb_seat = _safe_int(s.get("seatNumber"))
+                if (
+                    bet is not None
+                    and sb_seat is not None
+                    and bet == sb_chips
+                    and bet < bb_chips
+                ):
+                    active = sorted(
+                        sn
+                        for seat in seats
+                        if (sn := _safe_int(seat.get("seatNumber"))) is not None
+                    )
+                    if sb_seat in active and len(active) >= 2:
+                        idx = active.index(sb_seat)
+                        table["buttonSeatNumber"] = active[(idx - 1) % len(active)]
+                    break
+
     return table
 
 
@@ -791,14 +843,105 @@ def handle_idle_state(ctx: BotContext, pending: dict, consecutive_empty: int) ->
     return consecutive_empty
 
 
+def dump_raw_table(table: dict) -> None:
+    """Persist the unmodified arena table payload for field-name discovery.
+
+    Writes one JSON file per call to RAW_DUMP_DIR, capturing the table dict
+    exactly as the arena returned it — before normalize_live_table_metadata
+    renames any aliases. This lets us find the real dealer-button field (and any
+    other arena keys the recorder misses) without guessing. Best-effort: any
+    failure is swallowed so it can never disrupt live play. Capped at
+    RAW_DUMP_MAX_FILES files per directory.
+    """
+    if os.environ.get("POKER_BOT_RAW_DUMP", "1").lower() in {"0", "false", "no"}:
+        return
+    try:
+        RAW_DUMP_DIR.mkdir(parents=True, exist_ok=True)
+        existing = sorted(RAW_DUMP_DIR.glob("table-*.json"))
+        if len(existing) >= RAW_DUMP_MAX_FILES:
+            return
+        table_id = str(table.get("tableId") or table.get("id") or "unknown")
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in table_id)
+        street = str(table.get("street") or "unknown")
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S_%f")
+        path = RAW_DUMP_DIR / f"table-{timestamp}-{safe_id}-{street}.json"
+        payload = {
+            "captured_at": datetime.now(UTC).isoformat(),
+            "top_level_keys": sorted(table.keys()),
+            "seat_keys": sorted(
+                {k for seat in table.get("seats", []) for k in seat.keys()}
+            ),
+            "table": table,
+        }
+        path.write_text(json.dumps(payload, indent=2, default=str))
+    except Exception as exc:  # never let diagnostics break the bot
+        print(f"  Raw table dump failed: {exc}", flush=True)
+
+
+def backfill_hand_outcome(telemetry_conn, run_id, table, hero_agent_id):
+    """If the table is a completed hand with winners, backfill outcome columns.
+
+    Called from process_single_table on every table poll. Best-effort: any
+    failure is logged but never disrupts live play. Does nothing if the table
+    has no winners (hand still in progress) or the outcome was already recorded
+    (dedup by run_id + hand_id).
+    """
+    try:
+        winners = table.get("winners")
+        if not winners:
+            return  # hand still in progress, nothing to backfill
+
+        hand_id = str(table.get("tableId") or table.get("id") or "?")
+        seats = table.get("seats", [])
+
+        # Find hero's seat to extract per-hand net
+        hero_seat = next((s for s in seats if s.get("agentId") == hero_agent_id), None)
+        if hero_seat is None:
+            return
+
+        hero_payout = _safe_int(hero_seat.get("payoutChips")) or 0
+        hero_committed = _safe_int(hero_seat.get("totalCommittedChips")) or 0
+        hero_net_chips = hero_payout - hero_committed
+
+        # Did hero win? Check if hero's seatNumber appears in the winners list
+        hero_seat_num = hero_seat.get("seatNumber")
+        won_hand = any(
+            w.get("seatNumber") == hero_seat_num or w.get("agentId") == hero_agent_id
+            for w in winners
+        )
+
+        # Final pot = sum of all payouts (what the pot awarded)
+        final_pot = sum(_safe_int(s.get("payoutChips")) or 0 for s in seats)
+
+        update_hand_telemetry_outcome(
+            telemetry_conn,
+            run_id=run_id,
+            hand_id=hand_id,
+            hero_net_chips=hero_net_chips,
+            won_hand=won_hand,
+            final_pot=final_pot,
+        )
+    except Exception as exc:
+        print(f"  Hand outcome backfill failed: {exc}", flush=True)
+
+
 def process_single_table(table: dict, ctx: BotContext) -> None:
     """Process a single table: stats, skip checks, strategy execution, and fallbacks."""
+    dump_raw_table(table)  # capture BEFORE normalization mutates the dict
     normalize_live_table_metadata(table)
     table_id = table.get("tableId", "?")
     street = table.get("street", "?")
     pot = table.get("potChips", 0)
 
     print(f"\n📍 Table {table_id} | {street} | Pot: {pot}", flush=True)
+
+    # Hand-outcome backfill: when the arena returns a completed table
+    # (Showdown/Completed with winners), update all telemetry decision rows
+    # for this hand with the final result.
+    if ctx.telemetry_conn is not None:
+        backfill_hand_outcome(
+            ctx.telemetry_conn, ctx.telemetry_run_id, table, ctx.agent_id
+        )
 
     queued_stats = schedule_table_opponent_stats(ctx.stats_fetcher, table, ctx.agent_id)
     if queued_stats:
