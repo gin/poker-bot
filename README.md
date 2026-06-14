@@ -79,9 +79,6 @@ uv run simulator.py
 
 # Human play against a bot using strategy in src/poker_bot/strategies/all_in_everytime.py
 uv run simulator --strat all_in_everytime
-
-# Eval bot using strat against baseline strat
-uv run selfplay --strat all_in_everytime --seed 1
 ```
 
 ### Benchmark
@@ -205,4 +202,46 @@ $ uv run selfplay --strat anti_threshold --hands 50000 --seed 1
   net chips   : +1072698
   bb/100      : +42.9
   elapsed     : 1.1s  (45679 hands/s)
+```
+
+Or use the `benchmark` command to run a strategy against a bunch of different strategies:
+```sh
+$ uv run benchmark --strat survival_balanced --opponents simple,all_in_everytime,adaptive,royal_flush --hands 50000 --seed 1
+
+benchmark   : survival_balanced
+cases       : 8
+elapsed     : 46.9s
+
+opponent                 players seeds hands      net    bb/100 chips/hand  W/L/P
+------------------------------------------------------------------------------
+simple                   2       1     50000     +110075   +22.0       +2.2  28863/21076/61
+simple                   6       1     50000     +106471   +21.3       +2.1  7639/12327/30034
+all_in_everytime         2       1     50000    +2248445  +449.7      +45.0  5379/44472/149
+all_in_everytime         6       1     50000    +2863065  +572.6      +57.3  1231/18587/30182
+royal_flush              2       1     50000      +41793    +8.4       +0.8  24678/25246/76
+royal_flush              6       1     50000      +31327    +6.3       +0.6  7734/12244/30022
+adaptive                 2       1     50000       -5257    -1.1       -0.1  29560/20414/26
+adaptive                 6       1     50000     -117079   -23.4       -2.3  6626/14965/28409
+```
+
+### Playstyle Profiler
+Append `--profile` to the benchmark command:
+```sh
+$ uv run benchmark --strat survival_balanced --opponents simple --players 2 --hands 50000 --profile
+
+benchmark   : survival_balanced
+cases       : 12
+elapsed     : 58.3s
+
+opponent                 players seeds hands      net    bb/100 chips/hand  W/L/P
+------------------------------------------------------------------------------
+simple                   2       6     300000    +390110   +13.0       +1.3  172209/127430/361
+    profile   : tight/measured
+      VPIP     19.1%  (tight)
+      PFR      10.1%  (passive)
+      AF      14.34    (aggressive)
+      3-BET%   17.4%  (aggressive)
+      WTSD     24.0%  (tight)
+      W$SD     48.4%  (balanced)
+      BLUFF     0.0%  (tight)
 ```
