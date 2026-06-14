@@ -116,8 +116,7 @@ def summarize_tendencies(profiles=(), agent_stats=()) -> TableTendencies:
     has_calling_station = any(label == "calling_station" for label in labels)
     has_patient = any(label == "patient_methodical" for label in labels)
     has_aggressive = any(
-        label in {"bluffer", "loose_aggressive", "tight_aggressive"}
-        for label in labels
+        label in {"bluffer", "loose_aggressive", "tight_aggressive"} for label in labels
     )
     all_patient = bool(labels) and all(
         label in {"patient_methodical", "unknown"} for label in labels
