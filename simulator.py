@@ -2,6 +2,7 @@
 """Terminal poker simulator for playing heads-up against the poker bot."""
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -20,11 +21,97 @@ from poker_bot.strategies.loader import load_strategy  # noqa: E402
 DEFAULT_STRATEGY = "simple"
 choose_action = load_strategy(DEFAULT_STRATEGY)
 
-SMALL_BLIND = 25
-BIG_BLIND = 50
-INITIAL_STACK = 2000
+SMALL_BLIND = 5
+BIG_BLIND = 10
+INITIAL_STACK = 1000
 PLAYER_AGENT_ID = "player-agent"
 BOT_AGENT_ID = "bot-agent"
+
+# ── ANSI colour / style helpers ────────────────────────────────────────────
+
+_RESET = "\033[0m"
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_RED = "\033[91m"
+_GREEN = "\033[92m"
+_YELLOW = "\033[93m"
+_BLUE = "\033[94m"
+_CYAN = "\033[96m"
+_WHITE = "\033[97m"
+_BG = "\033[30;47m"  # black-on-white highlight
+
+SUIT_SYMBOLS = {"s": "♠", "h": "♥", "d": "♦", "c": "♣"}
+
+# Box-drawing characters
+_H = "─"
+_V = "│"
+_TL = "┌"
+_TR = "┐"
+_BL = "└"
+_BR = "┘"
+_CA = "├"
+_CB = "┤"
+_CE = "═"
+_VA = "║"
+
+
+def _c(code, text):
+    """Wrap text in an ANSI code, then reset."""
+    return f"{code}{text}{_RESET}"
+
+
+def _bold(text):
+    return _c(_BOLD, text)
+
+
+def _head(text):
+    """Header-level styling."""
+    return _c(_WHITE + _BOLD, text)
+
+
+def colour_card(card_str):
+    """Render a card string (e.g. 'As') with Unicode suit + colour."""
+    if not card_str or card_str == "??":
+        return card_str
+    rank = card_str[:-1]
+    suit_char = card_str[-1].lower()
+    sym = SUIT_SYMBOLS.get(suit_char, suit_char)
+    out = f"{rank}{sym}"
+    if suit_char in ("h", "d"):
+        return _c(_RED, out)
+    return out
+
+
+def colour_hand(cards, sep=" "):
+    """Render a list of cards coloured by suit."""
+    return sep.join(colour_card(c) for c in cards)
+
+
+def _visible_len(text):
+    return len(re.sub(r"\033\[[0-9;]*m", "", text))
+
+
+def _ljust_visible(text, width):
+    return f"{text}{' ' * max(0, width - _visible_len(text))}"
+
+
+def street_icon(street):
+    """Return a coloured street label."""
+    icons = {
+        "Preflop": _c(_BLUE, "♥ PRE-FLOP"),
+        "Flop": _c(_CYAN, "♠ FLOP"),
+        "Turn": _c(_YELLOW, "♦ TURN"),
+        "River": _c(_RED, "♣ RIVER"),
+        "Showdown": _bold("⚖ SHOWDOWN"),
+    }
+    return icons.get(street, street)
+
+
+def blinder(player_is_sb):
+    """Return (player_label, bot_label) position string."""
+    if player_is_sb:
+        return "(SB)", "(BB)"
+    return "(BB)", "(SB)"
 
 
 def format_cards(cards):
@@ -39,14 +126,13 @@ def build_allowed_actions(seat, current_bet, min_raise=BIG_BLIND, can_raise=True
     if seat["stackChips"] == 0:
         available = []
     elif call_shortfall == 0:
-        available = ["fold", "check"]
-        if seat["stackChips"] > 0:
-            available.append("bet")
+        available = ["fold", "check", "bet", "all-in"]
     else:
         available = ["fold", "call"]
         min_raise_to = current_bet + min_raise
         if can_raise and max_commit >= min_raise_to:
             available.append("raise")
+        available.append("all-in")
 
     min_raise_to = None
     if "raise" in available:
@@ -64,6 +150,8 @@ def build_allowed_actions(seat, current_bet, min_raise=BIG_BLIND, can_raise=True
         "canCheck": "check" in available,
         "canBet": "bet" in available,
         "canRaise": "raise" in available,
+        "canAllIn": "all-in" in available,
+        "allInToAmount": max_commit,
         "minRaiseTo": min_raise_to,
         "minBet": min_bet,
         "maxCommit": max_commit,
@@ -96,27 +184,40 @@ def all_in_betting_is_closed(seats, current_bet):
 
 
 def format_money(amount):
-    return f"${amount}"
+    return _c(_GREEN, f"${amount}")
 
 
-def prompt_user_action(allowed, call_amount):
-    print("Available actions:")
-    for index, action in enumerate(allowed, start=1):
+def prompt_user_action(acts, call_amount):
+    """Show a numbered action menu. ``acts`` is a list of action names."""
+    print(f"  {_c(_CYAN, 'Actions:')}")
+    for index, action in enumerate(acts, start=1):
         if action == "call":
-            print(f"  {index}. call {format_money(call_amount)}")
+            print(f"    {_bold(str(index))}. call {format_money(call_amount)}")
+        elif action == "raise":
+            print(f"    {_bold(str(index))}. raise")
+        elif action == "bet":
+            print(f"    {_bold(str(index))}. bet")
+        elif action == "all-in":
+            print(f"    {_bold(str(index))}. all-in")
         else:
-            print(f"  {index}. {action}")
+            print(f"    {_bold(str(index))}. {action}")
     while True:
-        choice = input("Choose action: ").strip().lower()
-        if choice.isdigit() and 1 <= int(choice) <= len(allowed):
-            return allowed[int(choice) - 1]
-        if choice in allowed:
+        choice = input(f"  {_c(_GREEN, '?>')} ").strip().lower()
+        if choice.isdigit() and 1 <= int(choice) <= len(acts):
+            return acts[int(choice) - 1]
+        if choice in acts:
             return choice
-        print("Invalid action, please select a valid option.")
+        print(f"  {_c(_RED, '!')} Invalid action. Pick a number or name.")
 
 
 def prompt_player_action(allowed):
     while True:
+        # Show min raise/bet info before the action menu
+        min_raise_to = allowed.get("minRaiseTo")
+        if min_raise_to:
+            print(f"  {_c(_YELLOW, 'Min raise to:')} {format_money(min_raise_to)}+")
+        elif allowed.get("minBet"):
+            print(f"  {_c(_YELLOW, 'Min bet:')} {format_money(allowed['minBet'])}+")
         action = prompt_user_action(allowed["availableActions"], allowed["callAmount"])
         amount = None
         if action not in ("bet", "raise"):
@@ -125,20 +226,24 @@ def prompt_player_action(allowed):
         while True:
             action_label = "raise to" if action == "raise" else "bet"
             minimum = allowed["minRaiseTo"] if action == "raise" else allowed["minBet"]
+            max_allowed = allowed.get("maxCommit", minimum)
             prompt = (
-                f"Enter amount to {action_label} "
-                f"(minimum {format_money(minimum)}. "
-                "0 to go back and choose action again): "
+                f"  {_c(_GREEN, '?>')} Enter amount to {action_label} "
+                f"[{format_money(minimum)} – {format_money(max_allowed)}; "
+                f"0 to go back]: "
             )
             entry = input(prompt).strip()
             if entry == "0":
                 break
             if not entry:
                 return action, amount
-            if entry.isdigit() and int(entry) >= minimum:
+            if entry.isdigit() and int(entry) >= minimum and int(entry) <= max_allowed:
                 amount = int(entry)
                 return action, amount
-            print("Please enter a valid numeric amount.")
+            print(
+                f"  {_c(_RED, '!')} Amount must be "
+                f"{format_money(minimum)}–{format_money(max_allowed)}."
+            )
 
 
 def resolve_action(seat, action, amount, current_bet, min_raise_to=None):
@@ -156,7 +261,11 @@ def resolve_action(seat, action, amount, current_bet, min_raise_to=None):
     if action == "check":
         return current_bet
 
-    target = amount
+    if action == "all-in":
+        target = seat["currentBetChips"] + seat["stackChips"]
+    else:
+        target = amount
+
     if target is None:
         target = current_bet + BIG_BLIND
     if action == "bet" and target < BIG_BLIND:
@@ -197,27 +306,56 @@ def build_table(
     }
 
 
-def print_table(seats, board, pot, street, current_bet, active_id):
-    print("\n" + "=" * 60)
-    print(f"Street: {street}")
-    print(f"Board: {format_cards(board) if board else '(empty)'}")
-    print(f"Pot: {format_money(pot)} | Current bet: {format_money(current_bet)}")
+def print_table(seats, board, pot, street, current_bet, active_id, min_raise_to=None):
+    """Print a clean, colourised view of the table."""
+    header = street_icon(street)
+    board_str = colour_hand(board) if board else _c(_DIM, "(empty)")
+    pot_str = format_money(pot)
+    bet_str = format_money(current_bet) if current_bet else _c(_DIM, "$0")
+
+    pot_row = f"Pot: {pot_str}   Bet: {bet_str}"
+    player_rows = []
     for seat in seats:
-        label = "YOU" if seat["agentId"] == PLAYER_AGENT_ID else "BOT"
-        cards = (
-            "??"
-            if seat["agentId"] != PLAYER_AGENT_ID
-            else format_cards(seat["holeCards"])
+        if seat["agentId"] == PLAYER_AGENT_ID:
+            label = _c(_GREEN + _BOLD, "YOU")
+        else:
+            label = _c(_YELLOW + _BOLD, "BOT")
+        hole = (
+            colour_hand(seat["holeCards"])
+            if seat["agentId"] == PLAYER_AGENT_ID
+            else _c(_DIM, "?? ?")
         )
-        line = (
-            f"{label:<3} stacks={format_money(seat['stackChips'])} "
-            f"bet={format_money(seat['currentBetChips'])} "
-            f"cards={cards}"
-        )
+        stack_str = format_money(seat["stackChips"])
+        if seat["currentBetChips"]:
+            bet_str_s = format_money(seat["currentBetChips"])
+        else:
+            bet_str_s = _c(_DIM, "$0")
+        row = f"{label}  stack={stack_str}  bet={bet_str_s}  cards={hole}"
         if seat["agentId"] == active_id:
-            line += "  <-- to act"
-        print(line)
-    print("=" * 60)
+            row += "  ◀"
+        player_rows.append(row)
+
+    width = max(_visible_len(pot_row), *(_visible_len(row) for row in player_rows))
+
+    print()
+    print(f"  {_c(_WHITE + _BOLD, header)}")
+    print(f"  {_c(_CYAN, 'Board:')}  {board_str}")
+    print()
+    print(f"  {_V} {_ljust_visible(pot_row, width)} {_V}")
+    print(f"  {_V} {_H * width} {_V}")
+    for row in player_rows:
+        print(f"  {_V} {_ljust_visible(row, width)} {_V}")
+    print(f"  {_BL} {_H * width} {_BR}")
+
+    # Minimum raise info
+    if min_raise_to is not None and min_raise_to > 0:
+        print(f"  {_c(_YELLOW, 'Min raise to:')} {format_money(min_raise_to)}")
+    elif min_raise_to is None or min_raise_to == 0:
+        # Show min bet from the first seat
+        first = seats[0]
+        min_bet = min(BIG_BLIND, first["stackChips"])
+        if min_bet > 0 and first["currentBetChips"] == current_bet:
+            print(f"  {_c(_YELLOW, 'Min bet:')} {format_money(min_bet)}")
 
 
 def run_betting_round(
@@ -229,6 +367,8 @@ def run_betting_round(
     first_actor_idx,
     action_providers=None,
     verbose=True,
+    action_observer=None,
+    hand_id=None,
 ):
     action_providers = action_providers or {}
     active_idx = first_actor_idx
@@ -251,32 +391,66 @@ def run_betting_round(
         table["allowedActions"] = allowed
 
         if verbose:
-            print_table(seats, board, pot, street, current_bet, seat["agentId"])
+            print_table(
+                seats,
+                board,
+                pot,
+                street,
+                current_bet,
+                seat["agentId"],
+                min_raise_to=allowed.get("minRaiseTo"),
+            )
 
         provider = action_providers.get(seat["agentId"])
         if provider is not None:
             action, amount, message = provider(table, seat)
             if verbose:
-                label = "YOU" if seat["agentId"] == PLAYER_AGENT_ID else "BOT"
-                print(
-                    f"{label}: {action.upper()}"
-                    + (f" {format_money(amount)}" if amount else "")
-                    + f" | {message}"
-                )
+                if seat["agentId"] == PLAYER_AGENT_ID:
+                    label = _c(_GREEN + _BOLD, "YOU")
+                else:
+                    label = _c(_YELLOW + _BOLD, "BOT")
+                act_msg = f"{_bold(str(action).upper())}"
+                if amount:
+                    act_msg += f" {format_money(amount)}"
+                if message:
+                    act_msg += f"  {_c(_DIM, f'({message})')}"
+                print(f"  {label}: {act_msg}")
         elif seat["agentId"] == PLAYER_AGENT_ID:
             action, amount = prompt_player_action(allowed)
         else:
             action, amount, message = choose_action(table, seat)
             if verbose:
-                print(
-                    f"BOT: {action.upper()}"
-                    + (f" {format_money(amount)}" if amount else "")
-                    + f" | {message}"
-                )
+                act_msg = f"{_bold(str(action).upper())}"
+                if amount:
+                    act_msg += f" {format_money(amount)}"
+                if message:
+                    act_msg += f"  {_c(_DIM, f'({message})')}"
+                print(f"  {_c(_YELLOW + _BOLD, 'BOT')}: {act_msg}")
+
+        facing_bet = int(allowed.get("callAmount") or 0) > 0
+        voluntary = action in {"call", "bet", "raise", "all-in"}
+
+        if action_observer is not None:
+            action_observer(
+                hand_id=hand_id,
+                table=table,
+                seat=seat,
+                allowed=allowed,
+                action=action,
+                amount=amount,
+                message=locals().get("message"),
+                facing_bet=facing_bet,
+                voluntary=voluntary,
+                street=street,
+            )
 
         if action == "fold":
             if verbose:
-                print(f"{seat['agentId']} folds.")
+                if seat["agentId"] == PLAYER_AGENT_ID:
+                    folded_label = _c(_GREEN + _BOLD, "YOU")
+                else:
+                    folded_label = _c(_YELLOW + _BOLD, "BOT")
+                print(f"  {folded_label} {_c(_RED, 'folds')}.")
             return opponent["agentId"], pot + seat["currentBetChips"] + opponent[
                 "currentBetChips"
             ]
@@ -286,8 +460,13 @@ def run_betting_round(
             seat, action, amount, current_bet, allowed["minRaiseTo"]
         )
         last_actions[seat["agentId"]] = action
-        if action in ("bet", "raise") and current_bet > previous_current_bet:
-            min_raise = current_bet - previous_current_bet
+        if action in ("bet", "raise", "all-in") and current_bet > previous_current_bet:
+            # NLHE rule: a short all-in that is less than the current minimum
+            # raise increment does NOT change the minimum raise for subsequent
+            # actions. Only full raises update the minimum.
+            raise_inc = current_bet - previous_current_bet
+            if raise_inc >= min_raise:
+                min_raise = raise_inc
 
         if all_in_betting_is_closed(seats, current_bet):
             break
@@ -302,8 +481,8 @@ def run_betting_round(
         ):
             break
 
-        if action in ("bet", "raise"):
-            # Opponent must respond to a new bet/raise
+        if action in ("bet", "raise", "all-in"):
+            # Opponent must respond to a new bet/raise/all-in
             last_actions[opponent["agentId"]] = None
 
         active_idx = 1 - active_idx
@@ -421,7 +600,15 @@ def run_betting_round_multiway(
             }
 
         if verbose:
-            print_table(seats, board, pot, street, current_bet, seat["agentId"])
+            print_table(
+                seats,
+                board,
+                pot,
+                street,
+                current_bet,
+                seat["agentId"],
+                min_raise_to=allowed.get("minRaiseTo"),
+            )
 
         provider = action_providers.get(seat["agentId"])
         if provider is None:
@@ -442,7 +629,7 @@ def run_betting_round_multiway(
             )
 
         facing_bet = int(allowed.get("callAmount") or allowed.get("callChips") or 0) > 0
-        voluntary = action in {"call", "bet", "raise"}
+        voluntary = action in {"call", "bet", "raise", "all-in"}
         if opponent_profiles is not None:
             profile = opponent_profiles.setdefault(
                 seat["agentId"], OpponentProfile(agent_id=seat["agentId"])
@@ -472,17 +659,21 @@ def run_betting_round_multiway(
             last_actions[seat["agentId"]] = "fold"
             if len(live_seats(seats)) == 1:
                 winner = live_seats(seats)[0]
-                return winner["agentId"], pot + sum(
-                    s["currentBetChips"] for s in seats
-                )
+                return winner["agentId"], pot + sum(s["currentBetChips"] for s in seats)
         else:
             previous_current_bet = current_bet
             current_bet = resolve_action(
                 seat, action, amount, current_bet, allowed["minRaiseTo"]
             )
             last_actions[seat["agentId"]] = action
-            if action in ("bet", "raise") and current_bet > previous_current_bet:
-                min_raise = current_bet - previous_current_bet
+            if (
+                action in ("bet", "raise", "all-in")
+                and current_bet > previous_current_bet
+            ):
+                # NLHE: short all-in (< min_raise) does not change min raise
+                raise_inc = current_bet - previous_current_bet
+                if raise_inc >= min_raise:
+                    min_raise = raise_inc
                 for other in live_seats(seats):
                     if other["agentId"] != seat["agentId"] and other["stackChips"] > 0:
                         last_actions[other["agentId"]] = None
@@ -526,6 +717,8 @@ def play_hand(
     bot_strategy=None,
     rng=None,
     verbose=True,
+    action_observer=None,
+    hand_id=None,
 ):
     deck = build_deck(rng)
     board = []
@@ -567,6 +760,8 @@ def play_hand(
         first_actor_idx=preflop_first_actor_idx,
         action_providers=action_providers,
         verbose=verbose,
+        action_observer=action_observer,
+        hand_id=hand_id,
     )
     if fold_winner:
         if fold_winner == PLAYER_AGENT_ID:
@@ -585,20 +780,27 @@ def play_hand(
             first_actor_idx=postflop_first_actor_idx,
             action_providers=action_providers,
             verbose=verbose,
+            action_observer=action_observer,
+            hand_id=hand_id,
         )
         if fold_winner:
             if fold_winner == PLAYER_AGENT_ID:
                 return player["stackChips"] + pot, bot["stackChips"]
             return player["stackChips"], bot["stackChips"] + pot
 
+    if action_observer is not None:
+        action_observer(action="showdown")
     ties, best_score = showdown([player, bot], board)
     if verbose:
-        print_table([player, bot], board, pot, 0, "Showdown", None)
-        print(f"Your hand: {format_cards(player['holeCards'])}")
-        print(f"Bot hand: {format_cards(bot['holeCards'])}")
+        print(f"\n  {_bold('⚖ SHOWDOWN')}")
+        print(f"  {_c(_DIM, '─────')}")
+        print(f"  {_c(_GREEN + _BOLD, 'You')}: {colour_hand(player['holeCards'])}")
+        print(f"  {_c(_YELLOW + _BOLD, 'Bot')}: {colour_hand(bot['holeCards'])}")
+        print(f"  Board: {colour_hand(board)}")
+        print(f"  Pot: {format_money(pot)}")
     if len(ties) > 1:
         if verbose:
-            print("The hand is a tie. Pot is split.")
+            print(f"  {_c(_CYAN, 'Split pot')} — hand is a tie.")
         split = pot // len(ties)
         player_stack = player["stackChips"] + split
         bot_stack = bot["stackChips"] + split
@@ -606,12 +808,12 @@ def play_hand(
         winner = ties[0]
         if winner["agentId"] == PLAYER_AGENT_ID:
             if verbose:
-                print("You win the showdown!")
+                print(f"  {_c(_GREEN + _BOLD, '✓ You win!')}")
             player_stack = player["stackChips"] + pot
             bot_stack = bot["stackChips"]
         else:
             if verbose:
-                print("Bot wins the showdown.")
+                print(f"  {_c(_RED + _BOLD, '✗ Bot wins.')}")
             player_stack = player["stackChips"]
             bot_stack = bot["stackChips"] + pot
     return player_stack, bot_stack
@@ -717,6 +919,8 @@ def play_hand_multiway(
                     break
             return [seat["stackChips"] for seat in seats]
 
+    if action_observer is not None:
+        action_observer(action="showdown")
     ties, _best_score = showdown(seats, board)
     if ties:
         split = pot // len(ties)
@@ -744,35 +948,56 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     bot_strategy = load_strategy(args.strat)
-    print("Welcome to the poker bot simulator!")
-    print(f"You will play heads-up Texas Hold'em against the {args.strat} bot.")
+
+    print()
+    title = "No-Limit Texas Hold'em Simulator"
+    print(f"  {_bold(title)}")
+    print(f"  {_c(_DIM, '────' + '─' * (22 + len(args.strat)))}")
+    print(
+        f"  Bot: {_c(_YELLOW, args.strat)}  |  "
+        f"Blinds: {format_money(SMALL_BLIND)}/{format_money(BIG_BLIND)}"
+    )
+    print()
     player_stack = INITIAL_STACK
     bot_stack = INITIAL_STACK
     player_is_small_blind = True
+    hand_num = 0
 
     while player_stack > 0 and bot_stack > 0:
-        print("\n" + "#" * 60)
-        player_money = format_money(player_stack)
-        bot_money = format_money(bot_stack)
-        print(f"Stacks -> You: {player_money} | Bot: {bot_money}")
+        hand_num += 1
+        player_pos, bot_pos = blinder(player_is_small_blind)
+        print(
+            f"  {_bold(f'─── Hand #{hand_num} ───')}  "
+            f"{_c(_BLUE, f'You {player_pos}')}  "
+            f"{_c(_YELLOW, f'Bot {bot_pos}')}"
+        )
+        print(
+            f"  {_c(_DIM, 'Stacks:')} "
+            f"{format_money(player_stack)}  vs  {format_money(bot_stack)}"
+        )
+        print()
+
         player_stack, bot_stack = play_hand(
             player_stack,
             bot_stack,
             player_is_small_blind,
             bot_strategy=bot_strategy,
         )
+
         player_is_small_blind = not player_is_small_blind
-        player_money = format_money(player_stack)
-        bot_money = format_money(bot_stack)
-        print(f"Hand complete. New stacks -> You: {player_money} | Bot: {bot_money}")
+
         if player_stack <= 0:
-            print("You are busted. Game over.")
+            print(f"\n  {_c(_RED + _BOLD, '✗ You are busted. Game over.')}")
             break
         if bot_stack <= 0:
-            print("Bot is busted. You win!")
+            print(f"\n  {_c(_GREEN + _BOLD, '✓ Bot is busted. You win!')}")
             break
 
-    print("Thanks for playing!")
+    print(
+        f"\n  {_bold('Final:')}  "
+        f"{format_money(player_stack)}  vs  {format_money(bot_stack)}"
+    )
+    print(f"  {_c(_DIM, 'Thanks for playing!')}")
 
 
 if __name__ == "__main__":

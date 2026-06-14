@@ -1,3 +1,7 @@
+import io
+import re
+from contextlib import redirect_stdout
+
 import simulator
 
 
@@ -9,6 +13,55 @@ def make_seat(agent_id, stack=1000, current_bet=0, seat_number=1):
         "stackChips": stack,
         "currentBetChips": current_bet,
     }
+
+
+def _visible_line(line):
+    return re.sub(r"\033\[[0-9;]*m", "", line)
+
+
+def test_print_table_uses_consistent_borders_and_dynamic_width():
+    player = make_seat(
+        simulator.PLAYER_AGENT_ID,
+        stack=990,
+        current_bet=0,
+        seat_number=1,
+    )
+    player["holeCards"] = ["3C", "AH"]
+    bot = make_seat(
+        simulator.BOT_AGENT_ID,
+        stack=1900,
+        current_bet=50,
+        seat_number=2,
+    )
+
+    output = io.StringIO()
+    with redirect_stdout(output):
+        simulator.print_table(
+            [player, bot],
+            board=["AS", "3D", "6S"],
+            pot=15,
+            street="Flop",
+            current_bet=10,
+            active_id=simulator.PLAYER_AGENT_ID,
+        )
+
+    table_lines = [
+        _visible_line(line).rstrip() for line in output.getvalue().splitlines()[4:9]
+    ]
+    assert all(
+        line.startswith("  │") and line.endswith("│") for line in table_lines[:4]
+    )
+    assert table_lines[4].startswith("  └") and table_lines[4].endswith("┘")
+    assert "║" not in "\n".join(table_lines)
+    assert (
+        len(table_lines[0])
+        == len(table_lines[1])
+        == len(table_lines[2])
+        == len(table_lines[3])
+        == len(table_lines[4])
+    )
+    assert "Pot: $15   Bet: $10" in table_lines[0]
+    assert "cards=3♣ A♥  ◀" in table_lines[2]
 
 
 def test_simulator_parser_defaults_to_simple_strategy():
@@ -56,7 +109,7 @@ def test_simulator_main_uses_selected_bot_strategy(monkeypatch):
 def test_short_stack_cannot_raise_without_enough_for_minimum_raise():
     seat = make_seat(
         simulator.PLAYER_AGENT_ID,
-        stack=74,
+        stack=5,
         current_bet=simulator.SMALL_BLIND,
     )
 
@@ -66,21 +119,21 @@ def test_short_stack_cannot_raise_without_enough_for_minimum_raise():
     assert "call" in allowed["availableActions"]
     assert "raise" not in allowed["availableActions"]
     assert allowed["minRaiseTo"] is None
-    assert allowed["maxCommit"] == 99
+    assert allowed["maxCommit"] == 10
 
 
 def test_raise_is_allowed_when_stack_can_reach_minimum_raise_to_amount():
     seat = make_seat(
         simulator.PLAYER_AGENT_ID,
-        stack=75,
+        stack=15,
         current_bet=simulator.SMALL_BLIND,
     )
 
     allowed = simulator.build_allowed_actions(seat, current_bet=simulator.BIG_BLIND)
 
-    assert "raise" in allowed["availableActions"]
-    assert allowed["minRaiseTo"] == 100
-    assert allowed["maxCommit"] == 100
+    assert allowed["availableActions"] == ["fold", "call", "raise", "all-in"]
+    assert allowed["minRaiseTo"] == 20
+    assert allowed["maxCommit"] == 20
 
 
 def test_custom_min_raise_controls_next_reraise_size():
@@ -90,6 +143,37 @@ def test_custom_min_raise_controls_next_reraise_size():
 
     assert allowed["callAmount"] == 100
     assert allowed["minRaiseTo"] == 250
+    assert "raise" in allowed["availableActions"]
+
+
+def test_short_all_in_does_not_lower_min_raise():
+    """NLHE rule: a short all-in (< min raise increment) does NOT reduce
+    the minimum raise for subsequent actions."""
+    # Player A bet BB ($10). Player B goes all-in for $15 (only $5 more,
+    # less than the BB raise of $10). The min_raise should still be $10,
+    # so the next raise minimum = $10 + $10 = $20, not $10 + $5 = $15.
+    seat = make_seat(simulator.PLAYER_AGENT_ID, stack=2000, current_bet=5)
+
+    allowed = simulator.build_allowed_actions(seat, current_bet=10, min_raise=10)
+
+    assert allowed["minRaiseTo"] == 20, (
+        f"Expected min raise to 20 from bet=10 + min_raise=10, "
+        f"got {allowed['minRaiseTo']}"
+    )
+    assert "raise" in allowed["availableActions"]
+
+
+def test_full_raise_updates_min_raise():
+    """A proper full raise (≥ min raise increment) becomes the new min raise
+    for the next player."""
+    # Seat committed 50, then opponent raised from 100 to 200 (inc 100).
+    # The original raiser now faces a re-raise opportunity with min_raise=100.
+    # Min re-raise to = 200 + 100 = 300.
+    seat = make_seat(simulator.BOT_AGENT_ID, stack=2000, current_bet=50)
+
+    allowed = simulator.build_allowed_actions(seat, current_bet=200, min_raise=100)
+
+    assert allowed["minRaiseTo"] == 300
     assert "raise" in allowed["availableActions"]
 
 
@@ -112,13 +196,13 @@ def test_resolve_raise_coerces_below_minimum_target_to_min_raise_to():
 def test_preflop_call_then_check_moves_only_live_bets_to_pot(monkeypatch):
     player = make_seat(
         simulator.PLAYER_AGENT_ID,
-        stack=1975,
+        stack=995,
         current_bet=simulator.SMALL_BLIND,
         seat_number=1,
     )
     bot = make_seat(
         simulator.BOT_AGENT_ID,
-        stack=1950,
+        stack=990,
         current_bet=simulator.BIG_BLIND,
         seat_number=2,
     )
@@ -141,9 +225,9 @@ def test_preflop_call_then_check_moves_only_live_bets_to_pot(monkeypatch):
     )
 
     assert fold_winner is None
-    assert pot == 100
-    assert player["stackChips"] == 1950
-    assert bot["stackChips"] == 1950
+    assert pot == 20
+    assert player["stackChips"] == 990
+    assert bot["stackChips"] == 990
     assert player["currentBetChips"] == 0
     assert bot["currentBetChips"] == 0
 
@@ -151,13 +235,13 @@ def test_preflop_call_then_check_moves_only_live_bets_to_pot(monkeypatch):
 def test_raise_to_then_call_settles_correct_pot(monkeypatch):
     player = make_seat(
         simulator.PLAYER_AGENT_ID,
-        stack=1975,
+        stack=995,
         current_bet=simulator.SMALL_BLIND,
         seat_number=1,
     )
     bot = make_seat(
         simulator.BOT_AGENT_ID,
-        stack=1950,
+        stack=990,
         current_bet=simulator.BIG_BLIND,
         seat_number=2,
     )
@@ -184,10 +268,10 @@ def test_raise_to_then_call_settles_correct_pot(monkeypatch):
 
     assert fold_winner is None
     assert pot == 300
-    assert player["stackChips"] == 1850
-    assert bot["stackChips"] == 1850
-    assert bot_tables[0]["allowedActions"]["callAmount"] == 100
-    assert bot_tables[0]["allowedActions"]["minRaiseTo"] == 250
+    assert player["stackChips"] == 850
+    assert bot["stackChips"] == 850
+    assert bot_tables[0]["allowedActions"]["callAmount"] == 140
+    assert bot_tables[0]["allowedActions"]["minRaiseTo"] == 290
 
 
 def test_zero_raise_amount_returns_to_available_actions(monkeypatch):
@@ -216,13 +300,13 @@ def test_zero_raise_amount_returns_to_available_actions(monkeypatch):
 def test_raise_cancel_then_call_resolves_call_in_betting_round(monkeypatch):
     player = make_seat(
         simulator.PLAYER_AGENT_ID,
-        stack=1975,
+        stack=995,
         current_bet=simulator.SMALL_BLIND,
         seat_number=1,
     )
     bot = make_seat(
         simulator.BOT_AGENT_ID,
-        stack=1950,
+        stack=990,
         current_bet=simulator.BIG_BLIND,
         seat_number=2,
     )
@@ -252,9 +336,9 @@ def test_raise_cancel_then_call_resolves_call_in_betting_round(monkeypatch):
     )
 
     assert fold_winner is None
-    assert pot == 100
-    assert player["stackChips"] == 1950
-    assert bot["stackChips"] == 1950
+    assert pot == 20
+    assert player["stackChips"] == 990
+    assert bot["stackChips"] == 990
 
 
 def test_zero_stack_player_facing_bet_has_no_call_action():
@@ -272,8 +356,100 @@ def test_short_all_in_call_amount_is_capped_to_remaining_stack():
 
     allowed = simulator.build_allowed_actions(seat, current_bet=950)
 
-    assert allowed["availableActions"] == ["fold", "call"]
+    assert allowed["availableActions"] == ["fold", "call", "all-in"]
     assert allowed["callAmount"] == 300
+
+
+def test_all_in_option_is_available_and_commits_stack():
+    seat = make_seat(simulator.PLAYER_AGENT_ID, stack=100, current_bet=0)
+
+    allowed = simulator.build_allowed_actions(seat, current_bet=0)
+
+    assert allowed["availableActions"] == ["fold", "check", "bet", "all-in"]
+    assert allowed["allInToAmount"] == 100
+
+    current_bet = simulator.resolve_action(
+        seat, "all-in", None, 0, allowed["minRaiseTo"]
+    )
+
+    assert current_bet == 100
+    assert seat["currentBetChips"] == 100
+    assert seat["stackChips"] == 0
+
+
+def test_all_in_facing_bet_commits_remaining_stack():
+    seat = make_seat(simulator.PLAYER_AGENT_ID, stack=30, current_bet=0)
+
+    allowed = simulator.build_allowed_actions(seat, current_bet=100)
+
+    assert allowed["availableActions"] == ["fold", "call", "all-in"]
+    assert allowed["callAmount"] == 30
+
+    current_bet = simulator.resolve_action(
+        seat, "all-in", None, 100, allowed["minRaiseTo"]
+    )
+
+    assert current_bet == 100
+    assert seat["currentBetChips"] == 30
+    assert seat["stackChips"] == 0
+
+
+def test_prompt_player_action_accepts_all_in(monkeypatch):
+    monkeypatch.setattr(simulator, "prompt_user_action", lambda allowed, call: "all-in")
+
+    action, amount = simulator.prompt_player_action(
+        {
+            "availableActions": ["fold", "call", "all-in"],
+            "callAmount": 30,
+            "allInToAmount": 30,
+        }
+    )
+
+    assert action == "all-in"
+    assert amount is None
+
+
+def test_player_all_in_requires_bot_to_call_or_fold(monkeypatch):
+    player = make_seat(
+        simulator.PLAYER_AGENT_ID,
+        stack=995,
+        current_bet=simulator.SMALL_BLIND,
+        seat_number=1,
+    )
+    bot = make_seat(
+        simulator.BOT_AGENT_ID,
+        stack=990,
+        current_bet=simulator.BIG_BLIND,
+        seat_number=2,
+    )
+
+    monkeypatch.setattr(simulator, "print_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(simulator, "prompt_user_action", lambda allowed, call: "all-in")
+    monkeypatch.setattr(
+        simulator,
+        "choose_action",
+        lambda table, agent_id: (
+            "call",
+            table["allowedActions"]["callAmount"],
+            "test call",
+        ),
+    )
+
+    fold_winner, pot = simulator.run_betting_round(
+        [player, bot],
+        board=[],
+        pot=0,
+        current_bet=simulator.BIG_BLIND,
+        street="Preflop",
+        first_actor_idx=0,
+    )
+
+    assert fold_winner is None
+    assert pot == 2000
+    assert player["stackChips"] == 0
+    assert bot["stackChips"] == 0
+    assert player["currentBetChips"] == 0
+    assert bot["currentBetChips"] == 0
 
 
 def test_all_in_unequal_bets_end_round_and_return_uncalled_excess(monkeypatch):
@@ -392,7 +568,7 @@ def test_player_cannot_check_when_bot_bets_all_in(monkeypatch):
         action_providers={simulator.BOT_AGENT_ID: bot_all_in},
     )
 
-    assert player_actions == [(["fold", "call"], 300)]
+    assert player_actions == [(["fold", "call", "all-in"], 300)]
     assert fold_winner == simulator.BOT_AGENT_ID
     assert pot == 400
 
@@ -409,6 +585,7 @@ def test_play_hand_posts_player_small_blind_by_default(monkeypatch):
         first_actor_idx,
         action_providers=None,
         verbose=True,
+        **kwargs,
     ):
         rounds.append(
             {
@@ -424,18 +601,18 @@ def test_play_hand_posts_player_small_blind_by_default(monkeypatch):
 
     monkeypatch.setattr(simulator, "run_betting_round", capture_round)
 
-    player_stack, bot_stack = simulator.play_hand(2000, 2000)
+    player_stack, bot_stack = simulator.play_hand(1000, 1000)
 
     preflop = rounds[0]
     player, bot = preflop["seats"]
     assert player["currentBetChips"] == simulator.SMALL_BLIND
     assert bot["currentBetChips"] == simulator.BIG_BLIND
-    assert player["stackChips"] == 1975
-    assert bot["stackChips"] == 1950
+    assert player["stackChips"] == 995
+    assert bot["stackChips"] == 990
     assert preflop["current_bet"] == simulator.BIG_BLIND
     assert preflop["first_actor_idx"] == 0
-    assert player_stack == 2050
-    assert bot_stack == 1950
+    assert player_stack == 1010
+    assert bot_stack == 990
 
 
 def test_play_hand_can_post_bot_small_blind(monkeypatch):
@@ -450,6 +627,7 @@ def test_play_hand_can_post_bot_small_blind(monkeypatch):
         first_actor_idx,
         action_providers=None,
         verbose=True,
+        **kwargs,
     ):
         rounds.append(
             {
@@ -466,19 +644,19 @@ def test_play_hand_can_post_bot_small_blind(monkeypatch):
     monkeypatch.setattr(simulator, "run_betting_round", capture_round)
 
     player_stack, bot_stack = simulator.play_hand(
-        2000, 2000, player_is_small_blind=False
+        1000, 1000, player_is_small_blind=False
     )
 
     preflop = rounds[0]
     player, bot = preflop["seats"]
     assert player["currentBetChips"] == simulator.BIG_BLIND
     assert bot["currentBetChips"] == simulator.SMALL_BLIND
-    assert player["stackChips"] == 1950
-    assert bot["stackChips"] == 1975
+    assert player["stackChips"] == 990
+    assert bot["stackChips"] == 995
     assert preflop["current_bet"] == simulator.BIG_BLIND
     assert preflop["first_actor_idx"] == 1
-    assert player_stack == 1950
-    assert bot_stack == 2050
+    assert player_stack == 990
+    assert bot_stack == 1010
 
 
 def test_player_stack_increases_when_bot_folds_preflop(monkeypatch):
@@ -491,20 +669,20 @@ def test_player_stack_increases_when_bot_folds_preflop(monkeypatch):
         lambda table, agent_id: ("fold", None, "test fold"),
     )
 
-    player_stack, bot_stack = simulator.play_hand(2000, 2000)
+    player_stack, bot_stack = simulator.play_hand(1000, 1000)
 
-    assert player_stack == 2050
-    assert bot_stack == 1950
+    assert player_stack == 1010
+    assert bot_stack == 990
 
 
 def test_bot_stack_increases_when_player_folds_preflop(monkeypatch):
     monkeypatch.setattr(simulator, "print_table", lambda *args, **kwargs: None)
     monkeypatch.setattr(simulator, "prompt_user_action", lambda allowed, call: "fold")
 
-    player_stack, bot_stack = simulator.play_hand(2000, 2000)
+    player_stack, bot_stack = simulator.play_hand(1000, 1000)
 
-    assert player_stack == 1975
-    assert bot_stack == 2025
+    assert player_stack == 995
+    assert bot_stack == 1005
 
 
 def test_main_alternates_blinds_between_hands(monkeypatch):
