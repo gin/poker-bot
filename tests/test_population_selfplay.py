@@ -1,7 +1,7 @@
 import json
 
 from eval import population_selfplay
-from eval.selfplay import SelfPlayResult
+from eval.selfplay import BIG_BLIND, SelfPlayResult
 
 
 def write_champion(tmp_path, strategy="champion"):
@@ -32,6 +32,10 @@ def write_config(tmp_path, *, min_worst=-20.0):
     return config_path
 
 
+def chips_for_bb100(bb100, hands):
+    return int(round(bb100 * BIG_BLIND * hands / 100))
+
+
 def fake_runner(
     strat,
     *,
@@ -41,14 +45,15 @@ def fake_runner(
     players,
     track_opponents=False,
     opponent_db=None,
+    **kwargs,
 ):
     net = 0
     if strat == "candidate" and opponent_name == "simple":
-        net = 400 + seed
+        net = chips_for_bb100(20 + seed, hands)
     elif strat == "candidate" and opponent_name == "champion":
-        net = -100
+        net = chips_for_bb100(-10, hands)
     elif strat == "champion" and opponent_name == "simple":
-        net = 150
+        net = chips_for_bb100(25, hands)
     return SelfPlayResult(
         hands=hands,
         strat=strat,

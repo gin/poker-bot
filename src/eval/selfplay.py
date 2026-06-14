@@ -11,6 +11,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from eval.profiler import PlayProfiler, StrategyProfile, format_profile  # noqa: E402
 from poker_bot.opponent_store import (  # noqa: E402
     connect,
     create_telemetry_run,
@@ -46,6 +47,7 @@ class SelfPlayResult:
     net_chips: int
     elapsed: float
     players: int = DEFAULT_PLAYERS
+    profile: StrategyProfile | None = None
 
     @property
     def bb_per_100(self):
@@ -77,6 +79,7 @@ def run_selfplay(
     telemetry=False,
     telemetry_run_id=None,
     platform="selfplay",
+    profiler=None,
 ):
     if hands < 0:
         raise ValueError("--hands must be non-negative")
@@ -112,53 +115,60 @@ def run_selfplay(
         opponent_profiles.update(load_profiles_for_agents(db_conn, platform, agent_ids))
     decision_indexes = {}
 
-    def observe_action(**event):
-        if db_conn is None:
-            return
-        seat = event["seat"]
-        table = event["table"]
-        hero = next(
-            (
-                table_seat
-                for table_seat in table.get("seats", [])
-                if table_seat.get("agentId") == PLAYER_AGENT_ID
-            ),
-            {},
-        )
-        record_observed_action(
-            db_conn,
-            platform=platform,
-            agent_id=seat["agentId"],
-            handle=seat.get("name"),
-            hand_id=event.get("hand_id"),
-            street=table.get("street"),
-            action=event["action"],
-            amount=event.get("amount"),
-            pot=table.get("potChips"),
-            message=event.get("message"),
-            facing_bet=event.get("facing_bet", False),
-            stack_chips=seat.get("stackChips"),
-            hero_stack_chips=hero.get("stackChips"),
-            voluntary=event.get("voluntary", False),
-        )
-        if should_record_telemetry and seat.get("agentId") == PLAYER_AGENT_ID:
-            hand_id = event.get("hand_id")
-            decision_index = decision_indexes.get(hand_id, 0)
-            decision_indexes[hand_id] = decision_index + 1
-            record_decision_telemetry(
+    # Build the profiler observer if a profiler was given
+    use_profiler = profiler is not None
+    profiler_observe = profiler.observer if use_profiler else None
+
+    def combined_observer(**event):
+        """Action observer used in ALL modes (heads-up and multiway).
+        Forwards to the profiler and the DB-backed observer_action."""
+        if use_profiler:
+            profiler._observe(**event)
+        if db_conn is not None and "seat" in event and "table" in event:
+            seat = event["seat"]
+            table = event["table"]
+            hero = next(
+                (
+                    table_seat
+                    for table_seat in table.get("seats", [])
+                    if table_seat.get("agentId") == PLAYER_AGENT_ID
+                ),
+                {},
+            )
+            record_observed_action(
                 db_conn,
-                run_id=run_id,
-                hand_id=hand_id,
-                decision_index=decision_index,
-                strategy=strat_name,
-                table=table,
-                seat=seat,
+                platform=platform,
+                agent_id=seat["agentId"],
+                handle=seat.get("name"),
+                hand_id=event.get("hand_id"),
+                street=table.get("street"),
                 action=event["action"],
                 amount=event.get("amount"),
+                pot=table.get("potChips"),
                 message=event.get("message"),
                 facing_bet=event.get("facing_bet", False),
+                stack_chips=seat.get("stackChips"),
+                hero_stack_chips=hero.get("stackChips"),
                 voluntary=event.get("voluntary", False),
             )
+            if should_record_telemetry and seat.get("agentId") == PLAYER_AGENT_ID:
+                h_id = event.get("hand_id")
+                decision_index = decision_indexes.get(h_id, 0)
+                decision_indexes[h_id] = decision_index + 1
+                record_decision_telemetry(
+                    db_conn,
+                    run_id=run_id,
+                    hand_id=h_id,
+                    decision_index=decision_index,
+                    strategy=strat_name,
+                    table=table,
+                    seat=seat,
+                    action=event["action"],
+                    amount=event.get("amount"),
+                    message=event.get("message"),
+                    facing_bet=event.get("facing_bet", False),
+                    voluntary=event.get("voluntary", False),
+                )
 
     wins = 0
     losses = 0
@@ -167,6 +177,10 @@ def run_selfplay(
     started = time.perf_counter()
 
     for hand_index in range(hands):
+        hand_id = f"{seed or 'run'}-{hand_index}"
+        if use_profiler:
+            profiler.start_hand(hand_id)
+
         if players == 2:
             player_is_small_blind = hand_index % 2 == 0
             player_stack, opponent_stack = play_hand(
@@ -177,6 +191,8 @@ def run_selfplay(
                 bot_strategy=opponent_strategies[0],
                 rng=rng,
                 verbose=False,
+                action_observer=combined_observer,
+                hand_id=hand_id,
             )
             hero_delta = player_stack - INITIAL_STACK
             hero_won = player_stack > opponent_stack
@@ -185,14 +201,13 @@ def run_selfplay(
             if db_conn is not None:
                 for agent_id in agent_ids:
                     increment_hand_seen(db_conn, platform, agent_id)
-            hand_id = f"{seed or 'run'}-{hand_index}"
             stacks = play_hand_multiway(
                 [INITIAL_STACK] * players,
                 [strat, *opponent_strategies],
                 button_index=hand_index % players,
                 rng=rng,
                 opponent_profiles=opponent_profiles if should_track else None,
-                action_observer=observe_action if db_conn is not None else None,
+                action_observer=combined_observer,
                 hand_id=hand_id,
                 verbose=False,
             )
@@ -216,6 +231,18 @@ def run_selfplay(
             losses += 1
         else:
             pushes += 1
+
+        if use_profiler:
+            cur = profiler._current
+            # Use the showdown event flag if set by the simulator,
+            # otherwise fall back to river-action heuristics
+            showdown = (cur is not None and cur.saw_showdown) or (
+                cur is not None
+                and cur.saw_flop
+                and not cur.folded_hand
+                and cur.river_acted
+            )
+            profiler.end_hand(won=hero_won, showdown=showdown)
 
     elapsed = time.perf_counter() - started
     return SelfPlayResult(
@@ -273,23 +300,23 @@ def format_result(result):
     opponent = result.opponent
     if OPPONENT_LINEUP_SEPARATOR not in opponent:
         opponent = f"{opponent} x{result.players - 1}"
-    return "\n".join(
-        [
-            f"  hands       : {result.hands}",
-            f"  opponent    : {opponent}",
-            (
-                f"  wins/losses : {result.wins}/{result.losses}  "
-                f"(push: {result.pushes})"
-            ),
-            f"  net chips   : {format_signed_number(result.net_chips)}",
-            f"  chips/hand  : {format_signed_float(result.chips_per_hand)}",
-            f"  bb/100      : {format_signed_float(result.bb_per_100)}",
-            (
-                f"  elapsed     : {result.elapsed:.1f}s  "
-                f"({result.hands_per_second} hands/s)"
-            ),
-        ]
-    )
+    lines = [
+        f"  hands       : {result.hands}",
+        f"  opponent    : {opponent}",
+        (f"  wins/losses : {result.wins}/{result.losses}  (push: {result.pushes})"),
+        f"  net chips   : {format_signed_number(result.net_chips)}",
+        f"  chips/hand  : {format_signed_float(result.chips_per_hand)}",
+        f"  bb/100      : {format_signed_float(result.bb_per_100)}",
+        (f"  elapsed     : {result.elapsed:.1f}s  ({result.hands_per_second} hands/s)"),
+    ]
+    if result.profile is not None:
+        profile_text = format_profile(result.profile)
+        lines.append("  profile     :")
+        for line in profile_text.split("\n"):
+            lines.append(f"    {line}")
+    else:
+        lines.append("  profile     : (not profiled)")
+    return "\n".join(lines)
 
 
 def build_parser():

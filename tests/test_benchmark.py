@@ -13,6 +13,7 @@ def fake_runner(
     players,
     track_opponents=False,
     opponent_db=None,
+    **kwargs,
 ):
     net = seed * 10 if opponent_name == "simple" else -seed * 5
     if strat == "baseline":

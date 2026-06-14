@@ -76,15 +76,12 @@ def test_adaptive_identifies_top_pair_good_kicker():
 
     assert top_pair_kicker_value(hole_cards, board_cards) == RANK_VALUES["A"]
     assert has_top_pair_good_kicker(hole_cards, board_cards)
-    assert (
-        top_pair_defense_price_cap(
-            hole_cards,
-            board_cards,
-            street="Turn",
-            active_opponents=5,
-        )
-        > 34 / (84 + 34)
-    )
+    assert top_pair_defense_price_cap(
+        hole_cards,
+        board_cards,
+        street="Turn",
+        active_opponents=5,
+    ) > 34 / (84 + 34)
 
 
 def test_adaptive_folds_marginal_hand_to_bad_price():

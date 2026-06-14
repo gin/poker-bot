@@ -2,7 +2,7 @@ import json
 import subprocess
 
 from eval import promotion_gate
-from eval.selfplay import SelfPlayResult
+from eval.selfplay import BIG_BLIND, SelfPlayResult
 
 
 def completed(returncode=0):
@@ -76,6 +76,10 @@ def write_champion(tmp_path, strategy="champion"):
     return champion_path
 
 
+def chips_for_bb100(bb100, hands):
+    return int(round(bb100 * BIG_BLIND * hands / 100))
+
+
 def fake_benchmark_runner(
     strat,
     *,
@@ -85,30 +89,32 @@ def fake_benchmark_runner(
     players,
     track_opponents=False,
     opponent_db=None,
+    **kwargs,
 ):
-    candidate_net_by_opponent = {
-        "simple": 1000 + seed,
-        "adaptive": -100,
-        "counter_adaptive": -150,
-        "threshold_pressure": -200,
-        "anti_threshold": -250,
-        "profiled_counter_adaptive": -125,
-        "champion": -50,
+    candidate_bb_by_opponent = {
+        "simple": 21 + seed,
+        "adaptive": -4,
+        "counter_adaptive": -7,
+        "threshold_pressure": -9,
+        "anti_threshold": -11,
+        "profiled_counter_adaptive": -6,
+        "champion": -9,
     }
-    champion_net_by_opponent = {
-        "simple": 1200,
+    champion_bb_by_opponent = {
+        "simple": 25,
         "adaptive": 0,
-        "counter_adaptive": 0,
-        "threshold_pressure": 0,
-        "anti_threshold": 0,
-        "profiled_counter_adaptive": 0,
-        "champion": 0,
+        "counter_adaptive": -3,
+        "threshold_pressure": -5,
+        "anti_threshold": -7,
+        "profiled_counter_adaptive": -2,
+        "champion": -5,
     }
-    net = (
-        champion_net_by_opponent[opponent_name]
+    bb100 = (
+        champion_bb_by_opponent[opponent_name]
         if strat == "champion"
-        else candidate_net_by_opponent[opponent_name]
+        else candidate_bb_by_opponent[opponent_name]
     )
+    net = chips_for_bb100(bb100, hands)
     return SelfPlayResult(
         hands=hands,
         strat=strat,
@@ -131,6 +137,7 @@ def swingy_benchmark_runner(
     players,
     track_opponents=False,
     opponent_db=None,
+    **kwargs,
 ):
     net = 0
     if strat != "champion":

@@ -192,12 +192,8 @@ def load_promotion_config(path=DEFAULT_CONFIG):
             data.get("scenario_tests"),
             DEFAULT_SCENARIO_TESTS,
         ),
-        simple_min_bb100=float(
-            data.get("simple_min_bb100", DEFAULT_SIMPLE_MIN_BB100)
-        ),
-        min_delta_bb100=float(
-            data.get("min_delta_bb100", DEFAULT_SMALL_MARGIN_BB100)
-        ),
+        simple_min_bb100=float(data.get("simple_min_bb100", DEFAULT_SIMPLE_MIN_BB100)),
+        min_delta_bb100=float(data.get("min_delta_bb100", DEFAULT_SMALL_MARGIN_BB100)),
         catastrophic_floor_bb100=float(
             data.get(
                 "catastrophic_floor_bb100",
@@ -299,8 +295,7 @@ def calculate_seed_variance(report, min_delta_bb100):
             baseline.bb_per_100 for _seed, _result, baseline in group
         )
         delta_values = tuple(
-            result.bb_per_100 - baseline.bb_per_100
-            for _seed, result, baseline in group
+            result.bb_per_100 - baseline.bb_per_100 for _seed, result, baseline in group
         )
         (
             candidate_mean,
@@ -348,9 +343,7 @@ def evaluate_gate(report, config, champion):
     simple_passed = bool(simple_rows) and all(
         row.bb_per_100 > config.simple_min_bb100 for row in simple_rows
     )
-    simple_detail = (
-        f"simple rows must be > {config.simple_min_bb100:.1f} bb/100"
-    )
+    simple_detail = f"simple rows must be > {config.simple_min_bb100:.1f} bb/100"
     if simple_rows:
         observed = ", ".join(
             f"{row.players}p {row.bb_per_100:+.1f}" for row in simple_rows
@@ -378,11 +371,7 @@ def evaluate_gate(report, config, champion):
         resolve_champion_placeholders(config.counter_strategies, champion)
     )
     counter_names.add(champion)
-    counter_rows = [
-        row
-        for row in report.aggregates
-        if row.opponent in counter_names
-    ]
+    counter_rows = [row for row in report.aggregates if row.opponent in counter_names]
     catastrophic_passed = bool(counter_rows) and all(
         row.bb_per_100 >= config.catastrophic_floor_bb100 for row in counter_rows
     )
@@ -409,9 +398,7 @@ def evaluate_seed_consistency(seed_variance, config):
             "no seed-level benchmark data was available",
         )
     weak_rows = [
-        row
-        for row in seed_variance
-        if row.seed_pass_rate < config.min_seed_pass_rate
+        row for row in seed_variance if row.seed_pass_rate < config.min_seed_pass_rate
     ]
     worst_rate = min((row.seed_pass_rate for row in seed_variance), default=0.0)
     worst_ci_low = min(
@@ -517,9 +504,7 @@ def _history_row(report):
         "worst_delta_bb_per_100": summary["worst_delta_bb_per_100"],
         "worst_seed_pass_rate": summary["worst_seed_pass_rate"],
         "population_passed": summary["population_passed"],
-        "population_worst_row_bb_per_100": summary[
-            "population_worst_row_bb_per_100"
-        ],
+        "population_worst_row_bb_per_100": summary["population_worst_row_bb_per_100"],
     }
 
 
@@ -683,10 +668,7 @@ def _aggregate_summary(report):
         "bb_per_100": bb_per_100,
         "worst_bb_per_100": min((row.bb_per_100 for row in rows), default=0.0),
         "worst_delta_bb_per_100": min(
-            (
-                row.delta_bb_per_100
-                for row in report.benchmark_report.comparisons
-            ),
+            (row.delta_bb_per_100 for row in report.benchmark_report.comparisons),
             default=0.0,
         ),
         "worst_seed_pass_rate": min(
@@ -806,8 +788,7 @@ def format_markdown_report(report):
     )
     for check in report.checks:
         lines.append(
-            f"| {check.name} | {'PASS' if check.passed else 'FAIL'} | "
-            f"{check.detail} |"
+            f"| {check.name} | {'PASS' if check.passed else 'FAIL'} | {check.detail} |"
         )
 
     if report.seed_variance:

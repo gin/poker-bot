@@ -81,7 +81,12 @@ def test_counter_adaptive_raises_strong_made_hand():
 def test_counter_adaptive_selfplay_positive_average_against_adaptive():
     seeds = [1, 2, 3, 4, 5]
     results = [
-        run_selfplay("counter_adaptive", opponent_name="adaptive", hands=200, seed=seed)
+        run_selfplay(
+            "counter_adaptive",
+            opponent_name="adaptive",
+            hands=1000,
+            seed=seed,
+        )
         for seed in seeds
     ]
     average_net = sum(result.net_chips for result in results) / len(results)

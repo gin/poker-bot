@@ -4,9 +4,15 @@ import argparse
 import json
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from eval.profiler import (
+    PlayProfiler,
+    StrategyProfile,
+    aggregate_profiles,
+    format_profile,
+)
 from eval.selfplay import BIG_BLIND, SelfPlayResult, run_selfplay
 
 DEFAULT_HANDS = 10000
@@ -36,6 +42,7 @@ class BenchmarkAggregate:
     pushes: int
     net_chips: int
     elapsed: float
+    profile: StrategyProfile | None = None
 
     @property
     def bb_per_100(self):
@@ -71,6 +78,7 @@ class BenchmarkReport:
     results: tuple[SelfPlayResult, ...]
     aggregates: tuple[BenchmarkAggregate, ...]
     elapsed: float
+    profile_enabled: bool = False
     pass_threshold: float | None = None
     baseline_strat: str | None = None
     baseline_results: tuple[SelfPlayResult, ...] = ()
@@ -161,6 +169,7 @@ def resolve_options(args):
         if args.fail_under_bb100 is not None
         else config.get("fail_under_bb100")
     )
+    use_profile = bool(args.profile or config.get("profile", False))
     return {
         "opponents": opponents,
         "players": players,
@@ -172,6 +181,7 @@ def resolve_options(args):
         "fail_under_bb100": fail_under_bb100
         if fail_under_bb100 is None
         else float(fail_under_bb100),
+        "profile": use_profile,
     }
 
 
@@ -204,6 +214,10 @@ def aggregate_results(cases, results):
 
     rows = []
     for (strat, opponent, players), group in sorted(grouped.items()):
+        profiles = []
+        for _case, r in group:
+            if r.profile is not None:
+                profiles.append(r.profile)
         rows.append(
             BenchmarkAggregate(
                 strat=strat,
@@ -216,6 +230,7 @@ def aggregate_results(cases, results):
                 pushes=sum(result.pushes for _case, result in group),
                 net_chips=sum(result.net_chips for _case, result in group),
                 elapsed=sum(result.elapsed for _case, result in group),
+                profile=aggregate_profiles(profiles) if profiles else None,
             )
         )
     return tuple(rows)
@@ -252,6 +267,7 @@ def run_benchmark(
     fail_under_bb100=None,
     baseline_strat=None,
     min_delta_bb100=0.0,
+    profile=False,
     runner=run_selfplay,
 ):
     cases = build_cases(strat, opponents, players, seeds, hands)
@@ -259,7 +275,8 @@ def run_benchmark(
     results = []
 
     def run_case(case, strategy_name):
-        return runner(
+        profiler = PlayProfiler() if profile else None
+        result = runner(
             strategy_name,
             hands=case.hands,
             seed=case.seed,
@@ -267,7 +284,12 @@ def run_benchmark(
             players=case.players,
             track_opponents=track_opponents,
             opponent_db=opponent_db,
+            profiler=profiler,
         )
+        if profile and profiler is not None:
+            sp = profiler.compute_profile()
+            result = replace(result, profile=sp)
+        return result
 
     for case in cases:
         results.append(run_case(case, case.strat))
@@ -294,6 +316,7 @@ def run_benchmark(
         results=tuple(results),
         aggregates=aggregates,
         elapsed=elapsed,
+        profile_enabled=profile,
         pass_threshold=fail_under_bb100,
         baseline_strat=baseline_strat,
         baseline_results=tuple(baseline_results),
@@ -344,6 +367,10 @@ def format_report(report):
             f"{_signed_float(row.chips_per_hand):>10}  "
             f"{row.wins}/{row.losses}/{row.pushes}"
         )
+        if report.profile_enabled and row.profile is not None:
+            profile_text = format_profile(row.profile)
+            for line in profile_text.split("\n"):
+                lines.append(f"  {line}")
     if report.baseline_strat is not None:
         lines.extend(
             [
@@ -373,8 +400,7 @@ def format_report(report):
             gates.append(f"bb/100 >= {report.pass_threshold:.1f}")
         if report.baseline_strat is not None:
             gates.append(
-                "delta vs "
-                f"{report.baseline_strat} >= {report.min_delta_bb_per_100:.1f}"
+                f"delta vs {report.baseline_strat} >= {report.min_delta_bb_per_100:.1f}"
             )
         lines.extend(["", f"gate        : {status} {'; '.join(gates)}"])
     return "\n".join(lines)
@@ -495,6 +521,11 @@ def build_parser():
             "aggregate. Defaults to 0.0 when --baseline is used."
         ),
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable strategy profiling (VPIP, PFR, AF, 3-BET%, WTSD, W$SD, BLUFF).",
+    )
     return parser
 
 
@@ -513,6 +544,7 @@ def main(argv=None):
             fail_under_bb100=options["fail_under_bb100"],
             baseline_strat=options["baseline"],
             min_delta_bb100=options["min_delta_bb100"],
+            profile=options["profile"],
         )
     except ValueError as exc:
         print(f"benchmark: {exc}", file=sys.stderr)

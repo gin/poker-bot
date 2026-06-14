@@ -136,8 +136,9 @@ def test_format_result_matches_expected_shape():
             "  wins/losses : 148/50  (push: 2)",
             "  net chips   : +144",
             "  chips/hand  : +0.7",
-            "  bb/100      : +1.4",
+            "  bb/100      : +7.2",
             "  elapsed     : 2.2s  (88 hands/s)",
+            "  profile     : (not profiled)",
         ]
     )
 
@@ -155,5 +156,7 @@ def test_format_result_shows_mixed_lineup_without_repeat_suffix():
         players=3,
     )
 
-    assert "  opponent    : simple+adaptive" in format_result(result)
-    assert "simple+adaptive x2" not in format_result(result)
+    output = format_result(result)
+    assert "  opponent    : simple+adaptive" in output
+    assert "simple+adaptive x2" not in output
+    assert "profile     : (not profiled)" in output

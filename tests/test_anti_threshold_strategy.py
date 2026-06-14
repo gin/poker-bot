@@ -86,7 +86,7 @@ def test_anti_threshold_positive_average_against_threshold_pressure():
         run_selfplay(
             "anti_threshold",
             opponent_name="threshold_pressure",
-            hands=200,
+            hands=1000,
             seed=seed,
         )
         for seed in seeds
