@@ -245,3 +245,14 @@ simple                   2       6     300000    +390110   +13.0       +1.3  172
       W$SD     48.4%  (balanced)
       BLUFF     0.0%  (tight)
 ```
+
+### S1 Tournament Result
+<picture>
+  <img alt="S1 Tournament Result" width="500" src="./img/result_s1_tournament.webp">
+</picture>
+
+Thank you [fielding](https://github.com/fielding) (fielding. in Discord), T (drt_thea_35041 in Discord), and sayurnara (sayurnara123 in Discord) for the detailed analysis of my bot's last hand.
+
+Onwards to S2 Tournament.  
+Use my referral link to enter the tournament: https://arena.dev.fun/i/r-tiluigi-ddb2db95  
+Entry is free if you enter your bot to S2 Playground before S2 Tournament starts.
