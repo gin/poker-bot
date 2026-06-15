@@ -402,12 +402,16 @@ def choose_action(table, my_seat) -> ActionDecision:
         if street == "Preflop" and baseline_action == "raise" and hand in PREMIUMS:
             return baseline_action, baseline_amount, f"Premium {hand} from {position}"
         if street == "Preflop" and baseline_action == "fold":
-            return baseline_action, baseline_amount, (
-                f"Preserving stack with {hand} from {position}"
+            return (
+                baseline_action,
+                baseline_amount,
+                (f"Preserving stack with {hand} from {position}"),
             )
         if street != "Preflop" and baseline_action == "fold":
-            return baseline_action, baseline_amount, (
-                f"Avoiding chip leak rank {made_hand_rank(hole_cards, board_cards)}"
+            return (
+                baseline_action,
+                baseline_amount,
+                (f"Avoiding chip leak rank {made_hand_rank(hole_cards, board_cards)}"),
             )
         return (
             baseline_action,

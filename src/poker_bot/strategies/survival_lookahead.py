@@ -244,9 +244,13 @@ def lookahead_action(table, my_seat, blueprint_action, blueprint_amount):
     if best == blueprint or best_score < blueprint_score + 5:
         return None
     action, amount = best
-    return action, amount, (
-        f"lookahead {style}: {action}"
-        f" score {best_score:.1f} over blueprint {blueprint_score:.1f}"
+    return (
+        action,
+        amount,
+        (
+            f"lookahead {style}: {action}"
+            f" score {best_score:.1f} over blueprint {blueprint_score:.1f}"
+        ),
     )
 
 

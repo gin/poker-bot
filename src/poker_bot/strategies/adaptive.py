@@ -226,8 +226,10 @@ def choose_action(table, my_seat) -> ActionDecision:
         if medium:
             amount = value_bet_amount(pot, allowed)
             return "bet", amount, "Thin value against simple"
-        if texture["high"] and not texture["wet"] and has_overcard_pressure(
-            hole_cards, board_cards
+        if (
+            texture["high"]
+            and not texture["wet"]
+            and has_overcard_pressure(hole_cards, board_cards)
         ):
             amount = pressure_bet_amount(pot, allowed, texture)
             return "bet", amount, "Pressure betting dry high-card board"

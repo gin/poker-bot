@@ -122,9 +122,7 @@ def sizing_fraction(table, my_seat, style, purpose, strong=False):
         return mixed_fraction(table, my_seat, options, purpose)
 
     options = (
-        [(0.28, 0.70), (0.40, 0.30)]
-        if not texture.get("wet", False)
-        else [(0.18, 1.0)]
+        [(0.28, 0.70), (0.40, 0.30)] if not texture.get("wet", False) else [(0.18, 1.0)]
     )
     return mixed_fraction(table, my_seat, options, purpose)
 

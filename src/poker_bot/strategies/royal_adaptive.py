@@ -54,11 +54,7 @@ def _adaptive_preflop(table, my_seat, base, tendencies, opponents):
         amount = _pressure_raise(table, allowed, score)
         return "raise", amount, f"royal adaptive steal vs patient table score {score}"
 
-    if (
-        "raise" in available
-        and tendencies.has_calling_station
-        and score >= 84
-    ):
+    if "raise" in available and tendencies.has_calling_station and score >= 84:
         amount = _pressure_raise(table, allowed, score)
         return "raise", amount, f"royal adaptive value raise vs callers score {score}"
 

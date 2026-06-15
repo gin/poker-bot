@@ -121,11 +121,7 @@ def rank_counts(cards):
 
 
 def paired_board_ranks(board_cards):
-    return {
-        value
-        for value, count in rank_counts(board_cards).items()
-        if count >= 2
-    }
+    return {value for value, count in rank_counts(board_cards).items() if count >= 2}
 
 
 def board_has_two_pair(board_cards):
