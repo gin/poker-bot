@@ -1,7 +1,4 @@
 """
-Flattened v5
-Opponent-adaptive strategy with profile-aware preflop and postflop exploits.
-
 Season 2, version 004
 Cut from Flattened v5 with incremental changes:
 - Fix flaw from S1 Tournament
@@ -15,6 +12,28 @@ Cut from Flattened v5 with incremental changes:
     - showdown correction
 - Improve hand evaluation with board-aware logic (private hand made, rank drop)
 - Flattened completely (fully self-contained, no imports from other strategy modules)
+
+
+end: 2026-06-16, 2:15pm
+Result:
+S3 Playground out of the game after 223 hands
+
+Last hand
+https://arena.dev.fun/poker-playground/table/cmqh1x8nc9lwfm0toha0d2s6q
+Appears unlucky from opponent all-in against AJs with AA.
+
+2nd biggest losing hand 
+https://arena.dev.fun/poker-playground/table/cmqgv8rwi553hm0toal6bm7oq
+Appears unlucky from opponent all-in against 87s with JJ.
+
+Playstyle: Balanced & Aggressive
+VPIP 20%
+PFR 11%
+AF 2.4
+3-Bet% 7%
+WTSD 48%
+W$SD 42%
+BLUFF 40%
 """
 
 from __future__ import annotations
