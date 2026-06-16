@@ -2,7 +2,7 @@
 Flattened v5
 Opponent-adaptive strategy with profile-aware preflop and postflop exploits.
 
-Season 2, version 004
+Season 2, version 003
 Cut from Flattened v5 with incremental changes:
 - Fix flaw from S1 Tournament
     - consider communal cards to recalculate hand strength
@@ -2715,7 +2715,7 @@ def weak_pair_wet_board_pot_control(table, my_seat, base) -> ActionDecision | No
             "check",
             None,
             distribution_message(
-                "mixed pot control weak non-top pair wet board",
+                "v004 mixed pot control weak non-top pair wet board",
                 decision,
                 summary,
             ),
@@ -2814,7 +2814,7 @@ def mixed_threshold_pressure_response(table, my_seat, base) -> ActionDecision | 
         "call",
         price,
         distribution_message(
-            f"mixed threshold-pressure defense required {required:.0%}",
+            f"v004 mixed threshold-pressure defense required {required:.0%}",
             decision,
             summary,
         ),
@@ -2869,7 +2869,7 @@ def range_mixed_dry_probe(table, my_seat, base):
     return (
         "bet",
         amount,
-        f"mixed range probe edge {edge:.2f} vs high-fold table",
+        f"v003 mixed range probe edge {edge:.2f} vs high-fold table",
     )
 
 
@@ -2904,11 +2904,11 @@ def cheap_postflop_continue(table, my_seat, base):
         board_cards,
         rank,
     ):
-        return "call", price, f"cheap continue made rank {rank}"
+        return "call", price, f"v003 cheap continue made rank {rank}"
     if opponents <= 3 and (top_pair or rank == 1):
-        return "call", price, f"cheap bluff catch rank {rank}"
+        return "call", price, f"v003 cheap bluff catch rank {rank}"
     if draw and not texture.get("paired", False) and required <= 0.12:
-        return "call", price, "cheap draw continue"
+        return "call", price, "v003 cheap draw continue"
     return None
 
 
@@ -3520,7 +3520,7 @@ def preflop_premium_pressure(table, my_seat, base):
         amount = raise_to_amount(
             table, allowed, BIG_BLIND * (base_multiplier + limpers)
         )
-        return "raise", amount, f"premium open pressure {hand}/{score}"
+        return "raise", amount, f"v003 six-max premium open pressure {hand}/{score}"
     return None
 
 
@@ -3734,7 +3734,7 @@ def simple_profile_river_bluff_catch(table, my_seat, base) -> ActionDecision | N
         "call",
         price,
         (
-            "mixed range/CFR simple-profile river bluff catch: "
+            "v007 mixed range/CFR simple-profile river bluff catch: "
             f"dist {decision.summary()} roll {decision.roll:.2f}, "
             f"required {required:.0%}, range edge {range_edge:+.2f}, "
             f"call {summary['call']:.0%}, "
@@ -3789,7 +3789,7 @@ def paired_board_range_fold(table, my_seat, base) -> ActionDecision | None:
         "fold",
         None,
         (
-            "mixed range/CFR paired-board fold: "
+            "v007 mixed range/CFR paired-board fold: "
             f"dist {decision.summary()} roll {decision.roll:.2f}, "
             f"required {required:.0%}, range edge {range_edge:+.2f}"
         ),
@@ -3856,7 +3856,7 @@ def preflop_open_raise(table, my_seat, base) -> ActionDecision | None:
         return (
             "raise",
             amount,
-            f"preflop open raise: score {score} pos {pos} size {size_bb}x table {ctx['table_type']}",
+            f"v005 preflop open raise: score {score} pos {pos} size {size_bb}x table {ctx['table_type']}",
         )
     return None
 
@@ -3909,7 +3909,7 @@ def preflop_isolation_raise(table, my_seat, base) -> ActionDecision | None:
         return (
             "raise",
             amount,
-            f"preflop isolation raise: score {score} pos {pos} limpers {limpers}",
+            f"v003 preflop isolation raise: score {score} pos {pos} limpers {limpers}",
         )
     return None
 
@@ -3999,7 +3999,7 @@ def preflop_positional_defense(table, my_seat, base) -> ActionDecision | None:
     return (
         "call",
         price,
-        f"preflop positional defense: score {score} pos {pos} required {required:.0%} cap {max_price:.0%}",
+        f"v005 preflop positional defense: score {score} pos {pos} required {required:.0%} cap {max_price:.0%}",
     )
 
 
@@ -4159,7 +4159,7 @@ def preflop_three_bet(table, my_seat, base) -> ActionDecision | None:
     return (
         "raise",
         amount,
-        f"preflop 3-bet {label}: hand {hc} score {score} pos {pos} "
+        f"v005 preflop 3-bet {label}: hand {hc} score {score} pos {pos} "
         f"size {target} table {ctx['table_type']}",
     )
 
@@ -4224,10 +4224,10 @@ def preflop_squeeze(table, my_seat, base) -> ActionDecision | None:
         ):
             chosen = choose_weighted(
                 (("squeeze", 0.30), ("pass", 0.70)),
-                "preflop-bluff-squeeze",
+                "v005-preflop-bluff-squeeze",
                 table,
                 my_seat,
-                strategy="s2v003",
+                strategy="flattened_v005",
                 extra=(hc, pos, callers),
             )
             if chosen == "squeeze":
@@ -4246,7 +4246,7 @@ def preflop_squeeze(table, my_seat, base) -> ActionDecision | None:
     return (
         "raise",
         amount,
-        f"preflop squeeze: hand {hc} score {score} pos {pos} callers {callers} size {target}",
+        f"v005 preflop squeeze: hand {hc} score {score} pos {pos} callers {callers} size {target}",
     )
 
 
@@ -4281,7 +4281,7 @@ def big_stack_loose_postflop_adjust(table, my_seat, base) -> ActionDecision | No
     # River: suppress bluff bets (air/draw) vs big-stack loose caller
     if street == "River" and action == "bet" and rank == 0:
         if "check" in available:
-            return "check", None, "big-stack-loose suppress river bluff"
+            return "check", None, "v005 big-stack-loose suppress river bluff"
 
     # Flop/Turn: thin value bet with any pair vs stations
     if street in {"Flop", "Turn"} and action == "check" and rank >= 1:
@@ -4291,7 +4291,7 @@ def big_stack_loose_postflop_adjust(table, my_seat, base) -> ActionDecision | No
             return (
                 "bet",
                 capped(bet_size, allowed),
-                f"thin value vs big-stack-loose: rank {rank}",
+                f"v005 thin value vs big-stack-loose: rank {rank}",
             )
 
     return None
@@ -4429,7 +4429,7 @@ def ip_dry_board_cbet_exploit(table, my_seat, base) -> ActionDecision | None:
     return (
         "bet",
         bet_size,
-        "IP dry board exploit: high fold-to-bet, small c-bet",
+        "v001 IP dry board exploit: high fold-to-bet, small c-bet",
     )
 
 
@@ -4478,7 +4478,7 @@ def high_wtsd_thin_value_bet(table, my_seat, base) -> ActionDecision | None:
     return (
         "bet",
         bet_size,
-        "thin value exploit: high call freq, betting 1-pair for value HU",
+        "v001 thin value exploit: high call freq, betting 1-pair for value HU",
     )
 
 
@@ -4540,7 +4540,7 @@ def semi_bluff_exploit(table, my_seat, base) -> ActionDecision | None:
     return (
         "bet",
         capped(bet_size, allowed),
-        f"semi-bluff {draw_label} IP pos {pos}",
+        f"v003 semi-bluff {draw_label} IP pos {pos}",
     )
 
 
@@ -4648,4 +4648,4 @@ def choose_action(table, my_seat) -> ActionDecision:
         return adjusted
 
     action, amount, message = base
-    return action, amount, f"{message}"
+    return action, amount, f"flattened_v005: {message}"
