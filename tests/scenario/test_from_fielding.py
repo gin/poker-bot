@@ -17,8 +17,8 @@ after by my bot lost that hand.
 
 import pytest
 
-# from poker_bot.strategies.flattened_v5 import choose_action
-from poker_bot.strategies.s2v002_board_illusion import choose_action
+from poker_bot.strategies.flattened_v5 import choose_action
+# from poker_bot.strategies.s2v002_board_illusion import choose_action
 
 HERO = "hero"
 DEFAULT_AVAILABLE = ("fold", "call", "raise", "all-in")

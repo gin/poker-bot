@@ -1,7 +1,4 @@
 """
-Flattened v5
-Opponent-adaptive strategy with profile-aware preflop and postflop exploits.
-
 Season 2, version 003
 Cut from Flattened v5 with incremental changes:
 - Fix flaw from S1 Tournament

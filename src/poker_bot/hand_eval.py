@@ -114,6 +114,55 @@ def evaluate_hand(cards):
     return max(rank_five(combo) for combo in itertools.combinations(cards, 5))
 
 
+def best_hand_with_combo(cards):
+    """Return (rank, combo) for the strongest 5-card hand in `cards`."""
+    best_rank, best_combo = None, None
+    for combo in itertools.combinations(cards, 5):
+        r = rank_five(combo)
+        if best_rank is None or r > best_rank:
+            best_rank, best_combo = r, combo
+    return best_rank, best_combo
+
+
+_DUMMY_CANDIDATES = [f"{rank}{suit}" for rank in "23456789TJQKA" for suit in "cdhs"]
+
+_DUMMY_RANKS = "23456789TJQKA"
+
+
+def choose_dummy_card(cards):
+    """Return a card string whose rank is not present in `cards`.
+
+    Using a non-present rank guarantees the dummy cannot pair with the
+    remaining cards, which is important when measuring how much a hole card
+    contributed to the hand category.
+    """
+    present_ranks = {card[0] for card in cards}
+    for rank in _DUMMY_RANKS:
+        if rank not in present_ranks:
+            return f"{rank}c"
+    # Unreachable for any pool with <= 12 distinct ranks.
+    for candidate in _DUMMY_CANDIDATES:
+        if candidate not in set(cards):
+            return candidate
+    return "2c"
+
+
+def best_hand_without(cards, drop_cards):
+    """Best hand when each entry in `drop_cards` is replaced by a dummy."""
+    pool = [c for c in cards if c not in drop_cards]
+    dummy = choose_dummy_card(pool)
+    pool.extend([dummy] * len(drop_cards))
+    return best_hand_with_combo(pool)
+
+
+def best_hand_rank_without(cards, drop_cards):
+    """Return the rank of the best hand after replacing `drop_cards` with dummies."""
+    pool = [c for c in cards if c not in drop_cards]
+    dummy = choose_dummy_card(pool)
+    pool.extend([dummy] * len(drop_cards))
+    return evaluate_hand(pool)
+
+
 def compare_hands(hand1, hand2):
     if hand1 > hand2:
         return 1

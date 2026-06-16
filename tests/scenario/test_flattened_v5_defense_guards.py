@@ -10,8 +10,8 @@ cover both the selfplay live-bet representation and the completed-pot
 representation.
 """
 
-# from poker_bot.strategies import flattened_v5 as strategy
-from poker_bot.strategies import s2v001 as strategy
+from poker_bot.strategies import flattened_v5 as strategy
+# from poker_bot.strategies import s2v001 as strategy
 
 
 def make_seats(bets, stacks, hero_seat, hero_cards):
