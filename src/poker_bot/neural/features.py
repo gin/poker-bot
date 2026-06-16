@@ -338,9 +338,7 @@ def _numeric_values(mapping):
         "top_pair_or_better": _flag(_lookup(mapping, "top_pair_or_better")),
         "facing_bet": _flag(_lookup(mapping, "facing_bet")),
         "voluntary": _flag(_lookup(mapping, "voluntary")),
-        "covered_by_larger_stack": _flag(
-            _lookup(mapping, "covered_by_larger_stack")
-        ),
+        "covered_by_larger_stack": _flag(_lookup(mapping, "covered_by_larger_stack")),
     }
 
 

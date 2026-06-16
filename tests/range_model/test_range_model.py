@@ -82,9 +82,7 @@ def test_raise_update_increases_premium_probability():
     updated = apply_action_update(hand_range, "raise", amount=300, pot=200)
 
     assert updated.probability_of_class("AA") > before
-    assert updated.probability_of_class("AKs") > hand_range.probability_of_class(
-        "AKs"
-    )
+    assert updated.probability_of_class("AKs") > hand_range.probability_of_class("AKs")
 
 
 def test_call_update_keeps_middle_range_more_than_bottom_range():

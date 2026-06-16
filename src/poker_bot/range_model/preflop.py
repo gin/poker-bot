@@ -128,8 +128,7 @@ DEFEND_RANGES = {
 }
 
 THREE_BET_RANGES = {
-    position: {"AA", "KK", "QQ", "JJ", "AKs", "AKo", "AQs"}
-    for position in OPEN_RANGES
+    position: {"AA", "KK", "QQ", "JJ", "AKs", "AKo", "AQs"} for position in OPEN_RANGES
 }
 
 BUTTON_POSITIONS = {

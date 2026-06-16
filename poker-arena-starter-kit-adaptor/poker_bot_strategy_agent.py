@@ -8,6 +8,7 @@ The selected module must expose:
 
     choose_action(table, my_seat) -> (action, amount, message)
 """
+
 from __future__ import annotations
 
 import importlib
@@ -177,8 +178,9 @@ def _deadline_fallback(table: dict) -> dict:
     return _payload("fold", None, table, "no legal action available")
 
 
-def decide(table: dict, deadline_s: float = 10.0,
-           research_context: Optional[dict] = None) -> dict:
+def decide(
+    table: dict, deadline_s: float = 10.0, research_context: Optional[dict] = None
+) -> dict:
     """Return one Arena-compatible action using the selected poker_bot strategy."""
     if deadline_s < 2.0:
         return _deadline_fallback(table)

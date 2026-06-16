@@ -49,8 +49,7 @@ class InfoSetNode:
         normalizer = sum(positive_regrets.values())
         if normalizer > 0:
             strategy = {
-                action: positive_regrets[action] / normalizer
-                for action in self.actions
+                action: positive_regrets[action] / normalizer for action in self.actions
             }
         else:
             probability = 1.0 / len(self.actions)
@@ -274,8 +273,7 @@ def response_value_for_deal(strategy, response, player, cards, history=""):
 def response_value(strategy, response, player):
     deals = tuple(permutations(CARDS, 2))
     return sum(
-        response_value_for_deal(strategy, response, player, cards)
-        for cards in deals
+        response_value_for_deal(strategy, response, player, cards) for cards in deals
     ) / len(deals)
 
 
