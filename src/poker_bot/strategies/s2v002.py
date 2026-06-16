@@ -2731,76 +2731,6 @@ def sixmax_adjustment(table, my_seat, base) -> ActionDecision | None:
     return None
 
 
-# from v006 but preflop might be too loose, computation time high, and non-deterministic
-# add later after no other ideas to improve. Need to add internal functions that are used
-# def local_search_adjustment(table, my_seat, base) -> ActionDecision | None:
-#     allowed = table.get("allowedActions", {})
-#     available = allowed.get("availableActions", [])
-#     if len(available) < 2:
-#         return None
-#     if not cheap_close_spot_filter(table, my_seat, base):
-#         return None
-#     equity = rollout_equity(table, my_seat)
-#     if not is_close_spot(table, my_seat, base, equity):
-#         return None
-
-#     actions = candidate_actions(table, my_seat, base)
-#     if len(actions) < 2:
-#         return None
-#     ev_by_action = {
-#         action: estimate_action_ev(table, my_seat, action, equity) for action in actions
-#     }
-#     best = max(actions, key=lambda action: ev_by_action[action])
-#     base_action = CandidateAction(base[0], base[1])
-#     base_ev = ev_by_action.get(base_action)
-#     if base_ev is None:
-#         matching = [action for action in actions if action.action == base[0]]
-#         base_ev = max(
-#             (ev_by_action[action] for action in matching),
-#             default=float("-inf"),
-#         )
-#     edge = ev_by_action[best] - base_ev
-#     pot = int(table.get("potChips") or 0)
-#     if base[0] in {"bet", "raise"} and best.action in {"check", "call", "fold"}:
-#         return None
-#     if base[0] in {"fold", "call"} and best.action in {"bet", "raise"}:
-#         return None
-#     if (
-#         base[0] == "check"
-#         and best.action == "bet"
-#         and not _has_explicit_fold_to_bet_profile(table)
-#     ):
-#         return None
-#     threshold = max(
-#         MIN_EDGE_CHIPS,
-#         min(
-#             MAX_EDGE_POT_FRACTION * max(pot, 1),
-#             MIN_EDGE_POT_FRACTION * max(pot, 1) + 12,
-#         ),
-#     )
-#     if best.action in {"bet", "raise"}:
-#         threshold = max(threshold, MIN_AGGRESSIVE_EDGE_CHIPS, 0.12 * max(pot, 1))
-#     if best.action == base[0] or edge < threshold:
-#         return None
-#     return (
-#         best.action,
-#         best.amount,
-#         (
-#             "v006 local search override: "
-#             f"{best.action} EV {ev_by_action[best]:+.1f} vs baseline "
-#             f"{base[0]} {base_ev:+.1f}, edge {edge:+.1f}, equity {equity:.0%}"
-#         ),
-#     )
-
-
-# From v006
-# def sixmax_adjustment(table, my_seat, base) -> ActionDecision | None:
-#     decision = local_search_adjustment(table, my_seat, base)
-#     if decision is not None:
-#         return decision
-#     return None
-
-
 def choose_action(table, my_seat) -> ActionDecision:
     allowed = table.get("allowedActions", {})
     available = allowed.get("availableActions", [])
@@ -2817,4 +2747,4 @@ def choose_action(table, my_seat) -> ActionDecision:
         return adjusted
 
     action, amount, message = base
-    return action, amount, f"flattened_v005: {message}"
+    return action, amount, f"s2v002: {message}"
