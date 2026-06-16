@@ -10,7 +10,8 @@ cover both the selfplay live-bet representation and the completed-pot
 representation.
 """
 
-from poker_bot.strategies import flattened_v5 as strategy
+# from poker_bot.strategies import flattened_v5 as strategy
+from poker_bot.strategies import s2v001 as strategy
 
 
 def make_seats(bets, stacks, hero_seat, hero_cards):
@@ -133,7 +134,6 @@ def test_spr_commitment_lock_uses_post_call_stack_and_pot():
     assert "spr 0.00 < 3.0" in decision[2]
 
 
-
 def make_postflop_table(
     *,
     hero_cards,
@@ -184,7 +184,6 @@ def make_postflop_table(
     }, seats[0]
 
 
-
 def test_spr_commitment_lock_completes_pot_representation():
     # pot=100, call=50, hero and villain both have 200.
     # After the call: effective stack = 150, pot = 150, SPR = 1.00.
@@ -204,7 +203,6 @@ def test_spr_commitment_lock_completes_pot_representation():
     assert "spr 1.00 < 3.0" in decision[2]
 
 
-
 def test_spr_commitment_lock_ignores_high_spr():
     # pot=100, call=10, hero and villain both have 1000.
     # After the call: effective stack = 990, pot = 110, SPR = 9.00.
@@ -220,7 +218,6 @@ def test_spr_commitment_lock_ignores_high_spr():
     decision = strategy.spr_commitment_lock(table, hero, ("fold", None, "base folds"))
 
     assert decision is None
-
 
 
 def test_spr_commitment_lock_uses_multiway_threshold():
@@ -241,7 +238,6 @@ def test_spr_commitment_lock_uses_multiway_threshold():
     assert "spr 0.33 < 1.5" in decision[2]
 
 
-
 def test_spr_commitment_lock_requires_two_pair_or_better():
     # Same low SPR as the completed-pot test, but only top pair should not trigger.
     table, hero = make_postflop_table(
@@ -258,7 +254,6 @@ def test_spr_commitment_lock_requires_two_pair_or_better():
     assert decision is None
 
 
-
 def test_spr_commitment_lock_only_rescues_base_folds():
     table, hero = make_postflop_table(
         hero_cards=["AS", "AD"],
@@ -272,4 +267,3 @@ def test_spr_commitment_lock_only_rescues_base_folds():
     decision = strategy.spr_commitment_lock(table, hero, ("raise", 150, "base raises"))
 
     assert decision is None
-

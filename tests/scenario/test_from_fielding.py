@@ -17,13 +17,17 @@ after by my bot lost that hand.
 
 import pytest
 
-from poker_bot.strategies.flattened_v5 import choose_action
+# from poker_bot.strategies.flattened_v5 import choose_action
+from poker_bot.strategies.s2v002_board_illusion import choose_action
 
 HERO = "hero"
 DEFAULT_AVAILABLE = ("fold", "call", "raise", "all-in")
 
 BOARD_MADE_AIR_CASES = (
-    (["Qh", "Kd"], ["3d", "8h", "3h", "3s", "5h"]),  # https://arena.dev.fun/poker-tournament/table/cmqekdj21ooiobrl14wjcmx0j
+    (
+        ["Qh", "Kd"],
+        ["3d", "8h", "3h", "3s", "5h"],
+    ),  # https://arena.dev.fun/poker-tournament/table/cmqekdj21ooiobrl14wjcmx0j
     (["2c", "3h"], ["8d", "8h", "8s", "Kd", "4c"]),  # board trips, no kicker
     (["Ks", "Qc"], ["Kh", "Qh", "9h", "4h", "2h"]),  # board flush, no heart
     (["Ks", "2c"], ["5d", "6h", "7s", "8c", "9d"]),  # board straight, no 4/T
