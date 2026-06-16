@@ -16,7 +16,7 @@ from poker_bot.neural.value_model import (
     split_examples,
     train_linear_value_model,
 )
-from poker_bot.opponent_store import default_db_path
+from poker_bot.opponent_store import default_telemetry_db_path
 
 DEFAULT_OUTPUT_DIR = Path("benchmark-runs/neural")
 
@@ -41,7 +41,7 @@ def build_parser():
     )
     parser.add_argument(
         "--db",
-        default=str(default_db_path()),
+        default=str(default_telemetry_db_path()),
         help="SQLite telemetry database path.",
     )
     parser.add_argument(

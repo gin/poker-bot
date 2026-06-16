@@ -3,6 +3,7 @@ from pathlib import Path
 from poker_bot.opponent_store import (
     connect,
     default_db_path,
+    default_telemetry_db_path,
     increment_hand_seen,
     load_profile,
     record_external_agent_stats,
@@ -23,6 +24,39 @@ def test_default_db_path_can_be_overridden(monkeypatch, tmp_path):
     monkeypatch.setenv("POKER_BOT_OPPONENT_DB", str(override))
 
     assert default_db_path() == override
+
+
+def test_telemetry_db_path_prefers_telemetry_env(monkeypatch, tmp_path):
+    opponent_db = tmp_path / "opponents.sqlite"
+    telemetry_db = tmp_path / "telemetry.sqlite"
+    monkeypatch.setenv("POKER_BOT_OPPONENT_DB", str(opponent_db))
+    monkeypatch.setenv("POKER_BOT_TELEMETRY_DB", str(telemetry_db))
+
+    assert default_db_path() == opponent_db
+    assert default_telemetry_db_path() == telemetry_db
+    with connect(telemetry=True) as conn:
+        assert conn.execute("select name from sqlite_master").fetchone()
+
+
+def test_telemetry_db_path_falls_back_to_opponent_env(monkeypatch, tmp_path):
+    opponent_db = tmp_path / "opponents.sqlite"
+    monkeypatch.delenv("POKER_BOT_TELEMETRY_DB", raising=False)
+    monkeypatch.setenv("POKER_BOT_OPPONENT_DB", str(opponent_db))
+
+    assert default_telemetry_db_path() == opponent_db
+
+
+def test_connect_enables_wal_and_busy_timeout_for_shared_db(tmp_path):
+    db_path = tmp_path / "shared-opponents.sqlite"
+
+    with connect(db_path) as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+
+    assert journal_mode == "wal"
+    assert busy_timeout == 5000
+    assert foreign_keys == 1
 
 
 def test_opponent_store_records_and_loads_profile(tmp_path):

@@ -18,18 +18,38 @@ from poker_bot.strategies.adaptive import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = REPO_ROOT / "gameplay.sqlite"
+OPPONENT_DB_ENV = "POKER_BOT_OPPONENT_DB"
+TELEMETRY_DB_ENV = "POKER_BOT_TELEMETRY_DB"
+
+
+def _env_path(name: str, default: Path) -> Path:
+    value = os.environ.get(name)
+    if value and value.strip():
+        return Path(value).expanduser()
+    return default
 
 
 def default_db_path():
-    return Path(os.environ.get("POKER_BOT_OPPONENT_DB", DEFAULT_DB_PATH)).expanduser()
+    return _env_path(OPPONENT_DB_ENV, DEFAULT_DB_PATH)
 
 
-def connect(path=None):
-    db_path = Path(path).expanduser() if path is not None else default_db_path()
+def default_telemetry_db_path():
+    return _env_path(TELEMETRY_DB_ENV, default_db_path())
+
+
+def connect(path=None, *, telemetry: bool = False):
+    if telemetry and path is None:
+        db_path = default_telemetry_db_path()
+    else:
+        db_path = Path(path).expanduser() if path is not None else default_db_path()
     if str(db_path) != ":memory:":
         db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    if str(db_path) != ":memory:":
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
     init_db(conn)
     return conn
 

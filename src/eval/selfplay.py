@@ -11,7 +11,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from eval.profiler import PlayProfiler, StrategyProfile, format_profile  # noqa: E402
+from eval.profiler import StrategyProfile, format_profile  # noqa: E402
 from poker_bot.opponent_store import (  # noqa: E402
     connect,
     create_telemetry_run,
@@ -95,7 +95,7 @@ def run_selfplay(
     should_track = track_opponents or db_conn is not None
     should_record_telemetry = telemetry or telemetry_run_id is not None
     if should_record_telemetry and db_conn is None:
-        db_conn = connect()
+        db_conn = connect(telemetry=True)
     run_id = None
     if should_record_telemetry:
         run_id = create_telemetry_run(
@@ -117,7 +117,6 @@ def run_selfplay(
 
     # Build the profiler observer if a profiler was given
     use_profiler = profiler is not None
-    profiler_observe = profiler.observer if use_profiler else None
 
     def combined_observer(**event):
         """Action observer used in ALL modes (heads-up and multiway).

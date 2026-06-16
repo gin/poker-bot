@@ -1,5 +1,6 @@
 import pytest
 
+from eval.profiler import PlayProfiler
 from eval.selfplay import (
     DEFAULT_HANDS,
     SelfPlayResult,
@@ -63,6 +64,23 @@ def test_run_selfplay_supports_six_max():
     assert result.players == 6
     assert result.opponent == "simple"
     assert result.wins + result.losses + result.pushes == 10
+
+
+def test_run_selfplay_profiler_tracks_preflop_in_six_max():
+    profiler = PlayProfiler()
+    result = run_selfplay(
+        "all_in_everytime",
+        hands=20,
+        seed=3,
+        players=6,
+        profiler=profiler,
+    )
+    profile = profiler.compute_profile()
+
+    assert result.players == 6
+    assert profile.total_hands == 20
+    assert profile.vpip_pct > 0
+    assert profile.pfr_pct > 0
 
 
 def test_run_selfplay_supports_mixed_multiway_lineup():

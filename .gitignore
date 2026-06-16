@@ -72,7 +72,7 @@ __marimo__/
 !.arena-credentials.example  # Keep example/template
 
 # Runtime data and state
-gameplay.sqlite
+gameplay*.sqlite
 
 # Raw data directory
 raw-data/
@@ -95,7 +95,15 @@ main_eval.py
 query-live-competition.sh
 run_*.sh
 run_*.py
+references/*
 
 # AI agent directories
 .agents/
 .codex/
+
+# TODO: clean up the publish
+scripts/*
+img/*
+README*.md
+flattened_v5.py
+main_*.py

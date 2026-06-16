@@ -309,7 +309,7 @@ def telemetry_enabled():
 def init_live_telemetry(state, competition_id, strategy_name=DEFAULT_STRATEGY_NAME):
     if not telemetry_enabled():
         return None, None
-    conn = connect()
+    conn = connect(telemetry=True)
     if state.get("telemetry_strategy") != strategy_name:
         state.pop("telemetry_run_id", None)
         state["telemetry_decision_indexes"] = {}
