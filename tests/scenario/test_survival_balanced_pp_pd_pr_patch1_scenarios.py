@@ -150,6 +150,48 @@ def test_raise_trips_for_value_even_on_paired_board(monkeypatch):
     assert "value raise rank 3" in message
 
 
+def test_fold_overpriced_river_trips_on_tripled_board(monkeypatch):
+    force_blueprint(monkeypatch, "call")
+    hero = make_seat(cards=["QD", "KH"], stack=33150)
+    table = make_table(
+        street="River",
+        board=["3D", "8H", "3H", "3S", "5H"],
+        actions=["fold", "call", "all-in"],
+        hero=hero,
+        pot=38013,
+        current_bet=37730,
+        call_amount=37636,
+        min_raise_to=0,
+    )
+
+    action, amount, message = strategy.choose_action(table, hero)
+
+    assert action == "fold"
+    assert amount is None
+    assert "overpriced river trips" in message
+
+
+def test_call_cheap_river_trips_on_tripled_board(monkeypatch):
+    force_blueprint(monkeypatch, "call")
+    hero = make_seat(cards=["QD", "KH"], stack=1800)
+    table = make_table(
+        street="River",
+        board=["3D", "8H", "3H", "3S", "5H"],
+        actions=["fold", "call", "all-in"],
+        hero=hero,
+        pot=1000,
+        current_bet=100,
+        call_amount=100,
+        min_raise_to=0,
+    )
+
+    action, amount, message = strategy.choose_action(table, hero)
+
+    assert action == "call"
+    assert amount == 100
+    assert "overpriced river trips" not in message
+
+
 def test_call_but_do_not_raise_overpair_on_paired_board(monkeypatch):
     force_blueprint(monkeypatch, "fold")
     hero = make_seat(cards=["JC", "JH"], stack=1800)

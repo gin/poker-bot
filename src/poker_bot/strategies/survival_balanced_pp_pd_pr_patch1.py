@@ -318,6 +318,30 @@ def anti_bully_defense(table, my_seat, blueprint):
     return None
 
 
+def river_trips_price_cap(table, my_seat, blueprint):
+    action, _amount, _message = blueprint
+    if action != "call" or table.get("street") != "River":
+        return None
+
+    allowed = table.get("allowedActions", {})
+    available = allowed.get("availableActions", [])
+    if "call" not in available or "fold" not in available:
+        return None
+
+    hole_cards = my_seat.get("holeCards", [])
+    board_cards = table.get("boardCards", [])
+    if made_hand_rank(hole_cards, board_cards) != 3:
+        return None
+
+    call_amount = int(allowed.get("callAmount") or allowed.get("callChips") or 0)
+    pot = int(table.get("potChips") or 0)
+    required = pot_odds(call_amount, pot)
+    if required <= 0.40:
+        return None
+
+    return "fold", None, "folding overpriced river trips"
+
+
 def postflop_raise_back_defense(table, my_seat, blueprint):
     action, _amount, _message = blueprint
     if action == "raise" or table.get("street", "Preflop") == "Preflop":
@@ -425,6 +449,10 @@ def choose_action(table, my_seat) -> ActionDecision:
     defense = anti_bully_defense(table, my_seat, blueprint)
     if defense is not None:
         return defense
+
+    river_trips = river_trips_price_cap(table, my_seat, blueprint)
+    if river_trips is not None:
+        return river_trips
 
     postflop = balanced_postflop_adjustment(table, my_seat, blueprint)
     if postflop is not None:
