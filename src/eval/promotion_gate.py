@@ -111,7 +111,7 @@ class PromotionGateConfig:
     track_opponents: bool
     scenario_tests: tuple[str, ...]
     simple_min_bb100: float
-    min_delta_bb100: float
+    min_delta_bb_per_100: float
     catastrophic_floor_bb100: float
     counter_strategies: tuple[str, ...]
     min_seed_pass_rate: float
@@ -193,7 +193,9 @@ def load_promotion_config(path=DEFAULT_CONFIG):
             DEFAULT_SCENARIO_TESTS,
         ),
         simple_min_bb100=float(data.get("simple_min_bb100", DEFAULT_SIMPLE_MIN_BB100)),
-        min_delta_bb100=float(data.get("min_delta_bb100", DEFAULT_SMALL_MARGIN_BB100)),
+        min_delta_bb_per_100=float(
+            data.get("min_delta_bb_per_100", DEFAULT_SMALL_MARGIN_BB100)
+        ),
         catastrophic_floor_bb100=float(
             data.get(
                 "catastrophic_floor_bb100",
@@ -270,7 +272,7 @@ def _series_stats(values):
     return mean, stddev, stderr, mean - ci95, mean + ci95
 
 
-def calculate_seed_variance(report, min_delta_bb100):
+def calculate_seed_variance(report, min_delta_bb_per_100):
     baseline_by_case = {
         (result.opponent, result.players, case.seed): result
         for case, result in zip(
@@ -307,7 +309,7 @@ def calculate_seed_variance(report, min_delta_bb100):
         delta_mean, delta_stddev, delta_stderr, delta_low, delta_high = _series_stats(
             delta_values
         )
-        seed_passes = sum(1 for value in delta_values if value >= min_delta_bb100)
+        seed_passes = sum(1 for value in delta_values if value >= min_delta_bb_per_100)
         seed_count = len(delta_values)
         rows.append(
             SeedVariance(
@@ -362,7 +364,7 @@ def evaluate_gate(report, config, champion):
             "champion regression margin",
             delta_passed,
             (
-                f"candidate must stay within {config.min_delta_bb100:.1f} bb/100 "
+                f"candidate must stay within {config.min_delta_bb_per_100:.1f} bb/100 "
                 f"of {champion}; worst delta {worst_delta_str}"
             ),
         )
@@ -411,7 +413,7 @@ def evaluate_seed_consistency(seed_variance, config):
         row
         for row in seed_variance
         if row.seed_pass_rate < config.min_seed_pass_rate
-        or row.delta_ci95_low_bb_per_100 < config.min_delta_bb100
+        or row.delta_ci95_low_bb_per_100 < config.min_delta_bb_per_100
     ]
     worst_rate = min((row.seed_pass_rate for row in seed_variance), default=0.0)
     worst_ci_low = min(
@@ -425,15 +427,15 @@ def evaluate_seed_consistency(seed_variance, config):
         )
         detail = (
             f"requires at least {config.min_seed_pass_rate:.0%} of seeds per row "
-            f"to clear delta {config.min_delta_bb100:.1f} and "
-            f"delta CI95 low >= {config.min_delta_bb100:.1f}; "
+            f"to clear delta {config.min_delta_bb_per_100:.1f} and "
+            f"delta CI95 low >= {config.min_delta_bb_per_100:.1f}; "
             f"weak rows: {examples}; "
             f"worst rate {worst_rate:.0%}, worst delta CI95 low {worst_ci_low:+.1f}"
         )
     else:
         detail = (
             f"all rows clear {config.min_seed_pass_rate:.0%} seed pass rate "
-            f"and delta CI95 low >= {config.min_delta_bb100:.1f}; "
+            f"and delta CI95 low >= {config.min_delta_bb_per_100:.1f}; "
             f"worst rate {worst_rate:.0%}, worst delta CI95 low {worst_ci_low:+.1f}"
         )
     return GateCheck("seed consistency", not weak_rows, detail)
@@ -585,10 +587,12 @@ def run_promotion_gate(
         hands=config.hands,
         track_opponents=config.track_opponents,
         baseline_strat=champion,
-        min_delta_bb100=config.min_delta_bb100,
+        min_delta_bb_per_100=config.min_delta_bb_per_100,
         runner=benchmark_runner,
     )
-    seed_variance = calculate_seed_variance(benchmark_report, config.min_delta_bb100)
+    seed_variance = calculate_seed_variance(
+        benchmark_report, config.min_delta_bb_per_100
+    )
     population_report = None
     population_check = ()
     if config.population_config:
@@ -946,7 +950,7 @@ def update_champion_json(path, report, *, config_path, output_json):
             "status": "promoted",
             "reason": "Passed scenario tests and promotion benchmark gate.",
             **summary,
-            "min_delta_bb_per_100": report.config.min_delta_bb100,
+            "min_delta_bb_per_100": report.config.min_delta_bb_per_100,
             "catastrophic_floor_bb_per_100": report.config.catastrophic_floor_bb100,
             "population_config": report.config.population_config,
         },

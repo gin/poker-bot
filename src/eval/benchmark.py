@@ -96,7 +96,7 @@ class BenchmarkReport:
         if self.baseline_strat is not None:
             checks.append(all(row.passed for row in self.comparisons))
         if not checks:
-            return None
+            return False
         return all(checks)
 
 
@@ -159,10 +159,10 @@ def resolve_options(args):
     hands = args.hands if args.hands is not None else config.get("hands", DEFAULT_HANDS)
     track_opponents = bool(args.track_opponents or config.get("track_opponents", False))
     baseline = args.baseline if args.baseline is not None else config.get("baseline")
-    min_delta_bb100 = (
-        args.min_delta_bb100
-        if args.min_delta_bb100 is not None
-        else config.get("min_delta_bb100", 0.0)
+    min_delta_bb_per_100 = (
+        args.min_delta_bb_per_100
+        if args.min_delta_bb_per_100 is not None
+        else config.get("min_delta_bb_per_100", 0.0)
     )
     fail_under_bb100 = (
         args.fail_under_bb100
@@ -177,7 +177,7 @@ def resolve_options(args):
         "hands": int(hands),
         "track_opponents": track_opponents,
         "baseline": baseline,
-        "min_delta_bb100": float(min_delta_bb100),
+        "min_delta_bb_per_100": float(min_delta_bb_per_100),
         "fail_under_bb100": fail_under_bb100
         if fail_under_bb100 is None
         else float(fail_under_bb100),
@@ -186,8 +186,8 @@ def resolve_options(args):
 
 
 def build_cases(strat, opponents, players, seeds, hands):
-    if hands < 0:
-        raise ValueError("--hands must be non-negative")
+    if hands <= 0:
+        raise ValueError("--hands must be positive")
     cases = []
     for opponent in opponents:
         for player_count in players:
@@ -236,11 +236,13 @@ def aggregate_results(cases, results):
     return tuple(rows)
 
 
-def compare_aggregates(candidate_rows, baseline_rows, min_delta_bb100):
+def compare_aggregates(candidate_rows, baseline_rows, min_delta_bb_per_100):
     baseline_by_key = {(row.opponent, row.players): row for row in baseline_rows}
     comparisons = []
     for candidate in candidate_rows:
-        baseline = baseline_by_key[(candidate.opponent, candidate.players)]
+        baseline = baseline_by_key.get((candidate.opponent, candidate.players))
+        if baseline is None:
+            continue
         delta = candidate.bb_per_100 - baseline.bb_per_100
         comparisons.append(
             BenchmarkComparison(
@@ -249,7 +251,7 @@ def compare_aggregates(candidate_rows, baseline_rows, min_delta_bb100):
                 candidate_bb_per_100=candidate.bb_per_100,
                 baseline_bb_per_100=baseline.bb_per_100,
                 delta_bb_per_100=delta,
-                min_delta_bb_per_100=min_delta_bb100,
+                min_delta_bb_per_100=min_delta_bb_per_100,
             )
         )
     return tuple(comparisons)
@@ -266,7 +268,7 @@ def run_benchmark(
     opponent_db=None,
     fail_under_bb100=None,
     baseline_strat=None,
-    min_delta_bb100=0.0,
+    min_delta_bb_per_100=0.0,
     profile=False,
     runner=run_selfplay,
 ):
@@ -308,7 +310,7 @@ def run_benchmark(
         comparisons = compare_aggregates(
             aggregates,
             baseline_aggregates,
-            min_delta_bb100,
+            min_delta_bb_per_100,
         )
     return BenchmarkReport(
         strat=strat,
@@ -322,7 +324,7 @@ def run_benchmark(
         baseline_results=tuple(baseline_results),
         baseline_aggregates=baseline_aggregates,
         comparisons=comparisons,
-        min_delta_bb_per_100=min_delta_bb100,
+        min_delta_bb_per_100=min_delta_bb_per_100,
     )
 
 
@@ -516,6 +518,7 @@ def build_parser():
         "--min-delta-bb100",
         type=float,
         default=None,
+        dest="min_delta_bb_per_100",
         help=(
             "Minimum candidate bb/100 improvement over baseline for every "
             "aggregate. Defaults to 0.0 when --baseline is used."
@@ -543,7 +546,7 @@ def main(argv=None):
             opponent_db=args.opponent_db,
             fail_under_bb100=options["fail_under_bb100"],
             baseline_strat=options["baseline"],
-            min_delta_bb100=options["min_delta_bb100"],
+            min_delta_bb_per_100=options["min_delta_bb_per_100"],
             profile=options["profile"],
         )
     except ValueError as exc:

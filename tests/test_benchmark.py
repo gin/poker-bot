@@ -71,7 +71,7 @@ def test_resolve_options_loads_config_and_allows_cli_overrides(tmp_path):
                 "seeds": [7, 11],
                 "track_opponents": True,
                 "baseline": "baseline",
-                "min_delta_bb100": 1.5,
+                "min_delta_bb_per_100": 1.5,
                 "fail_under_bb100": -10.0,
             }
         )
@@ -95,7 +95,7 @@ def test_resolve_options_loads_config_and_allows_cli_overrides(tmp_path):
     assert options["seeds"] == (7, 11)
     assert options["track_opponents"] is True
     assert options["baseline"] == "baseline"
-    assert options["min_delta_bb100"] == 1.5
+    assert options["min_delta_bb_per_100"] == 1.5
     assert options["fail_under_bb100"] == -10.0
 
 
@@ -127,7 +127,7 @@ def test_run_benchmark_compares_candidate_to_baseline():
         seeds=(1, 2),
         hands=100,
         baseline_strat="baseline",
-        min_delta_bb100=0.0,
+        min_delta_bb_per_100=0.0,
         runner=fake_runner,
     )
 
@@ -146,7 +146,7 @@ def test_run_benchmark_fails_when_candidate_lags_baseline():
         seeds=(1,),
         hands=100,
         baseline_strat="baseline",
-        min_delta_bb100=0.0,
+        min_delta_bb_per_100=0.0,
         runner=fake_runner,
     )
 
@@ -194,7 +194,7 @@ def test_format_report_includes_baseline_comparison():
         seeds=(1,),
         hands=100,
         baseline_strat="baseline",
-        min_delta_bb100=0.0,
+        min_delta_bb_per_100=0.0,
         runner=fake_runner,
     )
 
@@ -232,7 +232,7 @@ def test_write_json_report_includes_baseline_comparison(tmp_path):
         seeds=(1,),
         hands=100,
         baseline_strat="baseline",
-        min_delta_bb100=0.0,
+        min_delta_bb_per_100=0.0,
         runner=fake_runner,
     )
     output_path = tmp_path / "report.json"
