@@ -545,3 +545,51 @@ def test_format_markdown_includes_scenario_output_when_failed(tmp_path):
     assert "stdout-line" in markdown
     assert "stderr-line" in markdown
     assert json.loads(champion_path.read_text()) == {"strategy": "champion"}
+
+
+def test_promotion_gate_passes_workers_to_benchmark(tmp_path, monkeypatch):
+    config_path = write_config(tmp_path)
+    champion_path = write_champion(tmp_path)
+
+    captured: dict = {}
+
+    def fake_run_benchmark(*args, **kwargs):
+        captured["workers"] = kwargs.get("workers")
+        return _make_fake_benchmark_report()
+
+    def _make_fake_benchmark_report():
+        return promotion_gate.benchmark.BenchmarkReport(
+            strat="candidate",
+            cases=(),
+            results=(),
+            aggregates=(),
+            elapsed=0.0,
+            baseline_strat="champion",
+            baseline_results=(),
+            baseline_aggregates=(),
+            comparisons=(),
+            min_delta_bb_per_100=-5.0,
+        )
+
+    monkeypatch.setattr(
+        promotion_gate.benchmark,
+        "run_benchmark",
+        fake_run_benchmark,
+    )
+
+    payload = json.loads(config_path.read_text())
+    payload["workers"] = 4
+    config_path.write_text(json.dumps(payload))
+
+    promotion_gate.run_promotion_gate(
+        "candidate",
+        config_path=config_path,
+        champion_json=champion_path,
+        benchmark_runner=fake_benchmark_runner,
+        scenario_runner=lambda *_a, **_k: completed(),
+        output_json=tmp_path / "report.json",
+        output_markdown=tmp_path / "report.md",
+        history_index=tmp_path / "index.jsonl",
+    )
+
+    assert captured["workers"] == 4

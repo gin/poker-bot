@@ -1,8 +1,11 @@
 """Run benchmark matrices for poker strategies."""
 
 import argparse
+import concurrent.futures
 import json
+import os
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -14,11 +17,13 @@ from eval.profiler import (
     format_profile,
 )
 from eval.selfplay import BIG_BLIND, SelfPlayResult, run_selfplay
+from poker_bot import opponent_store
 
 DEFAULT_HANDS = 10000
 DEFAULT_OPPONENTS = ("simple", "adaptive", "royal_adaptive")
 DEFAULT_PLAYERS = (2, 6)
 DEFAULT_SEEDS = (1, 2, 3, 4, 5, 6)
+DEFAULT_WORKER_CAP = 16
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,7 @@ class BenchmarkReport:
     baseline_aggregates: tuple[BenchmarkAggregate, ...] = ()
     comparisons: tuple[BenchmarkComparison, ...] = ()
     min_delta_bb_per_100: float = 0.0
+    workers: int = 1
 
     @property
     def passed(self):
@@ -170,6 +176,9 @@ def resolve_options(args):
         else config.get("fail_under_bb100")
     )
     use_profile = bool(args.profile or config.get("profile", False))
+    workers = int(args.workers) if args.workers is not None else int(
+        config.get("workers", 0)
+    )
     return {
         "opponents": opponents,
         "players": players,
@@ -182,6 +191,7 @@ def resolve_options(args):
         if fail_under_bb100 is None
         else float(fail_under_bb100),
         "profile": use_profile,
+        "workers": workers,
     }
 
 
@@ -257,6 +267,101 @@ def compare_aggregates(candidate_rows, baseline_rows, min_delta_bb_per_100):
     return tuple(comparisons)
 
 
+def _resolve_workers(workers: int) -> int:
+    """Resolve the actual worker count from the requested value.
+
+    - 0 or negative: default to half the CPU count (min 1).
+    - > DEFAULT_WORKER_CAP: require POKER_BENCHMARK_ALLOW_HIGH_WORKERS=1.
+    """
+    if workers <= 0:
+        cpu = os.cpu_count() or 1
+        workers = max(1, cpu // 2)
+    if workers > DEFAULT_WORKER_CAP and os.environ.get(
+        "POKER_BENCHMARK_ALLOW_HIGH_WORKERS"
+    ) != "1":
+        raise ValueError(
+            f"workers={workers} exceeds safety cap {DEFAULT_WORKER_CAP}; "
+            "set POKER_BENCHMARK_ALLOW_HIGH_WORKERS=1 to override"
+        )
+    return workers
+
+
+def _run_case_worker(args):
+    """Run a single benchmark case in a worker process.
+
+    ``args`` is a tuple ``(case, runner, track_opponents, profile,
+    worker_db_path)``. The worker uses ``worker_db_path`` as the
+    opponent DB (a per-worker private file) so that parallel writes
+    do not collide; the orchestrator merges those files afterwards.
+    """
+    case, runner, track_opponents, profile, worker_db_path = args
+    profiler = PlayProfiler() if profile else None
+    result = runner(
+        case.strat,
+        hands=case.hands,
+        seed=case.seed,
+        opponent_name=case.opponent,
+        players=case.players,
+        track_opponents=track_opponents,
+        opponent_db=worker_db_path,
+        profiler=profiler,
+    )
+    if profile and profiler is not None:
+        sp = profiler.compute_profile()
+        result = replace(result, profile=sp)
+    return result
+
+
+def _run_cases_parallel(
+    cases,
+    *,
+    runner,
+    track_opponents,
+    profile,
+    worker_db_paths,
+    label: str,
+) -> list[SelfPlayResult]:
+    actual_workers = len(worker_db_paths) if worker_db_paths else _resolve_workers(0)
+    results: list[SelfPlayResult | None] = [None] * len(cases)
+    total = len(cases)
+    completed = 0
+    with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as pool:
+        futures = {}
+        for i, case in enumerate(cases):
+            worker_db = (
+                worker_db_paths[i % actual_workers] if worker_db_paths else None
+            )
+            future = pool.submit(
+                _run_case_worker,
+                (case, runner, track_opponents, profile, worker_db),
+            )
+            futures[future] = i
+        for future in concurrent.futures.as_completed(futures):
+            idx = futures[future]
+            try:
+                result = future.result()
+            except Exception:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            results[idx] = result
+            completed += 1
+            print(f"[benchmark] {label} completed {completed}/{total} cases")
+    return results  # type: ignore[return-value]
+
+
+def _run_cases_sequential(
+    cases,
+    *,
+    runner,
+    track_opponents,
+    profile,
+    opponent_db,
+) -> list[SelfPlayResult]:
+    return [
+        _run_case_worker((case, runner, track_opponents, profile, opponent_db))
+        for case in cases
+    ]
+
 def run_benchmark(
     strat,
     *,
@@ -271,35 +376,66 @@ def run_benchmark(
     min_delta_bb_per_100=0.0,
     profile=False,
     runner=run_selfplay,
+    workers=0,
 ):
     cases = build_cases(strat, opponents, players, seeds, hands)
     started = time.perf_counter()
-    results = []
+    actual_workers = _resolve_workers(workers)
 
-    def run_case(case, strategy_name):
-        profiler = PlayProfiler() if profile else None
-        result = runner(
-            strategy_name,
-            hands=case.hands,
-            seed=case.seed,
-            opponent_name=case.opponent,
-            players=case.players,
+    worker_db_paths: list[str] | None = None
+    temp_dir_ctx: tempfile.TemporaryDirectory | None = None
+    if opponent_db is not None and actual_workers > 1:
+        temp_dir_ctx = tempfile.TemporaryDirectory()
+        worker_db_paths = [
+            os.path.join(temp_dir_ctx.name, f"worker_{i}.sqlite")
+            for i in range(actual_workers)
+        ]
+        for path in worker_db_paths:
+            opponent_store.connect(path)
+
+    if actual_workers <= 1:
+        results = _run_cases_sequential(
+            cases,
+            runner=runner,
             track_opponents=track_opponents,
+            profile=profile,
             opponent_db=opponent_db,
-            profiler=profiler,
         )
-        if profile and profiler is not None:
-            sp = profiler.compute_profile()
-            result = replace(result, profile=sp)
-        return result
+    else:
+        results = _run_cases_parallel(
+            cases,
+            runner=runner,
+            track_opponents=track_opponents,
+            profile=profile,
+            worker_db_paths=worker_db_paths,
+            label="candidate",
+        )
 
-    for case in cases:
-        results.append(run_case(case, case.strat))
-
-    baseline_results = []
+    baseline_results: list[SelfPlayResult] = []
     if baseline_strat is not None:
-        for case in cases:
-            baseline_results.append(run_case(case, baseline_strat))
+        baseline_cases = [replace(case, strat=baseline_strat) for case in cases]
+        if actual_workers <= 1:
+            baseline_results = _run_cases_sequential(
+                baseline_cases,
+                runner=runner,
+                track_opponents=track_opponents,
+                profile=profile,
+                opponent_db=opponent_db,
+            )
+        else:
+            baseline_results = _run_cases_parallel(
+                baseline_cases,
+                runner=runner,
+                track_opponents=track_opponents,
+                profile=profile,
+                worker_db_paths=worker_db_paths,
+                label="baseline",
+            )
+
+    if worker_db_paths is not None and temp_dir_ctx is not None:
+        for path in worker_db_paths:
+            opponent_store.merge_worker_db(opponent_db, path)
+        temp_dir_ctx.cleanup()
 
     elapsed = time.perf_counter() - started
     aggregates = aggregate_results(cases, results)
@@ -325,6 +461,7 @@ def run_benchmark(
         baseline_aggregates=baseline_aggregates,
         comparisons=comparisons,
         min_delta_bb_per_100=min_delta_bb_per_100,
+        workers=actual_workers,
     )
 
 
@@ -416,6 +553,7 @@ def report_to_jsonable(report):
         "passed": report.passed,
         "baseline_strat": report.baseline_strat,
         "min_delta_bb_per_100": report.min_delta_bb_per_100,
+        "workers": report.workers,
         "cases": [asdict(case) for case in report.cases],
         "results": [asdict(result) for result in report.results],
         "baseline_results": [asdict(result) for result in report.baseline_results],
@@ -529,6 +667,17 @@ def build_parser():
         action="store_true",
         help="Enable strategy profiling (VPIP, PFR, AF, 3-BET%, WTSD, W$SD, BLUFF).",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        dest="workers",
+        help=(
+            "Number of worker processes for parallel case execution. "
+            "0 (default) = half the CPU count. Capped at 16 unless "
+            "POKER_BENCHMARK_ALLOW_HIGH_WORKERS=1 is set."
+        ),
+    )
     return parser
 
 
@@ -548,6 +697,7 @@ def main(argv=None):
             baseline_strat=options["baseline"],
             min_delta_bb_per_100=options["min_delta_bb_per_100"],
             profile=options["profile"],
+            workers=options["workers"],
         )
     except ValueError as exc:
         print(f"benchmark: {exc}", file=sys.stderr)

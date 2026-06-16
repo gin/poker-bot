@@ -1,7 +1,10 @@
 import json
 
+import pytest
+
 from eval import benchmark
 from eval.selfplay import SelfPlayResult
+from poker_bot import opponent_store
 
 
 def fake_runner(
@@ -234,6 +237,7 @@ def test_write_json_report_includes_baseline_comparison(tmp_path):
         baseline_strat="baseline",
         min_delta_bb_per_100=0.0,
         runner=fake_runner,
+        workers=1,
     )
     output_path = tmp_path / "report.json"
 
@@ -242,3 +246,71 @@ def test_write_json_report_includes_baseline_comparison(tmp_path):
     payload = json.loads(output_path.read_text())
     assert payload["baseline_strat"] == "baseline"
     assert payload["comparisons"][0]["passed"] is True
+    assert payload["workers"] == 1
+
+
+def test_run_benchmark_parallel_workers_returns_results_in_order(monkeypatch):
+    monkeypatch.setattr(benchmark, "_resolve_workers", lambda _w: 2)
+
+    report = benchmark.run_benchmark(
+        "candidate",
+        opponents=("simple", "adaptive"),
+        players=(2,),
+        seeds=(1, 2, 3),
+        hands=100,
+        runner=fake_runner,
+        workers=2,
+    )
+
+    assert len(report.results) == 6
+    assert report.workers == 2
+    # Net chips should be deterministic per case; verify a couple of slots
+    first = report.results[0]
+    assert first.opponent in {"simple", "adaptive"}
+    assert first.strat == "candidate"
+
+
+def test_run_benchmark_workers_safety_cap(monkeypatch):
+    monkeypatch.setenv("POKER_BENCHMARK_ALLOW_HIGH_WORKERS", "0")
+    with pytest.raises(ValueError, match="exceeds safety cap"):
+        benchmark._resolve_workers(20)
+
+
+def test_run_benchmark_workers_safety_cap_override(monkeypatch):
+    monkeypatch.setenv("POKER_BENCHMARK_ALLOW_HIGH_WORKERS", "1")
+    assert benchmark._resolve_workers(20) == 20
+
+
+def test_merge_worker_db_sums_opponent_stats(tmp_path):
+    main_db = tmp_path / "main.sqlite"
+    worker_a = tmp_path / "worker_a.sqlite"
+    worker_b = tmp_path / "worker_b.sqlite"
+
+    # Initialize all three DBs
+    opponent_store.connect(main_db)
+    conn_a = opponent_store.connect(worker_a)
+    conn_b = opponent_store.connect(worker_b)
+
+    # Create the same opponent in each worker
+    oid_a = opponent_store.upsert_opponent(conn_a, "selfplay", "villain", "v")
+    opponent_store.increment_hand_seen(conn_a, "selfplay", "villain", "v")
+    opponent_store.increment_hand_seen(conn_a, "selfplay", "villain", "v")
+    conn_a.close()
+
+    opponent_store.upsert_opponent(conn_b, "selfplay", "villain", "v")
+    opponent_store.increment_hand_seen(conn_b, "selfplay", "villain", "v")
+    conn_b.close()
+
+    # Merge both into the main DB
+    opponent_store.merge_worker_db(str(main_db), str(worker_a))
+    opponent_store.merge_worker_db(str(main_db), str(worker_b))
+
+    main_conn = opponent_store.connect(str(main_db))
+    row = main_conn.execute(
+        "SELECT * FROM opponent_stats WHERE opponent_id = ?",
+        (oid_a,),
+    ).fetchone()
+    assert row is not None
+    # Two increments in worker_a, one in worker_b -> total 3
+    assert row["hands_seen"] == 3
+    main_conn.close()

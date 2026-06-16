@@ -116,6 +116,7 @@ class PromotionGateConfig:
     counter_strategies: tuple[str, ...]
     min_seed_pass_rate: float
     population_config: str | None
+    workers: int = 0
 
 
 @dataclass(frozen=True)
@@ -210,6 +211,7 @@ def load_promotion_config(path=DEFAULT_CONFIG):
             data.get("min_seed_pass_rate", DEFAULT_MIN_SEED_PASS_RATE)
         ),
         population_config=data.get("population_config"),
+        workers=int(data.get("workers", 0)),
     )
 
 
@@ -589,6 +591,7 @@ def run_promotion_gate(
         baseline_strat=champion,
         min_delta_bb_per_100=config.min_delta_bb_per_100,
         runner=benchmark_runner,
+        workers=config.workers,
     )
     seed_variance = calculate_seed_variance(
         benchmark_report, config.min_delta_bb_per_100

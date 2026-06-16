@@ -733,3 +733,149 @@ def summarize_losing_buckets(conn, run_id, min_spots=20, limit=20):
         """,
         (run_id, min_spots, limit),
     ).fetchall()
+
+
+def merge_worker_db(main_path, worker_path):
+    """Merge a per-worker opponent DB into the main DB.
+
+    Used by parallel benchmark runs. Each worker writes to a private
+    SQLite file; this function copies the data into ``main_path``,
+    summing ``opponent_stats`` counters and de-duplicating unique
+    tables.
+    """
+    main_conn = connect(main_path)
+    worker_conn = sqlite3.connect(worker_path)
+    worker_conn.row_factory = sqlite3.Row
+    try:
+        main_conn.execute("ATTACH DATABASE ? AS worker", (str(worker_path),))
+        main_conn.execute(
+            "INSERT OR IGNORE INTO opponents SELECT * FROM worker.opponents"
+        )
+        main_conn.execute(
+            "INSERT OR IGNORE INTO opponent_external_stats "
+            "SELECT * FROM worker.opponent_external_stats"
+        )
+        main_conn.execute(
+            "INSERT OR IGNORE INTO telemetry_runs SELECT * FROM worker.telemetry_runs"
+        )
+        worker_stats = worker_conn.execute("SELECT * FROM opponent_stats").fetchall()
+        for row in worker_stats:
+            main_row = main_conn.execute(
+                "SELECT * FROM opponent_stats WHERE opponent_id = ?",
+                (row["opponent_id"],),
+            ).fetchone()
+            if main_row is None:
+                main_conn.execute(
+                    """
+                    INSERT INTO opponent_stats (
+                        opponent_id, hands_seen, vpip, pfr, calls, bets, raises,
+                        folds, fold_to_bet, opportunities_to_fold_to_bet,
+                        showdowns, won_showdown, all_ins, large_bets,
+                        pressure_when_covering
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["opponent_id"],
+                        row["hands_seen"],
+                        row["vpip"],
+                        row["pfr"],
+                        row["calls"],
+                        row["bets"],
+                        row["raises"],
+                        row["folds"],
+                        row["fold_to_bet"],
+                        row["opportunities_to_fold_to_bet"],
+                        row["showdowns"],
+                        row["won_showdown"],
+                        row["all_ins"],
+                        row["large_bets"],
+                        row["pressure_when_covering"],
+                    ),
+                )
+            else:
+                main_conn.execute(
+                    """
+                    UPDATE opponent_stats
+                    SET hands_seen = hands_seen + ?,
+                        vpip = vpip + ?,
+                        pfr = pfr + ?,
+                        calls = calls + ?,
+                        bets = bets + ?,
+                        raises = raises + ?,
+                        folds = folds + ?,
+                        fold_to_bet = fold_to_bet + ?,
+                        opportunities_to_fold_to_bet =
+                            opportunities_to_fold_to_bet + ?,
+                        showdowns = showdowns + ?,
+                        won_showdown = won_showdown + ?,
+                        all_ins = all_ins + ?,
+                        large_bets = large_bets + ?,
+                        pressure_when_covering = pressure_when_covering + ?,
+                        updated_at = current_timestamp
+                    WHERE opponent_id = ?
+                    """,
+                    (
+                        row["hands_seen"],
+                        row["vpip"],
+                        row["pfr"],
+                        row["calls"],
+                        row["bets"],
+                        row["raises"],
+                        row["folds"],
+                        row["fold_to_bet"],
+                        row["opportunities_to_fold_to_bet"],
+                        row["showdowns"],
+                        row["won_showdown"],
+                        row["all_ins"],
+                        row["large_bets"],
+                        row["pressure_when_covering"],
+                        row["opponent_id"],
+                    ),
+                )
+        main_conn.execute(
+            """
+            INSERT INTO opponent_actions (
+                opponent_id, hand_id, street, action, amount, pot, message,
+                facing_bet, stack_chips, hero_stack_chips, created_at
+            )
+            SELECT opponent_id, hand_id, street, action, amount, pot, message,
+                   facing_bet, stack_chips, hero_stack_chips, created_at
+            FROM worker.opponent_actions
+            """
+        )
+        main_conn.execute(
+            """
+            INSERT INTO decision_telemetry (
+                run_id, hand_id, decision_index, strategy, street, hero_agent_id,
+                hero_seat_number, button_seat_number, hero_position,
+                hero_position_offset, seated_players, active_players,
+                table_style, pot_chips, current_bet, call_amount, min_bet,
+                min_raise_to, hero_stack, hero_current_bet, max_opponent_stack,
+                covered_by_larger_stack, hole_cards, board_cards, preflop_score,
+                made_hand_rank, hand_bucket, board_wet, board_paired,
+                board_high, top_pair_or_better, available_actions, chosen_action,
+                chosen_amount, amount_ratio_pot, amount_ratio_stack, facing_bet,
+                voluntary, strategy_message, hero_net_chips, won_hand, final_pot,
+                created_at
+            )
+            SELECT run_id, hand_id, decision_index, strategy, street,
+                   hero_agent_id, hero_seat_number, button_seat_number,
+                   hero_position, hero_position_offset, seated_players,
+                   active_players, table_style, pot_chips, current_bet,
+                   call_amount, min_bet, min_raise_to, hero_stack,
+                   hero_current_bet, max_opponent_stack, covered_by_larger_stack,
+                   hole_cards, board_cards, preflop_score, made_hand_rank,
+                   hand_bucket, board_wet, board_paired, board_high,
+                   top_pair_or_better, available_actions, chosen_action,
+                   chosen_amount, amount_ratio_pot, amount_ratio_stack,
+                   facing_bet, voluntary, strategy_message, hero_net_chips,
+                   won_hand, final_pot, created_at
+            FROM worker.decision_telemetry
+            """
+        )
+        main_conn.commit()
+    finally:
+        main_conn.execute("DETACH DATABASE worker")
+        main_conn.close()
+        worker_conn.close()
+
