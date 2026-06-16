@@ -10,6 +10,9 @@ This file is intentionally conservative for a deterministic bot baseline:
 board-made air should not value-raise, and it should fold to a large river bet.
 Real private improvements, like a set, nut flush, or straight using a hole card,
 should still continue or build value.
+
+Note: The commented out tests are from Fielding during his detailed analysis
+after by my bot lost that hand.
 """
 
 import pytest
@@ -17,7 +20,7 @@ import pytest
 from poker_bot.strategies.flattened_v5 import choose_action
 
 HERO = "hero"
-DEFAULT_AVAILABLE = ("fold", "call", "raise")
+DEFAULT_AVAILABLE = ("fold", "call", "raise", "all-in")
 
 BOARD_MADE_AIR_CASES = (
     (["Qh", "Kd"], ["3d", "8h", "3h", "3s", "5h"]),  # https://arena.dev.fun/poker-tournament/table/cmqekdj21ooiobrl14wjcmx0j

@@ -5,7 +5,9 @@ defended at capped prices, and effective_pot() should recover the true pot in th
 selfplay simulator when posted/current bets live on seats instead of potChips.
 
 The same file also covers the postflop SPR commitment guard: with two pair or
-better, a low effective SPR after calling should override a base fold.
+better, a low effective SPR after calling should override a base fold. SPR tests
+cover both the selfplay live-bet representation and the completed-pot
+representation.
 """
 
 from poker_bot.strategies import flattened_v5 as strategy
@@ -129,3 +131,145 @@ def test_spr_commitment_lock_uses_post_call_stack_and_pot():
     assert decision is not None
     assert decision[0] == "call"
     assert "spr 0.00 < 3.0" in decision[2]
+
+
+
+def make_postflop_table(
+    *,
+    hero_cards,
+    board_cards,
+    pot=100,
+    call=50,
+    hero_stack=200,
+    live_bet=0,
+    opponent_stacks=None,
+    available=("fold", "call"),
+):
+    opponent_stacks = opponent_stacks or [200]
+    seats = [
+        {
+            "agentId": "hero",
+            "seatNumber": 1,
+            "holeCards": hero_cards,
+            "stackChips": hero_stack,
+            "currentBetChips": 0,
+            "folded": False,
+            "hasFolded": False,
+        }
+    ]
+    for index, stack in enumerate(opponent_stacks, start=2):
+        seats.append(
+            {
+                "agentId": f"v{index}",
+                "seatNumber": index,
+                "holeCards": [],
+                "stackChips": stack,
+                "currentBetChips": live_bet if index == 2 else 0,
+                "folded": False,
+                "hasFolded": False,
+            }
+        )
+    return {
+        "street": "River",
+        "boardCards": board_cards,
+        "potChips": pot,
+        "buttonSeatNumber": 1,
+        "seats": seats,
+        "opponentProfiles": {},
+        "allowedActions": {
+            "availableActions": list(available),
+            "callAmount": call,
+            "callChips": call,
+        },
+    }, seats[0]
+
+
+
+def test_spr_commitment_lock_completes_pot_representation():
+    # pot=100, call=50, hero and villain both have 200.
+    # After the call: effective stack = 150, pot = 150, SPR = 1.00.
+    table, hero = make_postflop_table(
+        hero_cards=["AS", "AD"],
+        board_cards=["AS", "2H", "3D", "4C", "7S"],  # set
+        pot=100,
+        call=50,
+        hero_stack=200,
+        opponent_stacks=[200],
+    )
+
+    decision = strategy.spr_commitment_lock(table, hero, ("fold", None, "base folds"))
+
+    assert decision is not None
+    assert decision[0] == "call"
+    assert "spr 1.00 < 3.0" in decision[2]
+
+
+
+def test_spr_commitment_lock_ignores_high_spr():
+    # pot=100, call=10, hero and villain both have 1000.
+    # After the call: effective stack = 990, pot = 110, SPR = 9.00.
+    table, hero = make_postflop_table(
+        hero_cards=["AS", "AD"],
+        board_cards=["AS", "2H", "3D", "4C", "7S"],  # set
+        pot=100,
+        call=10,
+        hero_stack=1000,
+        opponent_stacks=[1000],
+    )
+
+    decision = strategy.spr_commitment_lock(table, hero, ("fold", None, "base folds"))
+
+    assert decision is None
+
+
+
+def test_spr_commitment_lock_uses_multiway_threshold():
+    # Four live opponents lower the SPR threshold to 1.5.
+    table, hero = make_postflop_table(
+        hero_cards=["AS", "AD"],
+        board_cards=["AS", "2H", "3D", "4C", "7S"],  # set
+        pot=100,
+        call=50,
+        hero_stack=100,
+        opponent_stacks=[100, 100, 100, 100],
+    )
+
+    decision = strategy.spr_commitment_lock(table, hero, ("fold", None, "base folds"))
+
+    assert decision is not None
+    assert decision[0] == "call"
+    assert "spr 0.33 < 1.5" in decision[2]
+
+
+
+def test_spr_commitment_lock_requires_two_pair_or_better():
+    # Same low SPR as the completed-pot test, but only top pair should not trigger.
+    table, hero = make_postflop_table(
+        hero_cards=["AS", "KH"],
+        board_cards=["AS", "2H", "3D", "4C", "5S"],  # top pair, weak kicker
+        pot=100,
+        call=50,
+        hero_stack=200,
+        opponent_stacks=[200],
+    )
+
+    decision = strategy.spr_commitment_lock(table, hero, ("fold", None, "base folds"))
+
+    assert decision is None
+
+
+
+def test_spr_commitment_lock_only_rescues_base_folds():
+    table, hero = make_postflop_table(
+        hero_cards=["AS", "AD"],
+        board_cards=["AS", "2H", "3D", "4C", "7S"],  # set
+        pot=100,
+        call=50,
+        hero_stack=200,
+        opponent_stacks=[200],
+    )
+
+    decision = strategy.spr_commitment_lock(table, hero, ("raise", 150, "base raises"))
+
+    assert decision is None
+
