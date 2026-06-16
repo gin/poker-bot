@@ -2,6 +2,11 @@ import json
 import subprocess
 
 from eval import promotion_gate
+from eval.benchmark import (
+    BenchmarkAggregate,
+    BenchmarkComparison,
+    BenchmarkReport,
+)
 from eval.selfplay import BIG_BLIND, SelfPlayResult
 
 
@@ -327,4 +332,216 @@ def test_population_score_gate_can_block_promotion(tmp_path):
     assert population_gate.passed is False
     assert report.population_report is not None
     assert payload["population"]["passed"] is False
+
+
+def _make_aggregate(strat, opponent, players, seeds, hands, net_chips):
+    return BenchmarkAggregate(
+        strat=strat,
+        opponent=opponent,
+        players=players,
+        seeds=seeds,
+        hands=hands,
+        wins=1,
+        losses=0,
+        pushes=0,
+        net_chips=net_chips,
+        elapsed=0.01,
+    )
+
+
+def _make_report(*, candidate_aggregates, baseline_aggregates, comparisons):
+    return BenchmarkReport(
+        strat="candidate",
+        cases=(),
+        results=(),
+        aggregates=candidate_aggregates,
+        elapsed=0.0,
+        baseline_strat="champion",
+        baseline_aggregates=baseline_aggregates,
+        comparisons=comparisons,
+        min_delta_bb_per_100=-5.0,
+    )
+
+
+def test_evaluate_gate_catastrophic_uses_delta_not_absolute():
+    config = promotion_gate.PromotionGateConfig(
+        hands=100,
+        opponents=("simple", "adaptive"),
+        players=(6,),
+        seeds=(1,),
+        track_opponents=True,
+        scenario_tests=("tests/scenario",),
+        simple_min_bb100=0.0,
+        min_delta_bb100=-5.0,
+        catastrophic_floor_bb100=-10.0,
+        counter_strategies=("adaptive",),
+        min_seed_pass_rate=0.8,
+        population_config=None,
+    )
+
+    # candidate loses 15 bb/100, champion loses 15 bb/100 -> delta 0
+    # absolute check would fail (-15 < -10), delta check passes (0 >= -10)
+    candidate_aggregates = (
+        _make_aggregate("candidate", "simple", 6, (1,), 100, 3000),
+        _make_aggregate("candidate", "adaptive", 6, (1,), 100, -3000),
+    )
+    baseline_aggregates = (
+        _make_aggregate("champion", "simple", 6, (1,), 100, 3000),
+        _make_aggregate("champion", "adaptive", 6, (1,), 100, -3000),
+    )
+    comparisons = (
+        BenchmarkComparison(
+            opponent="simple",
+            players=6,
+            candidate_bb_per_100=15.0,
+            baseline_bb_per_100=15.0,
+            delta_bb_per_100=0.0,
+            min_delta_bb_per_100=-5.0,
+        ),
+        BenchmarkComparison(
+            opponent="adaptive",
+            players=6,
+            candidate_bb_per_100=-15.0,
+            baseline_bb_per_100=-15.0,
+            delta_bb_per_100=0.0,
+            min_delta_bb_per_100=-5.0,
+        ),
+    )
+    report = _make_report(
+        candidate_aggregates=candidate_aggregates,
+        baseline_aggregates=baseline_aggregates,
+        comparisons=comparisons,
+    )
+
+    checks = promotion_gate.evaluate_gate(report, config, "champion")
+    catastrophic = next(c for c in checks if c.name == "no catastrophic counter loss")
+    assert catastrophic.passed is True
+
+
+def test_evaluate_gate_catastrophic_excludes_champion_from_counter_set():
+    config = promotion_gate.PromotionGateConfig(
+        hands=100,
+        opponents=("simple", "champion"),
+        players=(6,),
+        seeds=(1,),
+        track_opponents=True,
+        scenario_tests=("tests/scenario",),
+        simple_min_bb100=0.0,
+        min_delta_bb100=-5.0,
+        catastrophic_floor_bb100=-10.0,
+        counter_strategies=("adaptive",),
+        min_seed_pass_rate=0.8,
+        population_config=None,
+    )
+
+    # only "simple" in candidate aggregates; "champion" not in counter_strategies
+    # and should NOT be auto-added (the old code added it).
+    candidate_aggregates = (
+        _make_aggregate("candidate", "simple", 6, (1,), 100, 5000),
+        _make_aggregate("candidate", "champion", 6, (1,), 100, -5000),
+    )
+    baseline_aggregates = (
+        _make_aggregate("champion", "simple", 6, (1,), 100, 5000),
+    )
+    comparisons = (
+        BenchmarkComparison(
+            opponent="simple",
+            players=6,
+            candidate_bb_per_100=25.0,
+            baseline_bb_per_100=25.0,
+            delta_bb_per_100=0.0,
+            min_delta_bb_per_100=-5.0,
+        ),
+    )
+    report = _make_report(
+        candidate_aggregates=candidate_aggregates,
+        baseline_aggregates=baseline_aggregates,
+        comparisons=comparisons,
+    )
+
+    checks = promotion_gate.evaluate_gate(report, config, "champion")
+    catastrophic = next(c for c in checks if c.name == "no catastrophic counter loss")
+    # No "adaptive" rows in aggregates -> catastrophic has no deltas -> fails
+    # (we just need to ensure the champion row was NOT evaluated)
+    assert catastrophic.passed is False
+    assert "worst delta +0.0" in catastrophic.detail
+
+
+def test_evaluate_seed_consistency_fails_on_low_ci95():
+    config = promotion_gate.PromotionGateConfig(
+        hands=100,
+        opponents=("simple",),
+        players=(6,),
+        seeds=(1, 2),
+        track_opponents=True,
+        scenario_tests=("tests/scenario",),
+        simple_min_bb100=0.0,
+        min_delta_bb100=-5.0,
+        catastrophic_floor_bb100=-10.0,
+        counter_strategies=("simple",),
+        min_seed_pass_rate=0.8,
+        population_config=None,
+    )
+
+    # Two seeds both clear the delta (>= -5) but CI95 low is deep below -5
+    seed_variance = (
+        promotion_gate.SeedVariance(
+            opponent="simple",
+            players=6,
+            seeds=(1, 2),
+            candidate_bb_per_100=(0.0, 0.0),
+            baseline_bb_per_100=(0.0, 0.0),
+            delta_bb_per_100=(-3.0, -3.0),
+            candidate_mean_bb_per_100=0.0,
+            candidate_stddev_bb_per_100=0.0,
+            candidate_stderr_bb_per_100=0.0,
+            candidate_ci95_low_bb_per_100=-10.0,
+            candidate_ci95_high_bb_per_100=10.0,
+            delta_mean_bb_per_100=-3.0,
+            delta_stddev_bb_per_100=0.0,
+            delta_stderr_bb_per_100=0.0,
+            delta_ci95_low_bb_per_100=-20.0,
+            delta_ci95_high_bb_per_100=14.0,
+            seed_passes=2,
+            seed_count=2,
+            seed_pass_rate=1.0,
+        ),
+    )
+
+    check = promotion_gate.evaluate_seed_consistency(seed_variance, config)
+    assert check.passed is False
+    assert "delta CI95 low" in check.detail
+
+
+def test_format_markdown_includes_scenario_output_when_failed(tmp_path):
+    config_path = write_config(tmp_path)
+    champion_path = write_champion(tmp_path)
+
+    long_stdout = "stdout-line\n" * 500
+    long_stderr = "stderr-line\n" * 500
+
+    def runner(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=("pytest", "tests/scenario"),
+            returncode=1,
+            stdout=long_stdout,
+            stderr=long_stderr,
+        )
+
+    promotion_gate.run_promotion_gate(
+        "candidate",
+        config_path=config_path,
+        champion_json=champion_path,
+        benchmark_runner=lambda *a, **k: None,
+        scenario_runner=runner,
+        output_json=tmp_path / "report.json",
+        output_markdown=tmp_path / "report.md",
+        history_index=tmp_path / "index.jsonl",
+    )
+
+    markdown = (tmp_path / "report.md").read_text()
+    assert "Scenario stdout (last 2000 chars)" in markdown
+    assert "Scenario stderr (last 2000 chars)" in markdown
+    assert "stdout-line" in markdown
+    assert "stderr-line" in markdown
     assert json.loads(champion_path.read_text()) == {"strategy": "champion"}

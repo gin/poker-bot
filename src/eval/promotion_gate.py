@@ -57,9 +57,9 @@ DEFAULT_COUNTER_STRATEGIES = (
     ),
 )
 DEFAULT_SMALL_MARGIN_BB100 = -2.5
-DEFAULT_CATASTROPHIC_FLOOR_BB100 = -50.0
+DEFAULT_CATASTROPHIC_FLOOR_BB100 = -10.0
 DEFAULT_SIMPLE_MIN_BB100 = 0.0
-DEFAULT_MIN_SEED_PASS_RATE = 0.6
+DEFAULT_MIN_SEED_PASS_RATE = 0.8
 
 
 @dataclass(frozen=True)
@@ -354,15 +354,16 @@ def evaluate_gate(report, config, champion):
     delta_passed = all(row.passed for row in report.comparisons)
     worst_delta = min(
         (row.delta_bb_per_100 for row in report.comparisons),
-        default=0.0,
+        default=math.inf,
     )
+    worst_delta_str = "n/a" if worst_delta == math.inf else f"{worst_delta:+.1f}"
     checks.append(
         GateCheck(
             "champion regression margin",
             delta_passed,
             (
                 f"candidate must stay within {config.min_delta_bb100:.1f} bb/100 "
-                f"of {champion}; worst delta {worst_delta:+.1f}"
+                f"of {champion}; worst delta {worst_delta_str}"
             ),
         )
     )
@@ -370,25 +371,33 @@ def evaluate_gate(report, config, champion):
     counter_names = set(
         resolve_champion_placeholders(config.counter_strategies, champion)
     )
-    counter_names.add(champion)
     counter_rows = [row for row in report.aggregates if row.opponent in counter_names]
-    catastrophic_passed = bool(counter_rows) and all(
-        row.bb_per_100 >= config.catastrophic_floor_bb100 for row in counter_rows
+    baseline_by_key = {
+        (row.opponent, row.players): row.bb_per_100
+        for row in report.baseline_aggregates
+    }
+    deltas = []
+    for row in counter_rows:
+        baseline_bb = baseline_by_key.get((row.opponent, row.players))
+        if baseline_bb is None:
+            continue
+        deltas.append(row.bb_per_100 - baseline_bb)
+    catastrophic_passed = bool(deltas) and all(
+        delta >= config.catastrophic_floor_bb100 for delta in deltas
     )
-    worst_counter = min((row.bb_per_100 for row in counter_rows), default=0.0)
+    worst_counter = min(deltas, default=0.0)
     checks.append(
         GateCheck(
             "no catastrophic counter loss",
             catastrophic_passed,
             (
                 f"known counters must be >= "
-                f"{config.catastrophic_floor_bb100:.1f} bb/100; "
-                f"worst {worst_counter:+.1f}"
+                f"{config.catastrophic_floor_bb100:.1f} bb/100 vs {champion}; "
+                f"worst delta {worst_counter:+.1f}"
             ),
         )
     )
     return tuple(checks)
-
 
 def evaluate_seed_consistency(seed_variance, config):
     if not seed_variance:
@@ -397,8 +406,12 @@ def evaluate_seed_consistency(seed_variance, config):
             False,
             "no seed-level benchmark data was available",
         )
+
     weak_rows = [
-        row for row in seed_variance if row.seed_pass_rate < config.min_seed_pass_rate
+        row
+        for row in seed_variance
+        if row.seed_pass_rate < config.min_seed_pass_rate
+        or row.delta_ci95_low_bb_per_100 < config.min_delta_bb100
     ]
     worst_rate = min((row.seed_pass_rate for row in seed_variance), default=0.0)
     worst_ci_low = min(
@@ -412,12 +425,15 @@ def evaluate_seed_consistency(seed_variance, config):
         )
         detail = (
             f"requires at least {config.min_seed_pass_rate:.0%} of seeds per row "
-            f"to clear delta {config.min_delta_bb100:.1f}; weak rows: {examples}; "
+            f"to clear delta {config.min_delta_bb100:.1f} and "
+            f"delta CI95 low >= {config.min_delta_bb100:.1f}; "
+            f"weak rows: {examples}; "
             f"worst rate {worst_rate:.0%}, worst delta CI95 low {worst_ci_low:+.1f}"
         )
     else:
         detail = (
-            f"all rows clear {config.min_seed_pass_rate:.0%} seed pass rate; "
+            f"all rows clear {config.min_seed_pass_rate:.0%} seed pass rate "
+            f"and delta CI95 low >= {config.min_delta_bb100:.1f}; "
             f"worst rate {worst_rate:.0%}, worst delta CI95 low {worst_ci_low:+.1f}"
         )
     return GateCheck("seed consistency", not weak_rows, detail)
@@ -773,8 +789,32 @@ def format_markdown_report(report):
             [
                 "",
                 "Benchmark skipped because scenario tests failed.",
-            ]
+            ],
         )
+        stdout_tail = report.scenario_tests.stdout[-2000:]
+        stderr_tail = report.scenario_tests.stderr[-2000:]
+        if stdout_tail:
+            lines.extend(
+                [
+                    "",
+                    "**Scenario stdout (last 2000 chars):**",
+                    "",
+                    "```text",
+                    stdout_tail,
+                    "```",
+                ],
+            )
+        if stderr_tail:
+            lines.extend(
+                [
+                    "",
+                    "**Scenario stderr (last 2000 chars):**",
+                    "",
+                    "```text",
+                    stderr_tail,
+                    "```",
+                ],
+            )
         return "\n".join(lines)
 
     lines.extend(
