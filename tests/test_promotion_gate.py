@@ -440,9 +440,7 @@ def test_evaluate_gate_catastrophic_excludes_champion_from_counter_set():
         _make_aggregate("candidate", "simple", 6, (1,), 100, 5000),
         _make_aggregate("candidate", "champion", 6, (1,), 100, -5000),
     )
-    baseline_aggregates = (
-        _make_aggregate("champion", "simple", 6, (1,), 100, 5000),
-    )
+    baseline_aggregates = (_make_aggregate("champion", "simple", 6, (1,), 100, 5000),)
     comparisons = (
         BenchmarkComparison(
             opponent="simple",

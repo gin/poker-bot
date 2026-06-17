@@ -403,6 +403,7 @@ def evaluate_gate(report, config, champion):
     )
     return tuple(checks)
 
+
 def evaluate_seed_consistency(seed_variance, config):
     if not seed_variance:
         return GateCheck(

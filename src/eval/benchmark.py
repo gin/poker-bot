@@ -176,8 +176,8 @@ def resolve_options(args):
         else config.get("fail_under_bb100")
     )
     use_profile = bool(args.profile or config.get("profile", False))
-    workers = int(args.workers) if args.workers is not None else int(
-        config.get("workers", 0)
+    workers = (
+        int(args.workers) if args.workers is not None else int(config.get("workers", 0))
     )
     return {
         "opponents": opponents,
@@ -276,9 +276,10 @@ def _resolve_workers(workers: int) -> int:
     if workers <= 0:
         cpu = os.cpu_count() or 1
         workers = max(1, cpu // 2)
-    if workers > DEFAULT_WORKER_CAP and os.environ.get(
-        "POKER_BENCHMARK_ALLOW_HIGH_WORKERS"
-    ) != "1":
+    if (
+        workers > DEFAULT_WORKER_CAP
+        and os.environ.get("POKER_BENCHMARK_ALLOW_HIGH_WORKERS") != "1"
+    ):
         raise ValueError(
             f"workers={workers} exceeds safety cap {DEFAULT_WORKER_CAP}; "
             "set POKER_BENCHMARK_ALLOW_HIGH_WORKERS=1 to override"
@@ -328,9 +329,7 @@ def _run_cases_parallel(
     with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as pool:
         futures = {}
         for i, case in enumerate(cases):
-            worker_db = (
-                worker_db_paths[i % actual_workers] if worker_db_paths else None
-            )
+            worker_db = worker_db_paths[i % actual_workers] if worker_db_paths else None
             future = pool.submit(
                 _run_case_worker,
                 (case, runner, track_opponents, profile, worker_db),
@@ -361,6 +360,7 @@ def _run_cases_sequential(
         _run_case_worker((case, runner, track_opponents, profile, opponent_db))
         for case in cases
     ]
+
 
 def run_benchmark(
     strat,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import sqlite3
@@ -20,6 +21,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = REPO_ROOT / "gameplay.sqlite"
 OPPONENT_DB_ENV = "POKER_BOT_OPPONENT_DB"
 TELEMETRY_DB_ENV = "POKER_BOT_TELEMETRY_DB"
+
+# Local-vs-API merge thresholds (see PLAN_OPPONENT_STATS.md).
+# LOCAL_MIN_HANDS: when we have seen this many hands against an
+# opponent ourselves, trust the local read over the API summary.
+# API_STALE_DAYS: ignore API data older than this — the opponent
+# may have changed play style, so stale data is worse than no data.
+LOCAL_MIN_HANDS = 20
+API_STALE_DAYS = 2
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -293,6 +302,142 @@ def record_external_agent_stats(
     return opponent_id
 
 
+def _parse_fetched_at(value):
+    """Parse a stored timestamp string into a tz-aware UTC datetime.
+
+    Accepts both SQLite's default ``YYYY-MM-DD HH:MM:SS`` (UTC)
+    format and ISO 8601 with the ``T`` separator and ``Z`` suffix.
+    Returns None for missing or unparseable values.
+    """
+    if value is None:
+        return None
+    if isinstance(value, _dt.datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=_dt.UTC)
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        # ISO 8601 with 'Z' suffix → fromisoformat in Py3.11+ handles
+        # "Z" but we normalize for safety.
+        normalized = text.replace("Z", "+00:00")
+        parsed = _dt.datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_dt.UTC)
+        return parsed
+    except (ValueError, TypeError):
+        return None
+
+
+def apply_external_stats_merge(profile, *, today=None):
+    """Mutate ``profile`` in place: replace local counters with API
+    values when local sample is too small to make a judgment.
+
+    Per the user spec (PLAN_OPPONENT_STATS.md §2):
+
+    - If ``profile.hands_seen >= LOCAL_MIN_HANDS`` (20), keep the
+      local read — even if it disagrees with the API. The local
+      read is fresher and tracks possible mid-competition
+      strategy changes.
+    - Else, if the API data is missing, stale (> API_STALE_DAYS),
+      or has too small a sample, fall back to local (whatever we
+      have, even if sparse).
+    - Else, replace ``profile.vpip``, ``profile.pfr``,
+      ``profile.hands_seen`` with API-derived values so the
+      strategy's existing frequency reads work without any code
+      changes. The API does not provide per-action breakdowns
+      (calls / bets / raises / folds / fold_to_bet), so those
+      local counters are preserved.
+
+    The ``api_source_used`` flag is set on the profile so future
+    strategy changes can opt out per-call.
+    """
+    today = today or _dt.datetime.now(_dt.UTC)
+    api = profile.api_stats
+    if api is None:
+        profile.api_source_used = False
+        return
+
+    # Local has enough: keep local observations.
+    if profile.hands_seen >= LOCAL_MIN_HANDS:
+        profile.api_source_used = False
+        return
+
+    # Stale API: ignore.
+    fetched_at = _parse_fetched_at(getattr(profile, "api_fetched_at", None))
+    if fetched_at is None:
+        profile.api_source_used = False
+        return
+    if fetched_at.tzinfo is None:
+        fetched_at = fetched_at.replace(tzinfo=_dt.UTC)
+    if (today - fetched_at) > _dt.timedelta(days=API_STALE_DAYS):
+        profile.api_source_used = False
+        return
+
+    # API sample size — prefer explicit sampleSize, fall back to hands.
+    api_sample = int(api.get("sampleSize") or api.get("hands") or 0)
+    if api_sample < LOCAL_MIN_HANDS:
+        profile.api_source_used = False
+        return
+
+    def _to_fraction(value):
+        """Auto-detect scale: > 1.5 means percent, else fraction."""
+        if value is None:
+            return None
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        return v / 100.0 if v > 1.5 else v
+
+    api_vpip = _to_fraction(api.get("vpip"))
+    api_pfr = _to_fraction(api.get("pfr"))
+
+    # AF (aggression factor) is always 0-1 per arena. Convert to
+    # an "aggression frequency" comparable to local — clamp to
+    # [0, 0.7] so a 1.0 AF doesn't yield an unrealistically
+    # high local-style frequency.
+    api_aggr_freq = None
+    api_af = api.get("af")
+    if api_af is not None:
+        try:
+            api_aggr_freq = min(0.70, max(0.0, float(api_af)))
+        except (TypeError, ValueError):
+            api_aggr_freq = None
+    if api_aggr_freq is None:
+        style = api.get("playingStyle") or {}
+        aggr_label = str(style.get("aggression") or "").strip().lower()
+        api_aggr_freq = {
+            "passive": 0.10,
+            "measured": 0.28,
+            "aggressive": 0.46,
+        }.get(aggr_label)
+
+    # Overwrite the local counters that the strategy reads via
+    # profile_value(). vpip / pfr are reconstructed as
+    # ``api_vpip * api_sample`` rounded.
+    if api_vpip is not None:
+        profile.vpip = int(round(api_vpip * api_sample))
+    if api_pfr is not None:
+        profile.pfr = int(round(api_pfr * api_sample))
+
+    # Record the API aggression frequency for any future reader
+    # that wants it. Don't touch local calls/bets/raises/folds —
+    # those are ground truth we observed.
+    if api_aggr_freq is not None:
+        profile.api_aggr_freq = api_aggr_freq
+
+    # Update hands_seen so the strategy's confidence gates
+    # (e.g. profile_confidence >= 0.4) reflect the API's larger
+    # sample. This is the user-spec'd behavior: if the local
+    # sample is too small, use the API's view as our "hands seen"
+    # for the rest of the decision.
+    profile.hands_seen = api_sample
+    profile.api_source_used = True
+    profile.api_sample_size = api_sample
+
+
 def record_observed_action(
     conn,
     *,
@@ -384,11 +529,12 @@ def record_observed_action(
 def load_profile(conn, platform, agent_id):
     row = conn.execute(
         """
-        select o.agent_id, o.handle as name, s.*, e.stats_json
+        select o.agent_id, o.handle as name, s.*, e.stats_json,
+               e.fetched_at as api_fetched_at
         from opponents o
         join opponent_stats s on s.opponent_id = o.id
         left join (
-            select opponent_id, stats_json
+            select opponent_id, stats_json, fetched_at
             from opponent_external_stats
             where source = 'arena_agent_stats'
             order by fetched_at desc
@@ -408,6 +554,7 @@ def load_profiles_for_agents(conn, platform, agent_ids):
     for agent_id in agent_ids:
         profile = load_profile(conn, platform, agent_id)
         if profile is not None:
+            apply_external_stats_merge(profile)
             profiles[agent_id] = profile
     return profiles
 
@@ -888,4 +1035,3 @@ def merge_worker_db(main_path, worker_path):
         main_conn.execute("DETACH DATABASE worker")
         main_conn.close()
         worker_conn.close()
-

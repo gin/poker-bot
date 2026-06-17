@@ -19,7 +19,6 @@ if str(SRC_DIR) not in sys.path:
 
 from poker_bot.arena_stats import (  # noqa: E402
     ArenaStatsFetcher,
-    fetch_and_record_agent_stats,
     schedule_table_opponent_stats,
 )
 from poker_bot.opponent_store import (  # noqa: E402
@@ -172,7 +171,8 @@ def make_api_client(api_key, runner=subprocess.run):
 
 
 def public_action_message(length=16):
-    return "".join(secrets.choice(PUBLIC_MESSAGE_ALPHABET) for _ in range(length))
+    # return "".join(secrets.choice(PUBLIC_MESSAGE_ALPHABET) for _ in range(length))
+    return "glhf"
 
 
 def action_request_body(_competition_id, table_id, action, amount=None):
@@ -460,8 +460,30 @@ def seat_display_name(seat):
 
 
 def enrich_table_with_opponent_profiles(
-    telemetry_conn, table, agent_id, api_fn=None, competition_id=None, platform="arena"
+    telemetry_conn,
+    table,
+    agent_id,
+    api_fn=None,
+    competition_id=None,
+    platform="arena",
+    *,
+    deadline_at=None,
 ):
+    """Load opponent profiles from SQLite and inject into ``table``.
+
+    NOTE: this function used to do a synchronous API fetch for any
+    opponent that didn't have stats yet. The 10-second action
+    budget (PLAN_OPPONENT_STATS.md §9) forbids that — the action
+    path must NEVER block on the API. The background
+    ``ArenaStatsFetcher`` (initialized in ``initialize_bot`` and
+    fed by ``schedule_table_opponent_stats``) handles all fetches
+    asynchronously, so a profile without API data simply plays
+    unprofiled this hand and the API data lands for the next one.
+
+    The ``api_fn`` and ``competition_id`` parameters are retained
+    for backward compatibility with the previous signature but
+    are unused.
+    """
     if telemetry_conn is None:
         return table
     agent_ids = [
@@ -472,20 +494,18 @@ def enrich_table_with_opponent_profiles(
     if not agent_ids:
         return table
 
-    # If API stats aren't in the SQLite database yet, fetch them synchronously.
-    # The background stats_fetcher queues them for future tables, but this
-    # decision needs the read now.
-    if api_fn is not None and competition_id is not None:
-        for opp_agent_id in agent_ids:
-            profile = load_profile(telemetry_conn, platform, opp_agent_id)
-            if profile is None or profile.api_stats is None:
-                fetch_and_record_agent_stats(
-                    api_fn,
-                    competition_id,
-                    opp_agent_id,
-                    conn=telemetry_conn,
-                    platform=platform,
-                )
+    # Optional deadline guard. If we are within 2s of the action
+    # deadline, skip the DB read — the merge inside is fast but
+    # not free, and on a contended table the SQLite WAL write
+    # from the background fetcher can briefly contend. We still
+    # return the table so the strategy runs with whatever profile
+    # state the previous hand left.
+    if deadline_at is not None:
+        import time
+
+        now = time.time()
+        if now >= float(deadline_at) - 2.0:
+            return table
 
     profiles = load_profiles_for_agents(telemetry_conn, platform, agent_ids)
     if profiles:
@@ -980,7 +1000,11 @@ def process_single_table(table: dict, ctx: BotContext) -> None:
         return
 
     enrich_table_with_opponent_profiles(
-        ctx.telemetry_conn, table, ctx.agent_id, ctx.api_fn, ctx.competition_id
+        ctx.telemetry_conn,
+        table,
+        ctx.agent_id,
+        platform="arena",
+        deadline_at=table.get("actionDeadlineAt"),
     )
     my_seat = find_agent_seat(table, ctx.agent_id)
     result = ctx.choose_action(table, my_seat)

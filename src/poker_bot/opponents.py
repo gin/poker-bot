@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 
 
@@ -21,6 +22,15 @@ class OpponentProfile:
     showdowns: int = 0
     weak_aggressive_showdowns: int = 0
     api_stats: dict | None = None
+    # When the API row was fetched (UTC, tz-aware). Used by the
+    # local-vs-API merge to ignore stale API data.
+    api_fetched_at: datetime | None = None
+    # Set by apply_external_stats_merge when API data was used
+    # to override local counters. Strategy can read this to
+    # decide whether to trust merge-derived values per-call.
+    api_source_used: bool = False
+    api_sample_size: int = 0
+    api_aggr_freq: float | None = None
     recent_actions: deque = field(default_factory=lambda: deque(maxlen=20))
 
     @property
@@ -161,6 +171,32 @@ def profile_from_mapping(agent_id, data):
             profile.api_stats = json.loads(stats_json)
         except json.JSONDecodeError:
             profile.api_stats = None
+    # Parse the API row's fetched_at so the merge can age-check
+    # it. Stored as a tz-aware datetime (UTC) when valid; None
+    # otherwise.
+    raw_fetched = data.get("api_fetched_at")
+    profile.api_fetched_at = None
+    if raw_fetched is not None:
+        if isinstance(raw_fetched, datetime):
+            # Already a datetime — assume UTC if naive.
+            profile.api_fetched_at = (
+                raw_fetched.replace(tzinfo=timezone.utc)
+                if raw_fetched.tzinfo is None
+                else raw_fetched
+            )
+        else:
+            text = str(raw_fetched).strip()
+            if text:
+                try:
+                    normalized = text.replace("Z", "+00:00")
+                    parsed = datetime.fromisoformat(normalized)
+                    profile.api_fetched_at = (
+                        parsed.replace(tzinfo=timezone.utc)
+                        if parsed.tzinfo is None
+                        else parsed
+                    )
+                except (ValueError, TypeError):
+                    profile.api_fetched_at = None
     for action in data.get("recent_actions", []):
         profile.recent_actions.append(action)
     return profile
