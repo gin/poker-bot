@@ -30,6 +30,7 @@ from poker_bot.opponent_store import (  # noqa: E402
 from poker_bot.strategies.loader import load_strategy  # noqa: E402
 from simulator import (  # noqa: E402
     BIG_BLIND,
+    BOT_AGENT_ID,
     INITIAL_STACK,
     PLAYER_AGENT_ID,
     play_hand,
@@ -42,6 +43,7 @@ DEFAULT_PLAYERS = 2
 DEFAULT_DB_COMMIT_INTERVAL = 1000
 DEFAULT_WORKER_CAP = 16
 OPPONENT_LINEUP_SEPARATOR = "+"
+OPPONENT_LINEUP_INPUT_SEPARATORS = (OPPONENT_LINEUP_SEPARATOR, ",")
 
 
 @dataclass(frozen=True)
@@ -81,7 +83,7 @@ def run_selfplay(
     hands=DEFAULT_HANDS,
     seed=None,
     opponent_name=DEFAULT_OPPONENT,
-    players=DEFAULT_PLAYERS,
+    players=None,
     track_opponents=False,
     opponent_db=None,
     telemetry=False,
@@ -94,6 +96,7 @@ def run_selfplay(
 ):
     if hands < 0:
         raise ValueError("--hands must be non-negative")
+    players = resolve_player_count(opponent_name, players)
     if players < 2 or players > 6:
         raise ValueError("--players must be between 2 and 6")
     if db_commit_interval is not None and db_commit_interval < 0:
@@ -125,9 +128,12 @@ def run_selfplay(
             run_id=telemetry_run_id,
             commit=False,
         )
-    agent_ids = [PLAYER_AGENT_ID] + [
-        f"bot-agent-{index}" for index in range(1, players)
-    ]
+    if players == 2:
+        agent_ids = [PLAYER_AGENT_ID, BOT_AGENT_ID]
+    else:
+        agent_ids = [PLAYER_AGENT_ID] + [
+            f"bot-agent-{index}" for index in range(1, players)
+        ]
     opponent_profiles = {}
     if should_track and db_conn is not None:
         opponent_profiles.update(load_profiles_for_agents(db_conn, platform, agent_ids))
@@ -204,6 +210,9 @@ def run_selfplay(
             profiler.start_hand(hand_id)
 
         if players == 2:
+            if db_conn is not None:
+                for agent_id in agent_ids:
+                    increment_hand_seen(db_conn, platform, agent_id, commit=False)
             player_is_small_blind = hand_index % 2 == 0
             player_stack, opponent_stack = play_hand(
                 INITIAL_STACK,
@@ -215,6 +224,7 @@ def run_selfplay(
                 verbose=False,
                 action_observer=combined_observer,
                 hand_id=hand_id,
+                opponent_profiles=opponent_profiles if should_track else None,
             )
             hero_delta = player_stack - INITIAL_STACK
             hero_won = player_stack > opponent_stack
@@ -236,16 +246,17 @@ def run_selfplay(
             hero_delta = stacks[0] - INITIAL_STACK
             hero_won = hero_delta > 0
             hero_lost = hero_delta < 0
-            if should_record_telemetry:
-                update_hand_telemetry_outcome(
-                    db_conn,
-                    run_id=run_id,
-                    hand_id=hand_id,
-                    hero_net_chips=hero_delta,
-                    won_hand=hero_won,
-                    final_pot=None,
-                    commit=False,
-                )
+
+        if should_record_telemetry:
+            update_hand_telemetry_outcome(
+                db_conn,
+                run_id=run_id,
+                hand_id=hand_id,
+                hero_net_chips=hero_delta,
+                won_hand=hero_won,
+                final_pot=None,
+                commit=False,
+            )
 
         net_chips += hero_delta
         if hero_won:
@@ -368,7 +379,7 @@ def run_selfplay_parallel(
     hands=DEFAULT_HANDS,
     seed=None,
     opponent_name=DEFAULT_OPPONENT,
-    players=DEFAULT_PLAYERS,
+    players=None,
     track_opponents=False,
     opponent_db=None,
     telemetry=False,
@@ -382,6 +393,7 @@ def run_selfplay_parallel(
         raise ValueError("--hands must be non-negative")
     if db_commit_interval is not None and db_commit_interval < 0:
         raise ValueError("--commit-every must be non-negative")
+    players = resolve_player_count(opponent_name, players)
     actual_workers = _resolve_workers(workers)
     if actual_workers <= 1 or hands <= 1:
         return run_selfplay(
@@ -453,12 +465,25 @@ def run_selfplay_parallel(
 
 def parse_opponent_lineup(value):
     if isinstance(value, str):
+        normalized = value
+        for separator in OPPONENT_LINEUP_INPUT_SEPARATORS:
+            normalized = normalized.replace(separator, OPPONENT_LINEUP_SEPARATOR)
         return tuple(
             part.strip()
-            for part in value.split(OPPONENT_LINEUP_SEPARATOR)
+            for part in normalized.split(OPPONENT_LINEUP_SEPARATOR)
             if part.strip()
         )
     return tuple(value)
+
+
+def infer_player_count(opponent_name):
+    return len(parse_opponent_lineup(opponent_name)) + 1
+
+
+def resolve_player_count(opponent_name, players):
+    if players is None:
+        return infer_player_count(opponent_name)
+    return players
 
 
 def resolve_opponent_lineup(opponent_name, players):
@@ -526,7 +551,8 @@ def build_parser():
         default=DEFAULT_OPPONENT,
         help=(
             "Opponent strategy module. For multiway mixed lineups, separate "
-            f"one strategy per opponent seat with '{OPPONENT_LINEUP_SEPARATOR}'. "
+            "one strategy per opponent seat with ',' or "
+            f"'{OPPONENT_LINEUP_SEPARATOR}'. "
             f"Defaults to {DEFAULT_OPPONENT}."
         ),
     )
@@ -539,8 +565,10 @@ def build_parser():
     parser.add_argument(
         "--players",
         type=int,
-        default=DEFAULT_PLAYERS,
-        help=f"Total players including hero, 2-6. Defaults to {DEFAULT_PLAYERS}.",
+        default=None,
+        help=(
+            "Total players including hero, 2-6. Defaults to opponent count + 1."
+        ),
     )
     parser.add_argument(
         "--seed",
@@ -551,7 +579,7 @@ def build_parser():
     parser.add_argument(
         "--track-opponents",
         action="store_true",
-        help="Maintain in-memory opponent profiles during multiway self-play.",
+        help="Maintain in-memory opponent profiles during self-play.",
     )
     parser.add_argument(
         "--opponent-db",
@@ -599,12 +627,13 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    players = resolve_player_count(args.opponent, args.players)
     result = run_selfplay_parallel(
         args.strat,
         hands=args.hands,
         seed=args.seed,
         opponent_name=args.opponent,
-        players=args.players,
+        players=players,
         track_opponents=args.track_opponents,
         opponent_db=args.opponent_db,
         telemetry=args.telemetry,

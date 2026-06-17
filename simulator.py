@@ -369,6 +369,7 @@ def run_betting_round(
     verbose=True,
     action_observer=None,
     hand_id=None,
+    opponent_profiles=None,
 ):
     action_providers = action_providers or {}
     active_idx = first_actor_idx
@@ -389,6 +390,12 @@ def run_betting_round(
         )
         table = build_table(seats, board, pot, current_bet, street, seat["seatNumber"])
         table["allowedActions"] = allowed
+        if opponent_profiles is not None:
+            table["opponentProfiles"] = {
+                agent_id: profile
+                for agent_id, profile in opponent_profiles.items()
+                if agent_id != seat["agentId"]
+            }
 
         if verbose:
             print_table(
@@ -429,6 +436,17 @@ def run_betting_round(
 
         facing_bet = int(allowed.get("callAmount") or 0) > 0
         voluntary = action in {"call", "bet", "raise", "all-in"}
+        if opponent_profiles is not None:
+            profile = opponent_profiles.setdefault(
+                seat["agentId"], OpponentProfile(agent_id=seat["agentId"])
+            )
+            record_action(
+                profile,
+                action,
+                street=street,
+                facing_bet=facing_bet,
+                voluntary=voluntary,
+            )
 
         if action_observer is not None:
             action_observer(
@@ -720,6 +738,7 @@ def play_hand(
     verbose=True,
     action_observer=None,
     hand_id=None,
+    opponent_profiles=None,
 ):
     deck = build_deck(rng)
     board = []
@@ -751,6 +770,12 @@ def play_hand(
         action_providers[PLAYER_AGENT_ID] = player_strategy
     if bot_strategy is not None:
         action_providers[BOT_AGENT_ID] = bot_strategy
+    if opponent_profiles is not None:
+        for seat in (player, bot):
+            profile = opponent_profiles.setdefault(
+                seat["agentId"], OpponentProfile(agent_id=seat["agentId"])
+            )
+            profile.hands_seen += 1
 
     fold_winner, pot = run_betting_round(
         [player, bot],
@@ -763,6 +788,7 @@ def play_hand(
         verbose=verbose,
         action_observer=action_observer,
         hand_id=hand_id,
+        opponent_profiles=opponent_profiles,
     )
     if fold_winner:
         if fold_winner == PLAYER_AGENT_ID:
@@ -783,6 +809,7 @@ def play_hand(
             verbose=verbose,
             action_observer=action_observer,
             hand_id=hand_id,
+            opponent_profiles=opponent_profiles,
         )
         if fold_winner:
             if fold_winner == PLAYER_AGENT_ID:
