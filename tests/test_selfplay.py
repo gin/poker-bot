@@ -8,6 +8,7 @@ from eval.selfplay import (
     format_result,
     resolve_opponent_lineup,
     run_selfplay,
+    run_selfplay_parallel,
 )
 from poker_bot.opponent_store import connect, load_profile
 from poker_bot.strategies.all_in_everytime import choose_action as all_in
@@ -133,6 +134,45 @@ def test_run_selfplay_can_persist_opponent_profiles(tmp_path):
     assert profile is not None
     assert profile.hands_seen == 5
     assert profile.calls + profile.bets + profile.raises + profile.folds > 0
+
+
+def test_run_selfplay_batches_db_commits(tmp_path):
+    db_path = tmp_path / "opponents.sqlite"
+
+    result = run_selfplay(
+        "survival_lookahead",
+        opponent_name="simple",
+        hands=5,
+        seed=3,
+        players=6,
+        opponent_db=db_path,
+        db_commit_interval=0,
+    )
+    profile = load_profile(connect(db_path), "selfplay", "bot-agent-1")
+
+    assert result.hands == 5
+    assert profile is not None
+    assert profile.hands_seen == 5
+
+
+def test_run_selfplay_parallel_merges_worker_dbs(tmp_path):
+    db_path = tmp_path / "parallel-opponents.sqlite"
+
+    result = run_selfplay_parallel(
+        "survival_lookahead",
+        opponent_name="simple",
+        hands=6,
+        seed=3,
+        players=6,
+        opponent_db=db_path,
+        workers=2,
+        db_commit_interval=0,
+    )
+    profile = load_profile(connect(db_path), "selfplay", "bot-agent-1")
+
+    assert result.hands == 6
+    assert profile is not None
+    assert profile.hands_seen == 6
 
 
 def test_format_result_matches_expected_shape():

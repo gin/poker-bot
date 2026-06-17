@@ -314,3 +314,48 @@ def test_merge_worker_db_sums_opponent_stats(tmp_path):
     # Two increments in worker_a, one in worker_b -> total 3
     assert row["hands_seen"] == 3
     main_conn.close()
+
+
+def test_merge_worker_db_maps_opponents_by_platform_and_agent(tmp_path):
+    main_db = tmp_path / "main.sqlite"
+    worker_db = tmp_path / "worker.sqlite"
+
+    main_conn = opponent_store.connect(main_db)
+    decoy_id = opponent_store.upsert_opponent(main_conn, "selfplay", "decoy")
+    main_conn.close()
+
+    worker_conn = opponent_store.connect(worker_db)
+    worker_id = opponent_store.upsert_opponent(worker_conn, "selfplay", "villain")
+    assert worker_id == decoy_id
+    opponent_store.increment_hand_seen(worker_conn, "selfplay", "villain")
+    opponent_store.record_observed_action(
+        worker_conn,
+        platform="selfplay",
+        agent_id="villain",
+        hand_id="h1",
+        street="Preflop",
+        action="raise",
+        amount=100,
+        pot=75,
+    )
+    worker_conn.close()
+
+    opponent_store.merge_worker_db(str(main_db), str(worker_db))
+
+    main_conn = opponent_store.connect(str(main_db))
+    villain = main_conn.execute(
+        """
+        SELECT o.id, s.hands_seen, s.raises
+        FROM opponents AS o
+        JOIN opponent_stats AS s ON s.opponent_id = o.id
+        WHERE o.agent_id = 'villain'
+        """
+    ).fetchone()
+    action = main_conn.execute("SELECT opponent_id FROM opponent_actions").fetchone()
+
+    assert villain is not None
+    assert villain["id"] != decoy_id
+    assert villain["hands_seen"] == 1
+    assert villain["raises"] == 1
+    assert action["opponent_id"] == villain["id"]
+    main_conn.close()

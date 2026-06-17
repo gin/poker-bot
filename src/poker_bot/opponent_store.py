@@ -46,7 +46,7 @@ def default_telemetry_db_path():
     return _env_path(TELEMETRY_DB_ENV, default_db_path())
 
 
-def connect(path=None, *, telemetry: bool = False):
+def connect(path=None, *, telemetry: bool = False, optimize_writes: bool = False):
     if telemetry and path is None:
         db_path = default_telemetry_db_path()
     else:
@@ -59,6 +59,10 @@ def connect(path=None, *, telemetry: bool = False):
     if str(db_path) != ":memory:":
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA journal_mode=WAL")
+        if optimize_writes:
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA temp_store=MEMORY")
+            conn.execute("PRAGMA cache_size=-64000")
     init_db(conn)
     return conn
 
@@ -227,7 +231,7 @@ def normalize_handle(handle):
     return cleaned or None
 
 
-def upsert_opponent(conn, platform, agent_id, handle=None):
+def upsert_opponent(conn, platform, agent_id, handle=None, *, commit=True):
     if not agent_id:
         raise ValueError("agent_id is required")
     normalized = normalize_handle(handle)
@@ -254,12 +258,13 @@ def upsert_opponent(conn, platform, agent_id, handle=None):
         """,
         (opponent_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return opponent_id
 
 
-def increment_hand_seen(conn, platform, agent_id, handle=None):
-    opponent_id = upsert_opponent(conn, platform, agent_id, handle)
+def increment_hand_seen(conn, platform, agent_id, handle=None, *, commit=True):
+    opponent_id = upsert_opponent(conn, platform, agent_id, handle, commit=False)
     conn.execute(
         """
         update opponent_stats
@@ -269,7 +274,8 @@ def increment_hand_seen(conn, platform, agent_id, handle=None):
         """,
         (opponent_id,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return opponent_id
 
 
@@ -454,8 +460,9 @@ def record_observed_action(
     stack_chips=None,
     hero_stack_chips=None,
     voluntary=False,
+    commit=True,
 ):
-    opponent_id = upsert_opponent(conn, platform, agent_id, handle)
+    opponent_id = upsert_opponent(conn, platform, agent_id, handle, commit=False)
     all_in = int(
         amount is not None and stack_chips is not None and amount >= stack_chips
     )
@@ -522,7 +529,8 @@ def record_observed_action(
             opponent_id,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return opponent_id
 
 
@@ -589,6 +597,7 @@ def create_telemetry_run(
     platform="selfplay",
     metadata_json=None,
     run_id=None,
+    commit=True,
 ):
     run_id = run_id or uuid.uuid4().hex
     conn.execute(
@@ -600,7 +609,8 @@ def create_telemetry_run(
         """,
         (run_id, strategy, opponent, players, seed, platform, metadata_json),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return run_id
 
 
@@ -768,6 +778,7 @@ def record_decision_telemetry(
     message=None,
     facing_bet=False,
     voluntary=False,
+    commit=True,
 ):
     allowed = table.get("allowedActions", {})
     hole_cards = seat.get("holeCards", [])
@@ -850,7 +861,8 @@ def record_decision_telemetry(
             message,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def update_hand_telemetry_outcome(
@@ -861,6 +873,7 @@ def update_hand_telemetry_outcome(
     hero_net_chips,
     won_hand,
     final_pot=None,
+    commit=True,
 ):
     conn.execute(
         """
@@ -872,7 +885,8 @@ def update_hand_telemetry_outcome(
         """,
         (hero_net_chips, int(won_hand), final_pot, run_id, hand_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def summarize_losing_buckets(conn, run_id, min_spots=20, limit=20):
@@ -906,98 +920,165 @@ def merge_worker_db(main_path, worker_path):
     try:
         main_conn.execute("ATTACH DATABASE ? AS worker", (str(worker_path),))
         main_conn.execute(
-            "INSERT OR IGNORE INTO opponents SELECT * FROM worker.opponents"
+            """
+            INSERT OR IGNORE INTO opponents(
+                platform, agent_id, handle, first_seen_at, last_seen_at
+            )
+            SELECT platform, agent_id, handle, first_seen_at, last_seen_at
+            FROM worker.opponents
+            """
         )
         main_conn.execute(
-            "INSERT OR IGNORE INTO opponent_external_stats "
-            "SELECT * FROM worker.opponent_external_stats"
+            """
+            CREATE TEMP TABLE worker_opponent_map AS
+            SELECT worker_opponents.id AS worker_id,
+                   main_opponents.id AS main_id
+            FROM worker.opponents AS worker_opponents
+            JOIN opponents AS main_opponents
+              ON main_opponents.platform = worker_opponents.platform
+             AND main_opponents.agent_id = worker_opponents.agent_id
+            """
         )
         main_conn.execute(
             "INSERT OR IGNORE INTO telemetry_runs SELECT * FROM worker.telemetry_runs"
         )
-        worker_stats = worker_conn.execute("SELECT * FROM opponent_stats").fetchall()
-        for row in worker_stats:
-            main_row = main_conn.execute(
-                "SELECT * FROM opponent_stats WHERE opponent_id = ?",
-                (row["opponent_id"],),
-            ).fetchone()
-            if main_row is None:
-                main_conn.execute(
-                    """
-                    INSERT INTO opponent_stats (
-                        opponent_id, hands_seen, vpip, pfr, calls, bets, raises,
-                        folds, fold_to_bet, opportunities_to_fold_to_bet,
-                        showdowns, won_showdown, all_ins, large_bets,
-                        pressure_when_covering
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        row["opponent_id"],
-                        row["hands_seen"],
-                        row["vpip"],
-                        row["pfr"],
-                        row["calls"],
-                        row["bets"],
-                        row["raises"],
-                        row["folds"],
-                        row["fold_to_bet"],
-                        row["opportunities_to_fold_to_bet"],
-                        row["showdowns"],
-                        row["won_showdown"],
-                        row["all_ins"],
-                        row["large_bets"],
-                        row["pressure_when_covering"],
-                    ),
-                )
-            else:
-                main_conn.execute(
-                    """
-                    UPDATE opponent_stats
-                    SET hands_seen = hands_seen + ?,
-                        vpip = vpip + ?,
-                        pfr = pfr + ?,
-                        calls = calls + ?,
-                        bets = bets + ?,
-                        raises = raises + ?,
-                        folds = folds + ?,
-                        fold_to_bet = fold_to_bet + ?,
-                        opportunities_to_fold_to_bet =
-                            opportunities_to_fold_to_bet + ?,
-                        showdowns = showdowns + ?,
-                        won_showdown = won_showdown + ?,
-                        all_ins = all_ins + ?,
-                        large_bets = large_bets + ?,
-                        pressure_when_covering = pressure_when_covering + ?,
-                        updated_at = current_timestamp
-                    WHERE opponent_id = ?
-                    """,
-                    (
-                        row["hands_seen"],
-                        row["vpip"],
-                        row["pfr"],
-                        row["calls"],
-                        row["bets"],
-                        row["raises"],
-                        row["folds"],
-                        row["fold_to_bet"],
-                        row["opportunities_to_fold_to_bet"],
-                        row["showdowns"],
-                        row["won_showdown"],
-                        row["all_ins"],
-                        row["large_bets"],
-                        row["pressure_when_covering"],
-                        row["opponent_id"],
-                    ),
-                )
+        main_conn.execute(
+            """
+            INSERT OR IGNORE INTO opponent_stats(opponent_id)
+            SELECT main_id FROM worker_opponent_map
+            """
+        )
+        main_conn.execute(
+            """
+            UPDATE opponent_stats
+            SET hands_seen = hands_seen + coalesce((
+                    SELECT sum(worker_stats.hands_seen)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                vpip = vpip + coalesce((
+                    SELECT sum(worker_stats.vpip)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                pfr = pfr + coalesce((
+                    SELECT sum(worker_stats.pfr)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                calls = calls + coalesce((
+                    SELECT sum(worker_stats.calls)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                bets = bets + coalesce((
+                    SELECT sum(worker_stats.bets)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                raises = raises + coalesce((
+                    SELECT sum(worker_stats.raises)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                folds = folds + coalesce((
+                    SELECT sum(worker_stats.folds)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                fold_to_bet = fold_to_bet + coalesce((
+                    SELECT sum(worker_stats.fold_to_bet)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                opportunities_to_fold_to_bet =
+                    opportunities_to_fold_to_bet + coalesce((
+                    SELECT sum(worker_stats.opportunities_to_fold_to_bet)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                showdowns = showdowns + coalesce((
+                    SELECT sum(worker_stats.showdowns)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                won_showdown = won_showdown + coalesce((
+                    SELECT sum(worker_stats.won_showdown)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                all_ins = all_ins + coalesce((
+                    SELECT sum(worker_stats.all_ins)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                large_bets = large_bets + coalesce((
+                    SELECT sum(worker_stats.large_bets)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                pressure_when_covering = pressure_when_covering + coalesce((
+                    SELECT sum(worker_stats.pressure_when_covering)
+                    FROM worker.opponent_stats AS worker_stats
+                    JOIN worker_opponent_map AS map
+                      ON map.worker_id = worker_stats.opponent_id
+                    WHERE map.main_id = opponent_stats.opponent_id
+                ), 0),
+                updated_at = current_timestamp
+            WHERE opponent_id IN (SELECT main_id FROM worker_opponent_map)
+            """
+        )
+        main_conn.execute(
+            """
+            INSERT OR IGNORE INTO opponent_external_stats (
+                opponent_id, competition_id, source, stats_json, fetched_at
+            )
+            SELECT map.main_id, stats.competition_id, stats.source,
+                   stats.stats_json, stats.fetched_at
+            FROM worker.opponent_external_stats AS stats
+            JOIN worker_opponent_map AS map
+              ON map.worker_id = stats.opponent_id
+            """
+        )
         main_conn.execute(
             """
             INSERT INTO opponent_actions (
                 opponent_id, hand_id, street, action, amount, pot, message,
                 facing_bet, stack_chips, hero_stack_chips, created_at
             )
-            SELECT opponent_id, hand_id, street, action, amount, pot, message,
-                   facing_bet, stack_chips, hero_stack_chips, created_at
-            FROM worker.opponent_actions
+            SELECT map.main_id, actions.hand_id, actions.street, actions.action,
+                   actions.amount, actions.pot, actions.message,
+                   actions.facing_bet, actions.stack_chips,
+                   actions.hero_stack_chips, actions.created_at
+            FROM worker.opponent_actions AS actions
+            JOIN worker_opponent_map AS map
+              ON map.worker_id = actions.opponent_id
             """
         )
         main_conn.execute(
@@ -1032,6 +1113,7 @@ def merge_worker_db(main_path, worker_path):
         )
         main_conn.commit()
     finally:
+        main_conn.execute("DROP TABLE IF EXISTS worker_opponent_map")
         main_conn.execute("DETACH DATABASE worker")
         main_conn.close()
         worker_conn.close()

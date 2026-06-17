@@ -1,11 +1,15 @@
 """Run quiet self-play evaluations between poker strategies."""
 
 import argparse
+import concurrent.futures
+import os
 import random
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
@@ -15,8 +19,10 @@ from eval.profiler import StrategyProfile, format_profile  # noqa: E402
 from poker_bot.opponent_store import (  # noqa: E402
     connect,
     create_telemetry_run,
+    default_telemetry_db_path,
     increment_hand_seen,
     load_profiles_for_agents,
+    merge_worker_db,
     record_decision_telemetry,
     record_observed_action,
     update_hand_telemetry_outcome,
@@ -33,6 +39,8 @@ from simulator import (  # noqa: E402
 DEFAULT_HANDS = 200
 DEFAULT_OPPONENT = "simple"
 DEFAULT_PLAYERS = 2
+DEFAULT_DB_COMMIT_INTERVAL = 1000
+DEFAULT_WORKER_CAP = 16
 OPPONENT_LINEUP_SEPARATOR = "+"
 
 
@@ -80,22 +88,31 @@ def run_selfplay(
     telemetry_run_id=None,
     platform="selfplay",
     profiler=None,
+    db_commit_interval=DEFAULT_DB_COMMIT_INTERVAL,
+    sqlite_fast=False,
+    hand_id_prefix=None,
 ):
     if hands < 0:
         raise ValueError("--hands must be non-negative")
     if players < 2 or players > 6:
         raise ValueError("--players must be between 2 and 6")
+    if db_commit_interval is not None and db_commit_interval < 0:
+        raise ValueError("--commit-every must be non-negative")
 
     opponent_names = resolve_opponent_lineup(opponent_name, players)
     opponent_label = format_opponent_label(opponent_names)
     strat = load_strategy(strat_name)
     opponent_strategies = tuple(load_strategy(name) for name in opponent_names)
     rng = random.Random(seed)
-    db_conn = connect(opponent_db) if opponent_db is not None else None
+    db_conn = (
+        connect(opponent_db, optimize_writes=sqlite_fast)
+        if opponent_db is not None
+        else None
+    )
     should_track = track_opponents or db_conn is not None
     should_record_telemetry = telemetry or telemetry_run_id is not None
     if should_record_telemetry and db_conn is None:
-        db_conn = connect(telemetry=True)
+        db_conn = connect(telemetry=True, optimize_writes=sqlite_fast)
     run_id = None
     if should_record_telemetry:
         run_id = create_telemetry_run(
@@ -106,6 +123,7 @@ def run_selfplay(
             seed=seed,
             platform=platform,
             run_id=telemetry_run_id,
+            commit=False,
         )
     agent_ids = [PLAYER_AGENT_ID] + [
         f"bot-agent-{index}" for index in range(1, players)
@@ -149,6 +167,7 @@ def run_selfplay(
                 stack_chips=seat.get("stackChips"),
                 hero_stack_chips=hero.get("stackChips"),
                 voluntary=event.get("voluntary", False),
+                commit=False,
             )
             if should_record_telemetry and seat.get("agentId") == PLAYER_AGENT_ID:
                 h_id = event.get("hand_id")
@@ -167,6 +186,7 @@ def run_selfplay(
                     message=event.get("message"),
                     facing_bet=event.get("facing_bet", False),
                     voluntary=event.get("voluntary", False),
+                    commit=False,
                 )
 
     wins = 0
@@ -176,7 +196,10 @@ def run_selfplay(
     started = time.perf_counter()
 
     for hand_index in range(hands):
-        hand_id = f"{seed or 'run'}-{hand_index}"
+        hand_id_base = f"{seed or 'run'}-{hand_index}"
+        hand_id = (
+            f"{hand_id_prefix}-{hand_id_base}" if hand_id_prefix else hand_id_base
+        )
         if use_profiler:
             profiler.start_hand(hand_id)
 
@@ -199,7 +222,7 @@ def run_selfplay(
         else:
             if db_conn is not None:
                 for agent_id in agent_ids:
-                    increment_hand_seen(db_conn, platform, agent_id)
+                    increment_hand_seen(db_conn, platform, agent_id, commit=False)
             stacks = play_hand_multiway(
                 [INITIAL_STACK] * players,
                 [strat, *opponent_strategies],
@@ -221,6 +244,7 @@ def run_selfplay(
                     hero_net_chips=hero_delta,
                     won_hand=hero_won,
                     final_pot=None,
+                    commit=False,
                 )
 
         net_chips += hero_delta
@@ -243,7 +267,17 @@ def run_selfplay(
             )
             profiler.end_hand(won=hero_won, showdown=showdown)
 
+        if (
+            db_conn is not None
+            and db_commit_interval
+            and db_commit_interval > 0
+            and (hand_index + 1) % db_commit_interval == 0
+        ):
+            db_conn.commit()
+
     elapsed = time.perf_counter() - started
+    if db_conn is not None:
+        db_conn.commit()
     return SelfPlayResult(
         hands=hands,
         strat=strat_name,
@@ -255,6 +289,166 @@ def run_selfplay(
         elapsed=elapsed,
         players=players,
     )
+
+
+def _resolve_workers(workers: int) -> int:
+    if workers <= 0:
+        cpu = os.cpu_count() or 1
+        workers = max(1, cpu // 2)
+    if (
+        workers > DEFAULT_WORKER_CAP
+        and os.environ.get("POKER_SELFPLAY_ALLOW_HIGH_WORKERS") != "1"
+    ):
+        raise ValueError(
+            f"workers={workers} exceeds safety cap {DEFAULT_WORKER_CAP}; "
+            "set POKER_SELFPLAY_ALLOW_HIGH_WORKERS=1 to override"
+        )
+    return workers
+
+
+def _split_hands(hands, workers):
+    base, remainder = divmod(hands, workers)
+    return tuple(base + (1 if index < remainder else 0) for index in range(workers))
+
+
+def _run_selfplay_worker(args):
+    (
+        worker_index,
+        worker_hands,
+        strat_name,
+        seed,
+        opponent_name,
+        players,
+        track_opponents,
+        opponent_db,
+        telemetry,
+        telemetry_run_id,
+        platform,
+        db_commit_interval,
+        sqlite_fast,
+    ) = args
+    worker_seed = None if seed is None else seed + worker_index
+    return run_selfplay(
+        strat_name,
+        hands=worker_hands,
+        seed=worker_seed,
+        opponent_name=opponent_name,
+        players=players,
+        track_opponents=track_opponents,
+        opponent_db=opponent_db,
+        telemetry=telemetry,
+        telemetry_run_id=telemetry_run_id,
+        platform=platform,
+        db_commit_interval=db_commit_interval,
+        sqlite_fast=sqlite_fast,
+        hand_id_prefix=f"w{worker_index}",
+    )
+
+
+def _aggregate_worker_results(results, *, elapsed):
+    if not results:
+        raise ValueError("no worker results to aggregate")
+    first = results[0]
+    return SelfPlayResult(
+        hands=sum(result.hands for result in results),
+        strat=first.strat,
+        opponent=first.opponent,
+        wins=sum(result.wins for result in results),
+        losses=sum(result.losses for result in results),
+        pushes=sum(result.pushes for result in results),
+        net_chips=sum(result.net_chips for result in results),
+        elapsed=elapsed,
+        players=first.players,
+    )
+
+
+def run_selfplay_parallel(
+    strat_name,
+    *,
+    hands=DEFAULT_HANDS,
+    seed=None,
+    opponent_name=DEFAULT_OPPONENT,
+    players=DEFAULT_PLAYERS,
+    track_opponents=False,
+    opponent_db=None,
+    telemetry=False,
+    telemetry_run_id=None,
+    platform="selfplay",
+    workers=0,
+    db_commit_interval=DEFAULT_DB_COMMIT_INTERVAL,
+    sqlite_fast=False,
+):
+    if hands < 0:
+        raise ValueError("--hands must be non-negative")
+    if db_commit_interval is not None and db_commit_interval < 0:
+        raise ValueError("--commit-every must be non-negative")
+    actual_workers = _resolve_workers(workers)
+    if actual_workers <= 1 or hands <= 1:
+        return run_selfplay(
+            strat_name,
+            hands=hands,
+            seed=seed,
+            opponent_name=opponent_name,
+            players=players,
+            track_opponents=track_opponents,
+            opponent_db=opponent_db,
+            telemetry=telemetry,
+            telemetry_run_id=telemetry_run_id,
+            platform=platform,
+            db_commit_interval=db_commit_interval,
+            sqlite_fast=sqlite_fast,
+        )
+
+    hand_splits = tuple(split for split in _split_hands(hands, actual_workers) if split)
+    shared_run_id = telemetry_run_id or (uuid4().hex if telemetry else None)
+    merge_db = opponent_db
+    if merge_db is None and telemetry:
+        merge_db = default_telemetry_db_path()
+
+    started = time.perf_counter()
+    if merge_db is None:
+        worker_db_paths = [None] * len(hand_splits)
+        temp_dir_ctx = None
+    else:
+        temp_dir_ctx = tempfile.TemporaryDirectory()
+        worker_db_paths = [
+            os.path.join(temp_dir_ctx.name, f"worker_{index}.sqlite")
+            for index in range(len(hand_splits))
+        ]
+        for path in worker_db_paths:
+            connect(path, optimize_writes=sqlite_fast).close()
+
+    try:
+        worker_args = [
+            (
+                index,
+                worker_hands,
+                strat_name,
+                seed,
+                opponent_name,
+                players,
+                track_opponents,
+                worker_db_paths[index],
+                telemetry,
+                shared_run_id,
+                platform,
+                db_commit_interval,
+                sqlite_fast,
+            )
+            for index, worker_hands in enumerate(hand_splits)
+        ]
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=len(hand_splits)
+        ) as pool:
+            results = list(pool.map(_run_selfplay_worker, worker_args))
+        if merge_db is not None:
+            for path in worker_db_paths:
+                merge_worker_db(merge_db, path)
+    finally:
+        if temp_dir_ctx is not None:
+            temp_dir_ctx.cleanup()
+
+    return _aggregate_worker_results(results, elapsed=time.perf_counter() - started)
 
 
 def parse_opponent_lineup(value):
@@ -374,12 +568,38 @@ def build_parser():
         default=None,
         help="Optional run id for decision telemetry.",
     )
+    parser.add_argument(
+        "--commit-every",
+        type=int,
+        default=DEFAULT_DB_COMMIT_INTERVAL,
+        help=(
+            "SQLite commit interval in hands when tracking opponents or telemetry. "
+            "Use 0 to commit once at the end."
+        ),
+    )
+    parser.add_argument(
+        "--sqlite-fast",
+        action="store_true",
+        help=(
+            "Use faster SQLite pragmas for bulk self-play writes "
+            "(WAL + synchronous=NORMAL + larger cache)."
+        ),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help=(
+            "Run hands across multiple worker processes. Use 0 for half the CPU "
+            f"count. Safety cap: {DEFAULT_WORKER_CAP} workers."
+        ),
+    )
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    result = run_selfplay(
+    result = run_selfplay_parallel(
         args.strat,
         hands=args.hands,
         seed=args.seed,
@@ -389,6 +609,9 @@ def main(argv=None):
         opponent_db=args.opponent_db,
         telemetry=args.telemetry,
         telemetry_run_id=args.telemetry_run_id,
+        workers=args.workers,
+        db_commit_interval=args.commit_every,
+        sqlite_fast=args.sqlite_fast,
     )
     print(format_result(result))
 
