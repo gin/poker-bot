@@ -19,12 +19,14 @@ if str(SRC_DIR) not in sys.path:
 
 from poker_bot.arena_stats import (  # noqa: E402
     ArenaStatsFetcher,
+    fetch_and_record_agent_stats,
     schedule_table_opponent_stats,
 )
 from poker_bot.opponent_store import (  # noqa: E402
     connect,
     create_telemetry_run,
     increment_hand_seen,
+    load_profile,
     load_profiles_for_agents,
     record_decision_telemetry,
     record_observed_action,
@@ -458,7 +460,7 @@ def seat_display_name(seat):
 
 
 def enrich_table_with_opponent_profiles(
-    telemetry_conn, table, agent_id, platform="arena"
+    telemetry_conn, table, agent_id, api_fn=None, competition_id=None, platform="arena"
 ):
     if telemetry_conn is None:
         return table
@@ -469,6 +471,22 @@ def enrich_table_with_opponent_profiles(
     ]
     if not agent_ids:
         return table
+
+    # If API stats aren't in the SQLite database yet, fetch them synchronously.
+    # The background stats_fetcher queues them for future tables, but this
+    # decision needs the read now.
+    if api_fn is not None and competition_id is not None:
+        for opp_agent_id in agent_ids:
+            profile = load_profile(telemetry_conn, platform, opp_agent_id)
+            if profile is None or profile.api_stats is None:
+                fetch_and_record_agent_stats(
+                    api_fn,
+                    competition_id,
+                    opp_agent_id,
+                    conn=telemetry_conn,
+                    platform=platform,
+                )
+
     profiles = load_profiles_for_agents(telemetry_conn, platform, agent_ids)
     if profiles:
         table["opponentProfiles"] = profiles
@@ -961,7 +979,9 @@ def process_single_table(table: dict, ctx: BotContext) -> None:
         print(f"  Skipping table: {skip_reason}", flush=True)
         return
 
-    enrich_table_with_opponent_profiles(ctx.telemetry_conn, table, ctx.agent_id)
+    enrich_table_with_opponent_profiles(
+        ctx.telemetry_conn, table, ctx.agent_id, ctx.api_fn, ctx.competition_id
+    )
     my_seat = find_agent_seat(table, ctx.agent_id)
     result = ctx.choose_action(table, my_seat)
 

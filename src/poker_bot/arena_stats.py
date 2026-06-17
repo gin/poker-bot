@@ -43,18 +43,22 @@ def fetch_and_record_agent_stats(
     agent_id,
     *,
     handle=None,
+    conn=None,
     db_path: str | Path | None = None,
     platform="arena",
 ):
     path = (
-        f"/agent/{quote(str(agent_id), safe='')}/stats"
-        f"?competitionId={quote(str(competition_id), safe='')}"
+        f"/texas/agent-stats?agentId={quote(str(agent_id), safe='')}"
+        f"&competitionId={quote(str(competition_id), safe='')}"
     )
     response = api_fn("GET", path)
     if not isinstance(response, dict) or "error" in response:
         return False
 
-    conn = connect(db_path)
+    close_conn = False
+    if conn is None:
+        conn = connect(db_path)
+        close_conn = True
     try:
         record_external_agent_stats(
             conn,
@@ -65,7 +69,8 @@ def fetch_and_record_agent_stats(
             stats=response,
         )
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
     return True
 
 

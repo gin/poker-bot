@@ -80,7 +80,8 @@ def test_fetch_and_record_agent_stats_uses_agent_stats_endpoint(tmp_path):
     assert calls == [
         (
             "GET",
-            "/agent/agent%2Fwith%20space/stats?competitionId=cmp%20test",
+            "/texas/agent-stats?agentId=agent%2Fwith%20space"
+            "&competitionId=cmp%20test",
             None,
         )
     ]

@@ -384,9 +384,16 @@ def record_observed_action(
 def load_profile(conn, platform, agent_id):
     row = conn.execute(
         """
-        select o.agent_id, o.handle as name, s.*
+        select o.agent_id, o.handle as name, s.*, e.stats_json
         from opponents o
         join opponent_stats s on s.opponent_id = o.id
+        left join (
+            select opponent_id, stats_json
+            from opponent_external_stats
+            where source = 'arena_agent_stats'
+            order by fetched_at desc
+            limit 1
+        ) e on e.opponent_id = o.id
         where o.platform = ? and o.agent_id = ?
         """,
         (platform, agent_id),
@@ -406,7 +413,7 @@ def load_profiles_for_agents(conn, platform, agent_ids):
 
 
 def profile_to_mapping(profile: OpponentProfile):
-    return {
+    mapping = {
         "name": profile.name,
         "hands_seen": profile.hands_seen,
         "vpip": profile.vpip,
@@ -420,6 +427,9 @@ def profile_to_mapping(profile: OpponentProfile):
         "showdowns": profile.showdowns,
         "weak_aggressive_showdowns": profile.weak_aggressive_showdowns,
     }
+    if profile.api_stats is not None:
+        mapping["api_stats"] = profile.api_stats
+    return mapping
 
 
 def create_telemetry_run(

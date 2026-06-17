@@ -1177,7 +1177,7 @@ def profiled_choose_action(table, my_seat):
     strong = made_rank >= strong_threshold
     medium = made_rank == 1 or top_pair
 
-    if "raise" in available and strong and not tendencies["has_aggressive"]:
+    if "raise" in available and strong:
         amount = raise_for_value(table, allowed, strong=made_rank >= 4)
         return "raise", amount, f"Profiled value raise rank {made_rank}"
 
@@ -1217,15 +1217,62 @@ def profiled_choose_action(table, my_seat):
 
 def _table_tendencies(profiles):
     labels = [profile.label() for profile in profiles]
+    station_labels = {"calling_station", "loose-passive", "loose-measured"}
+    aggressive_labels = {
+        "loose_aggressive",
+        "tight_aggressive",
+        "bluffer",
+        "loose-aggressive",
+        "balanced-aggressive",
+    }
+    patient_labels = {"patient_methodical", "unknown", "tight-passive"}
+
+    def has_bluffer(profile):
+        label = profile.label()
+        if label in {"bluffer", "loose-aggressive"}:
+            return True
+        if profile.api_bluff_pct is not None and profile.api_bluff_pct >= 0.35:
+            return True
+        return False
+
+    def has_station(profile):
+        label = profile.label()
+        if label in station_labels:
+            return True
+        if profile.api_vpip is not None and profile.api_pfr is not None:
+            # Loose-passive: high VPIP, low PFR, low AF.
+            if (
+                profile.api_vpip >= 0.35
+                and profile.api_pfr <= 0.15
+                and (profile.api_af is None or profile.api_af < 1.5)
+            ):
+                return True
+        return False
+
+    def is_patient(profile):
+        label = profile.label()
+        if label in patient_labels:
+            return True
+        if profile.api_vpip is not None and profile.api_vpip <= 0.18:
+            if profile.api_af is None or profile.api_af < 1.0:
+                return True
+        return False
+
+    def is_aggressive(profile):
+        label = profile.label()
+        if label in aggressive_labels:
+            return True
+        if profile.api_af is not None and profile.api_af > 2.0:
+            return True
+        if profile.api_pfr is not None and profile.api_pfr >= 0.25:
+            return True
+        return False
+
     return {
-        "has_bluffer": "bluffer" in labels or "loose_aggressive" in labels,
-        "has_station": "calling_station" in labels,
-        "all_patient": bool(labels)
-        and all(label in {"patient_methodical", "unknown"} for label in labels),
-        "has_aggressive": any(
-            label in {"loose_aggressive", "tight_aggressive", "bluffer"}
-            for label in labels
-        ),
+        "has_bluffer": any(has_bluffer(profile) for profile in profiles),
+        "has_station": any(has_station(profile) for profile in profiles),
+        "all_patient": bool(profiles) and all(is_patient(profile) for profile in profiles),
+        "has_aggressive": any(is_aggressive(profile) for profile in profiles),
     }
 
 
@@ -3969,7 +4016,7 @@ def preflop_open_raise(table, my_seat, base) -> ActionDecision | None:
         return (
             "raise",
             amount,
-            f"v005 preflop open raise: score {score} pos {pos} size {size_bb}x table {ctx['table_type']}",
+            f"preflop open raise: score {score} pos {pos} size {size_bb}x table {ctx['table_type']}",
         )
     return None
 
@@ -4329,7 +4376,7 @@ def preflop_three_bet(table, my_seat, base) -> ActionDecision | None:
     return (
         "raise",
         amount,
-        f"v005 preflop 3-bet {label}: hand {hc} score {score} pos {pos} "
+        f"preflop 3-bet {label}: hand {hc} score {score} pos {pos} "
         f"size {target} table {ctx['table_type']}",
     )
 
@@ -4394,10 +4441,10 @@ def preflop_squeeze(table, my_seat, base) -> ActionDecision | None:
         ):
             chosen = choose_weighted(
                 (("squeeze", 0.30), ("pass", 0.70)),
-                "v005-preflop-bluff-squeeze",
+                "preflop-bluff-squeeze",
                 table,
                 my_seat,
-                strategy="flattened_v005",
+                strategy="flattened_v005", # TODO: Check if this is to log message to db
                 extra=(hc, pos, callers),
             )
             if chosen == "squeeze":
@@ -4416,7 +4463,7 @@ def preflop_squeeze(table, my_seat, base) -> ActionDecision | None:
     return (
         "raise",
         amount,
-        f"v005 preflop squeeze: hand {hc} score {score} pos {pos} callers {callers} size {target}",
+        f"preflop squeeze: hand {hc} score {score} pos {pos} callers {callers} size {target}",
     )
 
 
@@ -4451,7 +4498,7 @@ def big_stack_loose_postflop_adjust(table, my_seat, base) -> ActionDecision | No
     # River: suppress bluff bets (air/draw) vs big-stack loose caller
     if street == "River" and action == "bet" and rank == 0:
         if "check" in available:
-            return "check", None, "v005 big-stack-loose suppress river bluff"
+            return "check", None, "big-stack-loose suppress river bluff"
 
     # Flop/Turn: thin value bet with any pair vs stations
     if street in {"Flop", "Turn"} and action == "check" and rank >= 1:
@@ -4461,7 +4508,7 @@ def big_stack_loose_postflop_adjust(table, my_seat, base) -> ActionDecision | No
             return (
                 "bet",
                 capped(bet_size, allowed),
-                f"v005 thin value vs big-stack-loose: rank {rank}",
+                f"thin value vs big-stack-loose: rank {rank}",
             )
 
     return None
@@ -4819,4 +4866,4 @@ def choose_action(table, my_seat) -> ActionDecision:
         return adjusted
 
     action, amount, message = base
-    return action, amount, f"flattened_v005: {message}"
+    return action, amount, f"{message}"

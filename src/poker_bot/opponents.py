@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass, field
+import json
 
 
 @dataclass
@@ -19,6 +20,7 @@ class OpponentProfile:
     opportunities_to_fold_to_bet: int = 0
     showdowns: int = 0
     weak_aggressive_showdowns: int = 0
+    api_stats: dict | None = None
     recent_actions: deque = field(default_factory=lambda: deque(maxlen=20))
 
     @property
@@ -59,7 +61,7 @@ class OpponentProfile:
             return 0.0
         return self.weak_aggressive_showdowns / self.showdowns
 
-    def label(self):
+    def _local_label(self):
         if self.hands_seen < 5 and len(self.recent_actions) < 8:
             return "unknown"
         if self.weak_aggressive_showdown_frequency >= 0.35:
@@ -73,6 +75,68 @@ class OpponentProfile:
         if self.pfr_frequency >= 0.22 and self.aggression_frequency >= 0.30:
             return "tight_aggressive"
         return "balanced"
+
+    @property
+    def api_label(self):
+        if not isinstance(self.api_stats, dict):
+            return None
+        style = self.api_stats.get("playingStyle")
+        if not isinstance(style, dict):
+            return None
+        return style.get("label")
+
+    @property
+    def api_vpip(self):
+        if not isinstance(self.api_stats, dict):
+            return None
+        return self.api_stats.get("vpip")
+
+    @property
+    def api_pfr(self):
+        if not isinstance(self.api_stats, dict):
+            return None
+        return self.api_stats.get("pfr")
+
+    @property
+    def api_af(self):
+        if not isinstance(self.api_stats, dict):
+            return None
+        return self.api_stats.get("af")
+
+    @property
+    def api_bluff_pct(self):
+        if not isinstance(self.api_stats, dict):
+            return None
+        return self.api_stats.get("bluffPct")
+
+    @property
+    def api_wtsd(self):
+        if not isinstance(self.api_stats, dict):
+            return None
+        return self.api_stats.get("wtsd")
+
+    @property
+    def api_wsd(self):
+        if not isinstance(self.api_stats, dict):
+            return None
+        return self.api_stats.get("wsd")
+
+    @property
+    def api_three_bet_pct(self):
+        if not isinstance(self.api_stats, dict):
+            return None
+        return self.api_stats.get("threeBetPct")
+
+    def label(self):
+        local = self._local_label()
+        api = self.api_label
+        if api is None:
+            return local
+        if self.hands_seen >= 50 and local != api:
+            # Local observations are enough to detect a strategy change;
+            # prefer the recent read over the long-run API baseline.
+            return local
+        return api
 
 
 def profile_from_mapping(agent_id, data):
@@ -91,6 +155,12 @@ def profile_from_mapping(agent_id, data):
         "weak_aggressive_showdowns",
     ):
         setattr(profile, field_name, int(data.get(field_name, 0)))
+    stats_json = data.get("stats_json")
+    if stats_json:
+        try:
+            profile.api_stats = json.loads(stats_json)
+        except json.JSONDecodeError:
+            profile.api_stats = None
     for action in data.get("recent_actions", []):
         profile.recent_actions.append(action)
     return profile
