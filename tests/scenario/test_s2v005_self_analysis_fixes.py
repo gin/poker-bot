@@ -30,7 +30,9 @@ def make_seats(bets, stacks, hero_seat, hero_cards, button=1, all_aggressive=Fal
         seat_bet = (bets[index] if bets else 0) or 0
         seats.append(
             {
-                "agentId": f"villain-{seat_number}" if seat_number != hero_seat else "hero",
+                "agentId": f"villain-{seat_number}"
+                if seat_number != hero_seat
+                else "hero",
                 "seatNumber": seat_number,
                 "holeCards": hero_cards if seat_number == hero_seat else [],
                 "stackChips": stacks[index] if stacks else 1500,
@@ -42,8 +44,17 @@ def make_seats(bets, stacks, hero_seat, hero_cards, button=1, all_aggressive=Fal
     return seats
 
 
-def make_preflop_table(hero_cards, hero_seat, button, raise_amount, hero_stack,
-                       raise_seat, n_players=6, raiser_stack=1500, all_aggressive=False):
+def make_preflop_table(
+    hero_cards,
+    hero_seat,
+    button,
+    raise_amount,
+    hero_stack,
+    raise_seat,
+    n_players=6,
+    raiser_stack=1500,
+    all_aggressive=False,
+):
     """Build a preflop table where one player has raised to raise_amount and
     hero is at hero_seat with hero_cards and hero_stack chips remaining."""
     seats = []
@@ -56,36 +67,42 @@ def make_preflop_table(hero_cards, hero_seat, button, raise_amount, hero_stack,
                 hero_blind = 5
             elif hero_seat == 3:  # BB
                 hero_blind = 10
-            seats.append({
-                "agentId": "hero",
-                "seatNumber": i,
-                "holeCards": hero_cards,
-                "stackChips": hero_stack,
-                "currentBetChips": hero_blind,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": "hero",
+                    "seatNumber": i,
+                    "holeCards": hero_cards,
+                    "stackChips": hero_stack,
+                    "currentBetChips": hero_blind,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
         elif i == raise_seat:
-            seats.append({
-                "agentId": "raiser",
-                "seatNumber": i,
-                "holeCards": [],
-                "stackChips": raiser_stack,
-                "currentBetChips": raise_amount,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": "raiser",
+                    "seatNumber": i,
+                    "holeCards": [],
+                    "stackChips": raiser_stack,
+                    "currentBetChips": raise_amount,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
         else:
             # Other seats folded
-            seats.append({
-                "agentId": f"villain-{i}",
-                "seatNumber": i,
-                "holeCards": [],
-                "stackChips": 1500,
-                "currentBetChips": 0,
-                "folded": True,
-                "hasFolded": True,
-            })
+            seats.append(
+                {
+                    "agentId": f"villain-{i}",
+                    "seatNumber": i,
+                    "holeCards": [],
+                    "stackChips": 1500,
+                    "currentBetChips": 0,
+                    "folded": True,
+                    "hasFolded": True,
+                }
+            )
     # Set up the table
     max_bet = raise_amount
     call_amount = max_bet - (seats[hero_seat - 1]["currentBetChips"] or 0)
@@ -111,8 +128,15 @@ def make_preflop_table(hero_cards, hero_seat, button, raise_amount, hero_stack,
     }
 
 
-def make_postflop_table(hero_cards, hero_seat, board_cards, pot_chips, hero_stack,
-                        facing_bet, available=None):
+def make_postflop_table(
+    hero_cards,
+    hero_seat,
+    board_cards,
+    pot_chips,
+    hero_stack,
+    facing_bet,
+    available=None,
+):
     """Build a postflop table where hero is acting with facing_bet to call."""
     if available is None:
         available = ["fold", "call", "raise"]
@@ -120,25 +144,29 @@ def make_postflop_table(hero_cards, hero_seat, board_cards, pot_chips, hero_stac
     seats = []
     for i in range(1, n + 1):
         if i == hero_seat:
-            seats.append({
-                "agentId": "hero",
-                "seatNumber": i,
-                "holeCards": hero_cards,
-                "stackChips": hero_stack,
-                "currentBetChips": facing_bet,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": "hero",
+                    "seatNumber": i,
+                    "holeCards": hero_cards,
+                    "stackChips": hero_stack,
+                    "currentBetChips": facing_bet,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
         else:
-            seats.append({
-                "agentId": f"villain-{i}",
-                "seatNumber": i,
-                "holeCards": [],
-                "stackChips": 1500,
-                "currentBetChips": 0,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": f"villain-{i}",
+                    "seatNumber": i,
+                    "holeCards": [],
+                    "stackChips": 1500,
+                    "currentBetChips": 0,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
     button = (hero_seat - 1) if hero_seat > 1 else n
     return {
         "street": "Flop",
@@ -174,7 +202,9 @@ def test_set_mine_77_hj_3bet_fold():
     hero = table["seats"][3]
     result = strategy.profiled_choose_action(table, hero)
     assert result is not None
-    assert result[0] == "fold", f"Expected fold for 7h7d HJ vs 19% 3-bet, got {result[0]}"
+    assert result[0] == "fold", (
+        f"Expected fold for 7h7d HJ vs 19% 3-bet, got {result[0]}"
+    )
 
 
 def test_set_mine_44_sb_vs_cheap_raise():
@@ -190,7 +220,9 @@ def test_set_mine_44_sb_vs_cheap_raise():
     hero = table["seats"][1]
     result = strategy.profiled_choose_action(table, hero)
     assert result is not None
-    assert result[0] == "call", f"Expected call for 4c4d SB vs cheap raise, got {result[0]}"
+    assert result[0] == "call", (
+        f"Expected call for 4c4d SB vs cheap raise, got {result[0]}"
+    )
 
 
 def test_set_mine_aqo_bb_regression():
@@ -253,7 +285,9 @@ def test_fragile_two_pair_folds_at_30pct_required():
     # At pot/stack 13% (below 35% threshold), the over-priced guard
     # doesn't fire, and required 30% < 0.42 cap → call.
     assert result is not None
-    assert result[0] == "call", f"Expected call at 30% pot odds in normal pot, got {result[0]}"
+    assert result[0] == "call", (
+        f"Expected call at 30% pot odds in normal pot, got {result[0]}"
+    )
 
 
 def test_fragile_two_pair_folds_big_pot():
@@ -275,7 +309,9 @@ def test_fragile_two_pair_folds_big_pot():
     # 700 > 0.35 * 1500 = 525 (true), 500 > 0.30 * 1500 = 450 (true)
     # → over-priced guard fires → fold
     assert result is not None
-    assert result[0] == "fold", f"Expected fold for fragile two pair in big pot, got {result[0]}"
+    assert result[0] == "fold", (
+        f"Expected fold for fragile two pair in big pot, got {result[0]}"
+    )
 
 
 def test_non_fragile_two_pair_unchanged():
@@ -305,42 +341,50 @@ def test_non_fragile_two_pair_unchanged():
 # ════════════════════════════════════════════════════════════════════════════
 
 
-def _make_river_table_with_aggression(hero_cards, hero_stack, opp_stack, hero_seat, opp_seat):
+def _make_river_table_with_aggression(
+    hero_cards, hero_stack, opp_stack, hero_seat, opp_seat
+):
     """Build a River table where the opponent has bet and we need to decide
     whether to 3-barrel raise or bluff-catch call. The opponent is NOT in
     _SIXMAX_AGGRESSIVE_LABELS — just a big stack."""
     seats = []
     for i in range(1, 4):  # 3-handed
         if i == hero_seat:
-            seats.append({
-                "agentId": "hero",
-                "seatNumber": i,
-                "holeCards": hero_cards,
-                "stackChips": hero_stack,
-                "currentBetChips": 0,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": "hero",
+                    "seatNumber": i,
+                    "holeCards": hero_cards,
+                    "stackChips": hero_stack,
+                    "currentBetChips": 0,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
         elif i == opp_seat:
-            seats.append({
-                "agentId": "page",  # NOT in _SIXMAX_AGGRESSIVE_LABELS
-                "seatNumber": i,
-                "holeCards": [],
-                "stackChips": opp_stack,
-                "currentBetChips": 200,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": "page",  # NOT in _SIXMAX_AGGRESSIVE_LABELS
+                    "seatNumber": i,
+                    "holeCards": [],
+                    "stackChips": opp_stack,
+                    "currentBetChips": 200,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
         else:
-            seats.append({
-                "agentId": f"villain-{i}",
-                "seatNumber": i,
-                "holeCards": [],
-                "stackChips": 1500,
-                "currentBetChips": 0,
-                "folded": True,
-                "hasFolded": True,
-            })
+            seats.append(
+                {
+                    "agentId": f"villain-{i}",
+                    "seatNumber": i,
+                    "holeCards": [],
+                    "stackChips": 1500,
+                    "currentBetChips": 0,
+                    "folded": True,
+                    "hasFolded": True,
+                }
+            )
     return {
         "street": "River",
         "boardCards": ["Ah", "Qd", "Ts", "6c", "3h"],
@@ -348,7 +392,13 @@ def _make_river_table_with_aggression(hero_cards, hero_stack, opp_stack, hero_se
         "buttonSeatNumber": (hero_seat + 1) if hero_seat < 3 else 1,
         "seats": seats,
         "opponentProfiles": {
-            "page": {"hands_seen": 30, "label": "balanced", "vpip": 0.2, "pfr": 0.18, "fold_to_bet": 0.45},
+            "page": {
+                "hands_seen": 30,
+                "label": "balanced",
+                "vpip": 0.2,
+                "pfr": 0.18,
+                "fold_to_bet": 0.45,
+            },
         },
         "allowedActions": {
             "availableActions": ["fold", "call", "raise", "all-in"],
@@ -382,35 +432,41 @@ def test_anti_bully_still_3_barrels_vs_aggressive_label():
     seats = []
     for i in range(1, 4):
         if i == 1:
-            seats.append({
-                "agentId": "hero",
-                "seatNumber": i,
-                "holeCards": ["Td", "Tc"],
-                "stackChips": 800,
-                "currentBetChips": 0,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": "hero",
+                    "seatNumber": i,
+                    "holeCards": ["Td", "Tc"],
+                    "stackChips": 800,
+                    "currentBetChips": 0,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
         elif i == 2:
-            seats.append({
-                "agentId": "loose_aggressive_bot",
-                "seatNumber": i,
-                "holeCards": [],
-                "stackChips": 1457,
-                "currentBetChips": 200,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": "loose_aggressive_bot",
+                    "seatNumber": i,
+                    "holeCards": [],
+                    "stackChips": 1457,
+                    "currentBetChips": 200,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
         else:
-            seats.append({
-                "agentId": f"villain-{i}",
-                "seatNumber": i,
-                "holeCards": [],
-                "stackChips": 1500,
-                "currentBetChips": 0,
-                "folded": True,
-                "hasFolded": True,
-            })
+            seats.append(
+                {
+                    "agentId": f"villain-{i}",
+                    "seatNumber": i,
+                    "holeCards": [],
+                    "stackChips": 1500,
+                    "currentBetChips": 0,
+                    "folded": True,
+                    "hasFolded": True,
+                }
+            )
     # Profile stats tuned to trigger label() == "loose_aggressive":
     #   vpip_frequency = vpip/hands_seen >= 0.45 → vpip >= 14
     #   aggression_frequency = (bets+raises)/actions >= 0.35
@@ -423,11 +479,11 @@ def test_anti_bully_still_3_barrels_vs_aggressive_label():
         "opponentProfiles": {
             "loose_aggressive_bot": {
                 "hands_seen": 30,
-                "vpip": 15,        # 0.5
-                "pfr": 8,          # 0.27
-                "calls": 8,        # 23 actions total
+                "vpip": 15,  # 0.5
+                "pfr": 8,  # 0.27
+                "calls": 8,  # 23 actions total
                 "bets": 4,
-                "raises": 5,       # 9/23 = 0.39 aggression
+                "raises": 5,  # 9/23 = 0.39 aggression
                 "folds": 6,
                 "fold_to_bet": 4,
                 "opportunities_to_fold_to_bet": 10,  # 0.4
@@ -446,7 +502,9 @@ def test_anti_bully_still_3_barrels_vs_aggressive_label():
     result = strategy._sixmax_anti_bully_action(table, hero)
     assert result is not None
     # Against an aggressive opponent, we still raise
-    assert result[0] == "raise", f"Expected raise vs aggressive opponent, got {result[0]}"
+    assert result[0] == "raise", (
+        f"Expected raise vs aggressive opponent, got {result[0]}"
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -524,25 +582,29 @@ def test_unprofiled_field_widens_utg_kts_open():
     seats = []
     for i in range(1, 7):
         if i == 1:
-            seats.append({
-                "agentId": "hero",
-                "seatNumber": i,
-                "holeCards": ["Ks", "Ts"],
-                "stackChips": 1500,
-                "currentBetChips": 0,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": "hero",
+                    "seatNumber": i,
+                    "holeCards": ["Ks", "Ts"],
+                    "stackChips": 1500,
+                    "currentBetChips": 0,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
         else:
-            seats.append({
-                "agentId": f"villain-{i}",
-                "seatNumber": i,
-                "holeCards": [],
-                "stackChips": 1500,
-                "currentBetChips": 0,
-                "folded": True,
-                "hasFolded": True,
-            })
+            seats.append(
+                {
+                    "agentId": f"villain-{i}",
+                    "seatNumber": i,
+                    "holeCards": [],
+                    "stackChips": 1500,
+                    "currentBetChips": 0,
+                    "folded": True,
+                    "hasFolded": True,
+                }
+            )
     table = {
         "street": "Preflop",
         "boardCards": [],
@@ -560,7 +622,9 @@ def test_unprofiled_field_widens_utg_kts_open():
     hero = table["seats"][0]
     base = ("fold", None, "base")
     result = strategy.preflop_open_raise(table, hero, base)
-    assert result is not None, f"Expected raise for KTs UTG vs unprofiled field, got None"
+    assert result is not None, (
+        f"Expected raise for KTs UTG vs unprofiled field, got None"
+    )
     assert result[0] == "raise", f"Expected raise, got {result[0]}"
 
 
@@ -570,25 +634,29 @@ def test_unprofiled_field_keeps_t9s_utg_fold():
     seats = []
     for i in range(1, 7):
         if i == 1:
-            seats.append({
-                "agentId": "hero",
-                "seatNumber": i,
-                "holeCards": ["9s", "Ts"],
-                "stackChips": 1500,
-                "currentBetChips": 0,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": "hero",
+                    "seatNumber": i,
+                    "holeCards": ["9s", "Ts"],
+                    "stackChips": 1500,
+                    "currentBetChips": 0,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
         else:
-            seats.append({
-                "agentId": f"villain-{i}",
-                "seatNumber": i,
-                "holeCards": [],
-                "stackChips": 1500,
-                "currentBetChips": 0,
-                "folded": True,
-                "hasFolded": True,
-            })
+            seats.append(
+                {
+                    "agentId": f"villain-{i}",
+                    "seatNumber": i,
+                    "holeCards": [],
+                    "stackChips": 1500,
+                    "currentBetChips": 0,
+                    "folded": True,
+                    "hasFolded": True,
+                }
+            )
     table = {
         "street": "Preflop",
         "boardCards": [],
@@ -617,25 +685,29 @@ def test_profiled_passive_field_keeps_widening():
     seats = []
     for i in range(1, 7):
         if i == 1:
-            seats.append({
-                "agentId": "hero",
-                "seatNumber": i,
-                "holeCards": ["Ks", "Ts"],
-                "stackChips": 1500,
-                "currentBetChips": 0,
-                "folded": False,
-                "hasFolded": False,
-            })
+            seats.append(
+                {
+                    "agentId": "hero",
+                    "seatNumber": i,
+                    "holeCards": ["Ks", "Ts"],
+                    "stackChips": 1500,
+                    "currentBetChips": 0,
+                    "folded": False,
+                    "hasFolded": False,
+                }
+            )
         else:
-            seats.append({
-                "agentId": f"villain-{i}",
-                "seatNumber": i,
-                "holeCards": [],
-                "stackChips": 1500,
-                "currentBetChips": 0,
-                "folded": True,
-                "hasFolded": True,
-            })
+            seats.append(
+                {
+                    "agentId": f"villain-{i}",
+                    "seatNumber": i,
+                    "holeCards": [],
+                    "stackChips": 1500,
+                    "currentBetChips": 0,
+                    "folded": True,
+                    "hasFolded": True,
+                }
+            )
     # Add profile data that triggers passive classification
     table = {
         "street": "Preflop",
@@ -644,8 +716,18 @@ def test_profiled_passive_field_keeps_widening():
         "buttonSeatNumber": 4,
         "seats": seats,
         "opponentProfiles": {
-            "villain-2": {"hands_seen": 15, "vpip": 0.3, "pfr": 0.1, "fold_to_bet": 0.65},
-            "villain-3": {"hands_seen": 15, "vpip": 0.25, "pfr": 0.08, "fold_to_bet": 0.7},
+            "villain-2": {
+                "hands_seen": 15,
+                "vpip": 0.3,
+                "pfr": 0.1,
+                "fold_to_bet": 0.65,
+            },
+            "villain-3": {
+                "hands_seen": 15,
+                "vpip": 0.25,
+                "pfr": 0.08,
+                "fold_to_bet": 0.7,
+            },
         },
         "allowedActions": {
             "availableActions": ["fold", "call", "raise"],
@@ -658,7 +740,9 @@ def test_profiled_passive_field_keeps_widening():
     base = ("fold", None, "base")
     result = strategy.preflop_open_raise(table, hero, base)
     assert result is not None
-    assert result[0] == "raise", f"Expected raise for KTs UTG vs passive, got {result[0]}"
+    assert result[0] == "raise", (
+        f"Expected raise for KTs UTG vs passive, got {result[0]}"
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════

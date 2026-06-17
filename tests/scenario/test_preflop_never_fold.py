@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+# from poker_bot.strategies.s2baseog import choose_action
+# from poker_bot.strategies.s2v005_self_patch import choose_action
 from poker_bot.strategies.s2base import choose_action
 
 HERO = "hero-agent"

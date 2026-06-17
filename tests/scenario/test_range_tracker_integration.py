@@ -1,9 +1,14 @@
 from poker_bot.range_model import BayesianRangeTracker
-from poker_bot.strategies import flattened_v5
+
+# from poker_bot.strategies import s2baseog
+# from poker_bot.strategies import s2v005_self_patch
+from poker_bot.strategies import s2base
 
 
 def test_tracker_pressure_summary_is_available_to_flattened_v5(tmp_path):
-    flattened_v5._RANGE_TRACKER = BayesianRangeTracker(tmp_path)
+    # s2baseog._RANGE_TRACKER = BayesianRangeTracker(tmp_path)
+    # s2v005_self_patch._RANGE_TRACKER = BayesianRangeTracker(tmp_path)
+    s2base._RANGE_TRACKER = BayesianRangeTracker(tmp_path)
     table = {
         "street": "Flop",
         "buttonSeatNumber": 1,
@@ -33,7 +38,8 @@ def test_tracker_pressure_summary_is_available_to_flattened_v5(tmp_path):
     }
     hero = table["seats"][1]
 
-    summary = flattened_v5.bayesian_pressure_summary(table, hero)
+    # summary = s2v005_self_patch.bayesian_pressure_summary(table, hero)
+    summary = s2base.bayesian_pressure_summary(table, hero)
 
     assert summary["tracker_samples"] == 1
     assert 0.0 <= summary["tracker_strength"] <= 1.0

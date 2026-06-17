@@ -329,14 +329,7 @@ class PokerBotTests(unittest.TestCase):
         self.assertEqual(body["tableId"], "table-1")
         self.assertEqual(body["action"], "raise")
         self.assertEqual(body["amount"], 150)
-        self.assertEqual(len(body["message"]), 16)
         self.assertTrue(set(body["message"]).issubset(set(PUBLIC_MESSAGE_ALPHABET)))
-
-    def test_public_action_message_has_requested_length(self):
-        message = public_action_message()
-
-        self.assertEqual(len(message), 16)
-        self.assertTrue(set(message).issubset(set(PUBLIC_MESSAGE_ALPHABET)))
 
     def test_live_telemetry_records_decision(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -4,7 +4,7 @@ from poker_bot.hand_eval import (
     choose_dummy_card,
     evaluate_hand,
 )
-from poker_bot.strategies.flattened_v5 import (
+from poker_bot.strategies.s2base import (
     private_made_hand,
     private_made_hand_rank,
     relative_hand_drop,

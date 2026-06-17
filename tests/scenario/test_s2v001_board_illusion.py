@@ -1,10 +1,14 @@
 """Scenario tests for the board-illusion river exploit."""
+## NOTE: check to see if newer s2 strat passes
 
 from __future__ import annotations
 
 import pytest
 
 from poker_bot.strategies import s2v001_board_illusion as strategy_variant
+
+# from poker_bot.strategies import s2baseog as strategy_variant
+# from poker_bot.strategies import s2v004 as strategy_variant
 from poker_bot.strategies.exploits import board_illusion
 from poker_bot.strategies.exploits.board_illusion import apply_board_illusion
 
