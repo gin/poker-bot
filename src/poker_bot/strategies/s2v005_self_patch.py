@@ -1,6 +1,9 @@
 """
 Season 2, base
 Cut from self-contained version of s2v004
+
+Applied patch according to:
+PLAN_FIX_S2V005_SELF_ANALYSIS.md
 """
 
 from __future__ import annotations
@@ -1154,10 +1157,47 @@ def profiled_choose_action(table, my_seat):
         if tendencies["has_aggressive"]:
             threshold += 4
 
+        # v005 self-analysis: pocket-pair set-mining math.
+        # Set-mining odds: 11.8% to flop a set, win 80% of stacks on
+        # average when we hit → expected win ≈ 9.4% of effective
+        # stack. Break-even: price_to_stack = 0.094. Safe threshold
+        # 8.5:1 implied odds = price_to_stack = 0.118. Above that,
+        # set-mining is -EV and we should NOT call (or 4-bet raise).
+        # Also block premium 4-bet raises when the price is over-priced
+        # (pocket pairs aren't in the 4-bet-for-value range TT+/AK).
+        pair_rank = hole_pair_rank(hole_cards)
+        if pair_rank is not None and call_amount > 0:
+            stack = int(my_seat.get("stackChips") or 0)
+            if stack > 0:
+                price_to_stack = call_amount / stack
+                if price_to_stack > 0.118:
+                    if "fold" in available:
+                        return (
+                            "fold",
+                            None,
+                            f"v005 fold over-priced pair {hand_class(hole_cards)} "
+                            f"price-to-stack {price_to_stack:.1%}",
+                        )
+
         if "raise" in available and score >= threshold + 30:
             amount = raise_for_value(table, allowed, strong=score >= 95)
             return "raise", amount, f"Profiled premium score {score}, raising"
         if "call" in available:
+            # Pocket-pair set-mining call branch. Conservative
+            # threshold (8.5:1 implied odds) — only fires for
+            # set-mineable hands in deep-stacked, cheap spots.
+            # Catches the 4c4d SB vs raise-to-37 case (was: fold).
+            if pair_rank is not None and "raise" not in available:
+                stack = int(my_seat.get("stackChips") or 0)
+                if stack > 0 and call_amount > 0:
+                    price_to_stack = call_amount / stack
+                    if price_to_stack <= 0.118:
+                        return (
+                            "call",
+                            call_amount,
+                            f"v005 set-mine {hand_class(hole_cards)} "
+                            f"price-to-stack {price_to_stack:.1%}",
+                        )
             price_cap = 0.08 if opponents <= 2 else 0.05
             if score >= threshold or required <= price_cap:
                 return "call", call_amount, f"Profiled preflop score {score}, calling"
@@ -1454,6 +1494,26 @@ def _sixmax_anti_bully_action(table, my_seat):
         return None
 
     if "raise" in available and strong:
+        # v005 self-analysis: don't 3-barrel into a non-aggressive
+        # opponent who has bet multiple streets. Their range after
+        # 2+ streets of betting is heavily value-weighted (AT+, KQ,
+        # sets, AA, KK, QQ, JJ). TPTK (rank 3) is rarely ahead at
+        # showdown in that spot. The busted session's TT on
+        # AhQdTs vs page (who had bet flop+turn) 3-bet/jammed
+        # river for 745 and lost ~439. Demote the raise arm to
+        # bluff-catch call when the opponent is a big stack but
+        # NOT in _SIXMAX_AGGRESSIVE_LABELS.
+        street_depth = {"Flop": 1, "Turn": 2, "River": 3}.get(street, 1)
+        opponent_is_aggressive = ctx.get("known_aggressive", False)
+        if street_depth >= 2 and not opponent_is_aggressive:
+            if "call" in available and required <= 0.40:
+                return (
+                    "call",
+                    price,
+                    f"anti-bully demote: opponent not aggressive, "
+                    f"{street} bluff-catch rank {made_rank} at {required:.0%}",
+                )
+            return None
         current_bet = int(table.get("currentBet") or 0)
         target = current_bet + max(BIG_BLIND * 3, int(max(pot, BIG_BLIND) * 0.65))
         return (
@@ -2501,7 +2561,17 @@ def paired_board_pot_control(table, my_seat, base) -> ActionDecision | None:
         required = pot_odds(price, pot)
         stack = int(my_seat.get("stackChips") or 0)
         texture = board_texture(board_cards)
-        if fragile_rank_two and (required > 0.42 or price > max(stack, 1)):
+        # v005 self-analysis: in deep 3-bet pots, the opponent is
+        # committed and our fragile hand (two pair using a board
+        # pair) can't catch up. The busted session's 7h7d hand on
+        # Js6c3s → 6d → Q hit this guard (pot was 35%+ of hero's
+        # stack and price was 30%+ of remaining stack on each
+        # street). The original 0.42 required-odds cap was too
+        # loose for that specific scenario.
+        over_priced_call = False
+        if fragile_rank_two and stack > 0:
+            over_priced_call = pot > stack * 0.35 and price > stack * 0.30
+        if fragile_rank_two and (required > 0.42 or price > max(stack, 1) or over_priced_call):
             if "fold" in available:
                 return (
                     "fold",
@@ -2955,7 +3025,8 @@ def postflop_draw_continue(table, my_seat, base):
 
     has_fd = has_flush_draw(hole_cards, board_cards)
     has_oesd = has_open_ended_straight_draw(hole_cards, board_cards)
-    if not has_fd and not has_oesd:
+    has_gutshot = has_gutshot_draw(hole_cards, board_cards)
+    if not has_fd and not has_oesd and not has_gutshot:
         return None
 
     street = table.get("street", "Flop")
@@ -2968,10 +3039,19 @@ def postflop_draw_continue(table, my_seat, base):
     # flop multiway 0.22 (variance reduces draw equity),
     # turn HU 0.20 (one card to come, raw equity 17-25%),
     # turn multiway 0.15.
-    if street == "Flop":
-        cap = 0.30 if opponents <= 2 else 0.22
-    else:  # Turn
-        cap = 0.20 if opponents <= 2 else 0.15
+    # v005 self-analysis: gutshot-only draws use a tighter cap
+    # (0.12 flop / 0.08 turn) because 4-out draws realize less
+    # equity than FD (9 outs) or OESD (8 outs). The busted
+    # session's hand 7d2s on 5h3cJd had a wheel gutshot that
+    # the bot folded to a c-bet; this closes that micro-leak.
+    is_strong_draw = has_fd or has_oesd
+    if is_strong_draw:
+        if street == "Flop":
+            cap = 0.30 if opponents <= 2 else 0.22
+        else:  # Turn
+            cap = 0.20 if opponents <= 2 else 0.15
+    else:  # gutshot only
+        cap = 0.12 if street == "Flop" else 0.08
 
     pot = effective_pot(table)
     required = pot_odds(price, pot)
@@ -2985,7 +3065,7 @@ def postflop_draw_continue(table, my_seat, base):
 
     draw_label = "+".join(
         label
-        for label, present in (("FD", has_fd), ("OESD", has_oesd))
+        for label, present in (("FD", has_fd), ("OESD", has_oesd), ("gutshot", has_gutshot))
         if present
     )
     return (
@@ -3012,6 +3092,34 @@ def has_open_ended_straight_draw(hole_cards, board_cards):
     for low in range(2, 11):
         window = set(range(low, low + 4))
         if window.issubset(values):
+            return True
+    return False
+
+
+def has_gutshot_draw(hole_cards, board_cards):
+    """4-out straight draw — one specific rank completes a 5-card straight.
+
+    v005 self-analysis: gutshots have ~17% raw equity (4 outs × 2 streets)
+    which is +EV at the right price. Distinct from OESD (8 outs) and FD
+    (9 outs). Example: 7d2s on 5h3cJd needs a 4 for the wheel A-2-3-4-5.
+
+    Returns True if any 4-rank window has exactly 3 of its ranks in the
+    combined hole+board values (and no 5-rank window is fully present,
+    i.e., not a made straight).
+    """
+    if len(board_cards) not in {3, 4}:
+        return False
+    values = set(card_values(list(hole_cards) + list(board_cards)))
+    if 14 in values:
+        values.add(1)
+    # If we already have a made straight, this isn't a draw.
+    for low in range(2, 11):
+        if set(range(low, low + 5)).issubset(values):
+            return False
+    # Look for any 4-card window where exactly 3 of 4 are present.
+    for low in range(2, 11):
+        window = set(range(low, low + 4))
+        if len(window & values) == 3:
             return True
     return False
 
@@ -3963,6 +4071,22 @@ def preflop_open_raise(table, my_seat, base) -> ActionDecision | None:
             # Loose/station field: tighten slightly but size up to 3.5x
             min_score = min_score + 2
             size_bb = max(size_bb, 3.5)  # never below GTO base for this position
+    else:
+        # v005 self-analysis: unprofiled field. Most opponents in
+        # the arena fold >50% preflop, so a 3-5 point widening
+        # at unprofiled tables is +EV. Cap at score 45 (BTN) to
+        # avoid over-opening garbage. NOTE: this widened range
+        # regresses in selfplay (which uses a fixed pool that
+        # punishes wider opens with 3-bets), so validate in
+        # arena before promoting.
+        if pos == "UTG":
+            min_score = max(60, min_score - 5)
+        elif pos in {"HJ", "MP"}:
+            min_score = max(55, min_score - 5)
+        elif pos in {"CO", "SB"}:
+            min_score = max(50, min_score - 3)
+        elif pos == "BTN":
+            min_score = max(45, min_score - 3)
 
     if score >= min_score:
         amount = raise_to_amount(table, allowed, BIG_BLIND * size_bb)
