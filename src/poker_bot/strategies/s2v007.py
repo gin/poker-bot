@@ -1,39 +1,6 @@
 """
-Season 2, version 004
-Cut from Flattened v5 with incremental changes:
-- Fix flaw from S1 Tournament
-    - consider communal cards to recalculate hand strength
-    - consider stack-to-pot ratio
-- Persistent Bayesian range tracker
-    - per-agent posterior range state                                                                                         │
-    - blocker removal                                                                                                         │
-    - action-history tracking                                                                                                 │
-    - confidence growth                                                                                                       │
-    - showdown correction
-- Improve hand evaluation with board-aware logic (private hand made, rank drop)
-- Flattened completely (fully self-contained, no imports from other strategy modules)
-
-
-end: 2026-06-16, 2:15pm
-Result:
-S3 Playground out of the game after 223 hands
-
-Last hand
-https://arena.dev.fun/poker-playground/table/cmqh1x8nc9lwfm0toha0d2s6q
-Appears unlucky from opponent all-in against AJs with AA.
-
-2nd biggest losing hand
-https://arena.dev.fun/poker-playground/table/cmqgv8rwi553hm0toal6bm7oq
-Appears unlucky from opponent all-in against 87s with JJ.
-
-Playstyle: Balanced & Aggressive
-VPIP 20%
-PFR 11%
-AF 2.4
-3-Bet% 7%
-WTSD 48%
-W$SD 42%
-BLUFF 40%
+Season 2, base
+Cut from self-contained version of s2v004
 """
 
 from __future__ import annotations
@@ -1214,7 +1181,7 @@ def profiled_choose_action(table, my_seat):
     strong = made_rank >= strong_threshold
     medium = made_rank == 1 or top_pair
 
-    if "raise" in available and strong and not tendencies["has_aggressive"]:
+    if "raise" in available and strong:
         amount = raise_for_value(table, allowed, strong=made_rank >= 4)
         return "raise", amount, f"Profiled value raise rank {made_rank}"
 
@@ -1256,15 +1223,63 @@ def profiled_choose_action(table, my_seat):
 
 def _table_tendencies(profiles):
     labels = [profile.label() for profile in profiles]
+    station_labels = {"calling_station", "loose-passive", "loose-measured"}
+    aggressive_labels = {
+        "loose_aggressive",
+        "tight_aggressive",
+        "bluffer",
+        "loose-aggressive",
+        "balanced-aggressive",
+    }
+    patient_labels = {"patient_methodical", "unknown", "tight-passive"}
+
+    def has_bluffer(profile):
+        label = profile.label()
+        if label in {"bluffer", "loose-aggressive"}:
+            return True
+        if profile.api_bluff_pct is not None and profile.api_bluff_pct >= 0.35:
+            return True
+        return False
+
+    def has_station(profile):
+        label = profile.label()
+        if label in station_labels:
+            return True
+        if profile.api_vpip is not None and profile.api_pfr is not None:
+            # Loose-passive: high VPIP, low PFR, low AF.
+            if (
+                profile.api_vpip >= 0.35
+                and profile.api_pfr <= 0.15
+                and (profile.api_af is None or profile.api_af < 1.5)
+            ):
+                return True
+        return False
+
+    def is_patient(profile):
+        label = profile.label()
+        if label in patient_labels:
+            return True
+        if profile.api_vpip is not None and profile.api_vpip <= 0.18:
+            if profile.api_af is None or profile.api_af < 1.0:
+                return True
+        return False
+
+    def is_aggressive(profile):
+        label = profile.label()
+        if label in aggressive_labels:
+            return True
+        if profile.api_af is not None and profile.api_af > 2.0:
+            return True
+        if profile.api_pfr is not None and profile.api_pfr >= 0.25:
+            return True
+        return False
+
     return {
-        "has_bluffer": "bluffer" in labels or "loose_aggressive" in labels,
-        "has_station": "calling_station" in labels,
-        "all_patient": bool(labels)
-        and all(label in {"patient_methodical", "unknown"} for label in labels),
-        "has_aggressive": any(
-            label in {"loose_aggressive", "tight_aggressive", "bluffer"}
-            for label in labels
-        ),
+        "has_bluffer": any(has_bluffer(profile) for profile in profiles),
+        "has_station": any(has_station(profile) for profile in profiles),
+        "all_patient": bool(profiles)
+        and all(is_patient(profile) for profile in profiles),
+        "has_aggressive": any(is_aggressive(profile) for profile in profiles),
     }
 
 
@@ -1510,6 +1525,38 @@ _SIXMAX_DEFEND_RANGES = {
 
 _SIXMAX_PREMIUMS = {"AA", "KK", "QQ", "JJ", "AKs", "AKo"}
 _SIXMAX_AGGRESSIVE_LABELS = {"bluffer", "loose_aggressive"}
+
+# v6: profile-gated SB/BB blind defend widening. The first deterministic
+# widening attempt (see PLAN_PREFLOP_PATCH_EV_LEAK.md) regressed vs tight
+# heuristic baselines because we don't realise raw equity OOP. These sets
+# are only consulted when _raiser_invites_wide_defense() says the opener
+# is profiled as wide; otherwise preflop_positional_defense keeps the
+# conservative behaviour and the sets are inert.
+_PREFLOP_SB_FLAT_CALL = {
+    "22",
+    "33",
+    "44",
+    "55",
+    "66",
+    "77",  # set mining (>=30 BB effective)
+    "65s",
+    "76s",
+    "87s",
+    "98s",
+    "T9s",  # low suited connectors
+    "A2s",
+    "A3s",
+    "A4s",
+    "A5s",  # suited wheel aces
+}
+_PREFLOP_BB_MIX_DEFEND = frozenset({"65s"})
+# Minimum hands before the raiser's profile is trusted enough to widen
+# our blind defend. 8 hands is enough to clear the 5-hand "unknown"
+# label gate in OpponentProfile.label() with a small buffer.
+_WIDE_DEFENSE_MIN_HANDS = 8
+# fold_to_bet >= this signals a wide range (the opener folds a lot postflop
+# because they have nothing), even when their label is balanced.
+_WIDE_DEFENSE_FOLD_TO_BET = 0.55
 
 
 def _is_late_position_sixmax(position):
@@ -2890,7 +2937,7 @@ def weak_pair_wet_board_pot_control(table, my_seat, base) -> ActionDecision | No
             "check",
             None,
             distribution_message(
-                "mixed pot control weak non-top pair wet board",
+                "v004 mixed pot control weak non-top pair wet board",
                 decision,
                 summary,
             ),
@@ -2989,7 +3036,7 @@ def mixed_threshold_pressure_response(table, my_seat, base) -> ActionDecision | 
         "call",
         price,
         distribution_message(
-            f"mixed threshold-pressure defense required {required:.0%}",
+            f"v004 mixed threshold-pressure defense required {required:.0%}",
             decision,
             summary,
         ),
@@ -3044,7 +3091,7 @@ def range_mixed_dry_probe(table, my_seat, base):
     return (
         "bet",
         amount,
-        f"mixed range probe edge {edge:.2f} vs high-fold table",
+        f"v003 mixed range probe edge {edge:.2f} vs high-fold table",
     )
 
 
@@ -3079,12 +3126,87 @@ def cheap_postflop_continue(table, my_seat, base):
         board_cards,
         rank,
     ):
-        return "call", price, f"cheap continue made rank {rank}"
+        return "call", price, f"v003 cheap continue made rank {rank}"
     if opponents <= 3 and (top_pair or rank == 1):
-        return "call", price, f"cheap bluff catch rank {rank}"
+        return "call", price, f"v003 cheap bluff catch rank {rank}"
     if draw and not texture.get("paired", False) and required <= 0.12:
-        return "call", price, "cheap draw continue"
+        return "call", price, "v003 cheap draw continue"
     return None
+
+
+def postflop_draw_continue(table, my_seat, base):
+    """Continue with strong draws (FD/OESD) at non-cheap prices.
+
+    Closes the OOP draw-call leak: `cheap_postflop_continue` only
+    handles `required <= 0.12`, so any 25%+ c-bet forces the bot
+    to fold the draw outright. Strong draws have 30-40% raw
+    equity on the flop and 17-25% on the turn, so calls at
+    non-cheap prices are +EV (and draws realise their equity
+    without needing postflop play — either you hit or
+    check-fold).
+
+    Strictly additive: only converts a fold to a call when the
+    draw is strong and the price is reasonable. No new raises,
+    no new folds, no effect on made-hand decisions.
+    """
+    if table.get("street", "Preflop") == "Preflop":
+        return None
+
+    action, _amount, _message = base
+    if action != "fold":
+        return None
+
+    allowed = table.get("allowedActions", {})
+    available = allowed.get("availableActions", [])
+    if "call" not in available:
+        return None
+    price = call_amount(allowed)
+    if price <= 0:
+        return None
+
+    hole_cards = my_seat.get("holeCards", [])
+    board_cards = table.get("boardCards", [])
+    if len(board_cards) < 3:
+        return None
+
+    has_fd = has_flush_draw(hole_cards, board_cards)
+    has_oesd = has_open_ended_straight_draw(hole_cards, board_cards)
+    if not has_fd and not has_oesd:
+        return None
+
+    street = table.get("street", "Flop")
+    if street not in ("Flop", "Turn"):
+        return None
+    opponents = active_opponents(table, my_seat)
+
+    # Street- and opponent-count-dependent price cap. Loose:
+    # flop HU 0.30 (raw equity 30-40%, +EV with implied odds),
+    # flop multiway 0.22 (variance reduces draw equity),
+    # turn HU 0.20 (one card to come, raw equity 17-25%),
+    # turn multiway 0.15.
+    if street == "Flop":
+        cap = 0.30 if opponents <= 2 else 0.22
+    else:  # Turn
+        cap = 0.20 if opponents <= 2 else 0.15
+
+    pot = effective_pot(table)
+    required = pot_odds(price, pot)
+    if required > cap:
+        return None
+
+    # Stack guard: don't over-commit with a single-street draw.
+    stack = int(my_seat.get("stackChips") or 0)
+    if stack > 0 and price > stack * 0.20:
+        return None
+
+    draw_label = "+".join(
+        label for label, present in (("FD", has_fd), ("OESD", has_oesd)) if present
+    )
+    return (
+        "call",
+        price,
+        f"v006 draw continue {draw_label} street {street} opp {opponents} required {required:.0%} cap {cap:.0%}",
+    )
 
 
 def has_flush_draw(hole_cards, board_cards):
@@ -3345,6 +3467,33 @@ def profile_call_frequency(profile):
     return calls / actions
 
 
+def profile_aggression_frequency_merged(profile):
+    """Aggression frequency, falling back to the API-derived value
+    when the local sample is sparse.
+
+    The local-vs-API merge (``apply_external_stats_merge``) sets
+    ``profile.api_aggr_freq`` whenever it overrode local counters
+    with API data. In that case, the local
+    ``aggression_frequency`` (computed from observed
+    calls/bets/raises/folds) is unreliable because the sample is
+    too small to be meaningful — often 0.0 with no observed
+    actions. The API's aggression frequency is a better read.
+
+    Returns:
+      0.0 if profile is None
+      api_aggr_freq if it was set and the merge overrode this profile
+      local aggression_frequency otherwise
+    """
+    if profile is None:
+        return 0.0
+    api_freq = getattr(profile, "api_aggr_freq", None)
+    api_used = getattr(profile, "api_source_used", False)
+    if api_freq is not None and api_used:
+        return float(api_freq)
+    local = profile_value(profile, "aggression_frequency")
+    return float(local) if local is not None else 0.0
+
+
 def profile_fold_to_bet_frequency(profile):
     value = profile_value(profile, "fold_to_bet_frequency")
     if value is not None:
@@ -3382,9 +3531,7 @@ def profile_frequencies(table):
         rows.append(
             {
                 "call": float(profile_value(profile, "call_frequency") or 0.0),
-                "aggression": float(
-                    profile_value(profile, "aggression_frequency") or 0.0
-                ),
+                "aggression": float(profile_aggression_frequency_merged(profile)),
                 "fold_to_bet": float(
                     profile_value(profile, "fold_to_bet_frequency") or 0.0
                 ),
@@ -3437,7 +3584,20 @@ def opponent_exploit_context(table, my_seat):
       aggro_count:     count of 'bluffer' / 'tight_aggressive' / 'loose_aggressive'
       has_big_stack_loose: bool — at least one live opponent has stack > 1.4x hero
                              AND their label is loose/station
-      profile_confidence: fraction of opponents with >=15 hands seen (0-1)
+      profile_confidence: fraction of opponents with >=15 hands seen (0-1).
+                          Capped at 0.5 when any_api_source is True — the
+                          API merge uses the opponent's full-competition
+                          sample size for "hands seen", but we have not
+                          personally observed them that much at our table.
+                          Capping prevents over-exploitation of opponents
+                          whose data is API-derived.
+      any_api_source:  bool — True if at least one active opponent's
+                       profile had its counters overridden by the API
+                       stats merge (i.e. local hands_seen was below
+                       LOCAL_MIN_HANDS=20 and the API had fresh data).
+                       Strategy branches that gate on profile_confidence
+                       >= 0.5 are deliberately not triggered when this
+                       is True.
       avg_fold_to_bet:     Bayesian average fold-to-bet across active opponents
       avg_call_freq:       Bayesian average call frequency across active opponents
     """
@@ -3462,6 +3622,7 @@ def opponent_exploit_context(table, my_seat):
 
     fold_to_bet_values = []
     call_freq_values = []
+    any_api_source = False
 
     for seat in active_seats:
         agent_id = seat.get("agentId")
@@ -3472,6 +3633,14 @@ def opponent_exploit_context(table, my_seat):
         hands_seen = int(profile_value(profile, "hands_seen") or 0)
         if hands_seen >= 15:
             confident_count += 1
+
+        # Track when the local-vs-API merge overrode this profile's
+        # counters with API data. The merge sets ``api_source_used``
+        # only when the local sample was below LOCAL_MIN_HANDS and
+        # the API had fresh, large-sample data. When True, the
+        # ``hands_seen`` we're using is the API's view, not ours.
+        if getattr(profile, "api_source_used", False):
+            any_api_source = True
 
         label = _label_from_profile(profile)
 
@@ -3508,13 +3677,22 @@ def opponent_exploit_context(table, my_seat):
         else:
             table_type = "mixed"
 
+    # When the API was used to override any profile, cap
+    # profile_confidence at 0.5. The strategy's exploit branches
+    # gated on >= 0.4 still trigger (we have *some* signal), but
+    # those gated on >= 0.5 do not — preventing over-exploitation
+    # of opponents we have not personally observed enough to trust.
+    raw_confidence = confident_count / total_active
+    profile_confidence = min(0.5, raw_confidence) if any_api_source else raw_confidence
+
     return {
         "table_type": table_type,
         "passive_count": passive_count,
         "loose_count": loose_count,
         "aggro_count": aggro_count,
         "has_big_stack_loose": has_big_stack_loose,
-        "profile_confidence": confident_count / total_active,
+        "profile_confidence": profile_confidence,
+        "any_api_source": any_api_source,
         "avg_fold_to_bet": _average(fold_to_bet_values, FOLD_TO_BET_PRIOR),
         "avg_call_freq": _average(call_freq_values, CALL_FREQUENCY_PRIOR),
     }
@@ -3554,6 +3732,36 @@ def _opener_is_calling_station(table, my_seat, allowed):
         return False
     label = _label_from_profile(profile)
     return label in LOOSE_LABELS
+
+
+def _raiser_invites_wide_defense(raiser_profile):
+    """True when the raiser's profile indicates a wide opening range.
+
+    Used to gate the SB flat-call set and BB mix-defend in
+    preflop_positional_defense. The widening only fires when the
+    raiser is profiled as wide; against unprofiled or tight
+    opponents the bot stays in the prior conservative behaviour.
+
+    A profile "invites wide defense" when ANY of:
+      * label is in LOOSE_LABELS (loose_aggressive or calling_station)
+      * observed fold_to_bet frequency is high (signals a wide range
+        regardless of label — the opener folds postflop because they
+        have nothing)
+
+    Requires at least _WIDE_DEFENSE_MIN_HANDS of data. Returns False
+    if the profile is missing or below the confidence threshold.
+    """
+    if raiser_profile is None:
+        return False
+    hands_seen = int(profile_value(raiser_profile, "hands_seen") or 0)
+    if hands_seen < _WIDE_DEFENSE_MIN_HANDS:
+        return False
+    label = _label_from_profile(raiser_profile)
+    if label in LOOSE_LABELS:
+        return True
+    if bayesian_fold_to_bet_frequency(raiser_profile) >= _WIDE_DEFENSE_FOLD_TO_BET:
+        return True
+    return False
 
 
 def high_calling_table(table):
@@ -3695,7 +3903,7 @@ def preflop_premium_pressure(table, my_seat, base):
         amount = raise_to_amount(
             table, allowed, BIG_BLIND * (base_multiplier + limpers)
         )
-        return "raise", amount, f"premium open pressure {hand}/{score}"
+        return "raise", amount, f"v003 six-max premium open pressure {hand}/{score}"
     return None
 
 
@@ -3909,7 +4117,7 @@ def simple_profile_river_bluff_catch(table, my_seat, base) -> ActionDecision | N
         "call",
         price,
         (
-            "mixed range/CFR simple-profile river bluff catch: "
+            "v007 mixed range/CFR simple-profile river bluff catch: "
             f"dist {decision.summary()} roll {decision.roll:.2f}, "
             f"required {required:.0%}, range edge {range_edge:+.2f}, "
             f"call {summary['call']:.0%}, "
@@ -3964,7 +4172,7 @@ def paired_board_range_fold(table, my_seat, base) -> ActionDecision | None:
         "fold",
         None,
         (
-            "mixed range/CFR paired-board fold: "
+            "v007 mixed range/CFR paired-board fold: "
             f"dist {decision.summary()} roll {decision.roll:.2f}, "
             f"required {required:.0%}, range edge {range_edge:+.2f}"
         ),
@@ -4084,7 +4292,7 @@ def preflop_isolation_raise(table, my_seat, base) -> ActionDecision | None:
         return (
             "raise",
             amount,
-            f"preflop isolation raise: score {score} pos {pos} limpers {limpers}",
+            f"v003 preflop isolation raise: score {score} pos {pos} limpers {limpers}",
         )
     return None
 
@@ -4093,12 +4301,22 @@ def preflop_positional_defense(table, my_seat, base) -> ActionDecision | None:
     """Defend/call wider based on position, but ONLY when facing a raise.
 
     GTO discipline (v4):
-    - OOP positions (SB, UTG, HJ, MP) should 3-bet-or-fold vs a raise;
-      flat-calling OOP leaks EV post-flop. Those seats are handled by
-      preflop_three_bet and fall through to fold here.
+    - UTG/HJ/MP should 3-bet-or-fold vs a raise; flat-calling those seats is
+      a postflop EV leak. preflop_three_bet runs first and catches the 3-bet
+      hands; the rest fold here.
     - BTN and BB are the primary flat-call seats (IP or closing action).
     - CO may flat occasionally (semi-IP) vs EP openers.
     - BB stack guard raised to 20% (was 15%); BB has chips already invested.
+
+    v6 profile-aware widening (gated):
+    - SB flat-call set: set-mining pairs (>=30 BB effective), low suited
+      connectors, and suited wheel aces. Only fires when the raiser is
+      profiled as wide (see _raiser_invites_wide_defense). Against unprofiled
+      or tight opponents SB stays in the prior 3-bet-or-fold discipline.
+    - BB hand-class fallback to _PREFLOP_BB_MIX_DEFEND (65s only): the
+      score-only threshold (40) misses 65s (36), which is the canonical GTO
+      mix-defend hand. Gated on the same profile signal so we don't
+      over-defend vs tight heuristic baselines.
     """
     if table.get("street", "Preflop") != "Preflop":
         return None
@@ -4120,11 +4338,42 @@ def preflop_positional_defense(table, my_seat, base) -> ActionDecision | None:
 
     hole_cards = my_seat.get("holeCards", [])
     score = preflop_score(hole_cards)
+    hand = hand_class(hole_cards)
     pos = position_label(table, my_seat)
 
-    # GTO: OOP positions (SB, UTG, HJ, MP) should 3-bet-or-fold, not flat-call.
-    # preflop_three_bet runs first and catches the 3-bet hands; the rest fold.
-    if pos in {"SB", "UTG", "HJ", "MP"}:
+    # Compute the raiser's profile + the wide-defense gate once. Used by both
+    # the SB flat-call path and the BB hand-class fallback.
+    raiser_profile = _get_raiser_profile(table, my_seat, allowed)
+    wide_defense_ok = _raiser_invites_wide_defense(raiser_profile)
+
+    # v6: SB small flat-call set, GATED on wide_defense_ok. SB closes the
+    # action with a discount; set-mining pairs and low suited connectors are
+    # +EV at cheap prices ONLY when the raiser has a wide range. Against
+    # unprofiled or tight opponents we keep the prior 3-bet-or-fold
+    # discipline (return None below) so we don't over-defend OOP.
+    if pos == "SB":
+        if not wide_defense_ok:
+            return None
+        if hand not in _PREFLOP_SB_FLAT_CALL:
+            return None
+        pot = effective_pot(table)
+        required = pot_odds(price, pot)
+        if required > 0.40:  # SB vs 2.5-3x opens costs 30-36%, blocks 4x+ raises
+            return None
+        stack = int(my_seat.get("stackChips") or 0)
+        if stack > 0 and price > stack * 0.15:
+            return None
+        # Set mining needs deep effective stacks for implied odds.
+        if hand in {"22", "33", "44", "55", "66", "77"} and stack < 30 * BIG_BLIND:
+            return None
+        return (
+            "call",
+            price,
+            f"v006 SB flat-call: hand {hand} score {score} required {required:.0%}",
+        )
+
+    # GTO: sandwiched OOP positions (UTG, HJ, MP) 3-bet-or-fold, never flat-call.
+    if pos in {"UTG", "HJ", "MP"}:
         return None
 
     # Position-aware thresholds: (min_score, max_price)
@@ -4138,7 +4387,6 @@ def preflop_positional_defense(table, my_seat, base) -> ActionDecision | None:
     min_score, max_price = thresholds.get(pos, (65, 0.20))  # default to strict OOP
 
     # v5: Raiser-profile adjustment — lookup the opener's profile and adjust
-    raiser_profile = _get_raiser_profile(table, my_seat, allowed)
     if raiser_profile is not None:
         raiser_label = _label_from_profile(raiser_profile)
         if raiser_label == "patient_methodical":
@@ -4151,18 +4399,40 @@ def preflop_positional_defense(table, my_seat, base) -> ActionDecision | None:
             # Bluffer opener: widen significantly — their range is wide and weak
             min_score = max(30, min_score - 8)
 
-    if score < min_score:
-        return None
-
     pot = effective_pot(table)
     required = pot_odds(price, pot)
+    stack = int(my_seat.get("stackChips") or 0)
+
+    # v6: BB hand-class fallback, GATED on wide_defense_ok. The score-based
+    # threshold (40) misses 65s (36) that the GTO BB defend range covers
+    # at 20-50% frequency vs a wide opener. Gated so we don't over-defend
+    # vs unprofiled or tight opponents.
+    if (
+        pos == "BB"
+        and score < min_score
+        and hand in _PREFLOP_BB_MIX_DEFEND
+        and wide_defense_ok
+    ):
+        if required > max_price:
+            return None
+        if stack > 0 and price > stack * 0.20:
+            # Same short-stack rescue as the score-driven BB path.
+            if not (price <= BIG_BLIND * 8 and score >= 45):
+                return None
+        return (
+            "call",
+            price,
+            f"v006 BB hand-class defend: hand {hand} score {score} required {required:.0%}",
+        )
+
+    if score < min_score:
+        return None
 
     if required > max_price:
         return None
 
     # Stack-depth guard: position-aware.
     # BB has chips invested and closes action, so allow wider calls.
-    stack = int(my_seat.get("stackChips") or 0)
     stack_guard = 0.20 if pos == "BB" else 0.15
     if stack > 0 and price > stack * stack_guard:
         # BB exception: cheap raises (≤8 BB) with any playable hand always defend
@@ -4174,7 +4444,7 @@ def preflop_positional_defense(table, my_seat, base) -> ActionDecision | None:
     return (
         "call",
         price,
-        f"preflop positional defense: score {score} pos {pos} required {required:.0%} cap {max_price:.0%}",
+        f"v006 preflop positional defense: score {score} pos {pos} required {required:.0%} cap {max_price:.0%}",
     )
 
 
@@ -4402,7 +4672,7 @@ def preflop_squeeze(table, my_seat, base) -> ActionDecision | None:
                 "preflop-bluff-squeeze",
                 table,
                 my_seat,
-                strategy="s2v003",
+                strategy="flattened_v005",  # TODO: Check if this is to log message to db
                 extra=(hc, pos, callers),
             )
             if chosen == "squeeze":
@@ -4604,7 +4874,7 @@ def ip_dry_board_cbet_exploit(table, my_seat, base) -> ActionDecision | None:
     return (
         "bet",
         bet_size,
-        "IP dry board exploit: high fold-to-bet, small c-bet",
+        "v001 IP dry board exploit: high fold-to-bet, small c-bet",
     )
 
 
@@ -4653,7 +4923,7 @@ def high_wtsd_thin_value_bet(table, my_seat, base) -> ActionDecision | None:
     return (
         "bet",
         bet_size,
-        "thin value exploit: high call freq, betting 1-pair for value HU",
+        "v001 thin value exploit: high call freq, betting 1-pair for value HU",
     )
 
 
@@ -4715,7 +4985,7 @@ def semi_bluff_exploit(table, my_seat, base) -> ActionDecision | None:
     return (
         "bet",
         capped(bet_size, allowed),
-        f"semi-bluff {draw_label} IP pos {pos}",
+        f"v003 semi-bluff {draw_label} IP pos {pos}",
     )
 
 
@@ -4792,6 +5062,7 @@ def sixmax_adjustment(table, my_seat, base) -> ActionDecision | None:
         simple_profile_river_bluff_catch,  # from v007
         range_mixed_dry_probe,  # from v003
         cheap_postflop_continue,  # from v003
+        postflop_draw_continue,  # from v006 — non-cheap draw calls
     ):
         if (decision := adjustment(table, my_seat, base)) is not None:
             return decision

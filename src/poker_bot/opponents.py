@@ -137,6 +137,41 @@ class OpponentProfile:
             return None
         return self.api_stats.get("threeBetPct")
 
+    def is_loose_passive(self):
+        if self.api_vpip is not None and self.api_pfr is not None:
+            if self.api_vpip >= 0.35 and self.api_pfr <= 0.15:
+                return True
+        return self.label() in {"loose-passive", "calling_station"}
+
+    def is_tight_aggressive(self):
+        if self.api_vpip is not None and self.api_pfr is not None:
+            if self.api_vpip <= 0.18 and self.api_pfr >= 0.18:
+                return True
+        return self.label() == "tight-aggressive"
+
+    def is_bluffer(self):
+        if self.api_bluff_pct is not None and self.api_bluff_pct >= 0.35:
+            return True
+        return self.label() in {"bluffer", "loose-aggressive"}
+
+    def is_station(self):
+        if self.api_vpip is not None and self.api_pfr is not None:
+            if self.api_vpip >= 0.35 and self.api_pfr <= 0.15:
+                return True
+        return self.label() in {"calling_station", "loose-passive", "loose-measured"}
+
+    def is_patient(self):
+        if self.api_vpip is not None and self.api_vpip <= 0.18:
+            if self.api_af is None or self.api_af < 1.0:
+                return True
+        return self.label() in {"patient_methodical", "unknown", "tight-passive"}
+
+    def has_high_wtsd(self):
+        return self.api_wtsd is not None and self.api_wtsd >= 0.30
+
+    def has_low_wtsd(self):
+        return self.api_wtsd is not None and self.api_wtsd <= 0.20
+
     def label(self):
         local = self._local_label()
         api = self.api_label
