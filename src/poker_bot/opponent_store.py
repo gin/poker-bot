@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import json
 import os
@@ -139,6 +140,7 @@ def init_db(conn):
             id integer primary key,
             run_id text not null references telemetry_runs(run_id),
             hand_id text not null,
+            table_id text,
             decision_index integer not null,
             strategy text not null,
             street text,
@@ -181,7 +183,6 @@ def init_db(conn):
             final_pot integer,
             created_at text not null default current_timestamp
         );
-
         create index if not exists idx_decisions_run
             on decision_telemetry(run_id);
         create index if not exists idx_decisions_hand
@@ -210,8 +211,36 @@ def init_db(conn):
             "hero_position": "text",
             "hero_position_offset": "integer",
             "seated_players": "integer",
+            "table_id": "text",
         },
     )
+    # Indexes on columns added by _ensure_columns must be created AFTER
+    # the column exists. We can't put them in the executescript above
+    # because pre-existing DBs that predate the column would fail with
+    # "no such column" before _ensure_columns runs. Wrapping each CREATE
+    # INDEX in a try/except keeps init_db idempotent and tolerant of
+    # legacy schemas.
+    for index_sql in (
+        "create index if not exists idx_decisions_table_id "
+        "on decision_telemetry(table_id)",
+    ):
+        with contextlib.suppress(Exception):
+            conn.execute(index_sql)
+    # One-shot migration: derive table_id from hand_id for rows written
+    # before the table_id column existed. hand_id format is
+    # ``f"{tableId}:{boundary_iso}"``; the tableId is everything before
+    # the first colon. Rows where hand_id does not contain ':' (legacy
+    # hand_id == tableId rows) are left alone — table_id stays NULL and
+    # the replay backfill simply skips them.
+    if conn.execute(
+        "select 1 from decision_telemetry "
+        "where table_id is null and hand_id like '%:%' limit 1"
+    ).fetchone():
+        conn.execute(
+            "update decision_telemetry "
+            "set table_id = substr(hand_id, 1, instr(hand_id, ':') - 1) "
+            "where table_id is null and hand_id like '%:%'"
+        )
     conn.commit()
 
 
@@ -803,7 +832,7 @@ def record_decision_telemetry(
     conn.execute(
         """
         insert into decision_telemetry(
-            run_id, hand_id, decision_index, strategy, street,
+            run_id, hand_id, table_id, decision_index, strategy, street,
             hero_agent_id, hero_seat_number, button_seat_number, hero_position,
             hero_position_offset, seated_players, active_players,
             table_style, pot_chips, current_bet, call_amount, min_bet,
@@ -815,13 +844,14 @@ def record_decision_telemetry(
             strategy_message
         )
         values (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         """,
         (
             run_id,
             hand_id,
+            str(table.get("tableId") or table.get("id") or "") or None,
             decision_index,
             strategy,
             table.get("street"),
@@ -875,6 +905,13 @@ def update_hand_telemetry_outcome(
     final_pot=None,
     commit=True,
 ):
+    """Overwrite outcome columns for every decision row of a hand.
+
+    Canonical source: the arena's Showdown snapshot (payoutChips -
+    totalCommittedChips plus winners[]). Use this whenever the Showdown
+    payload is observed, because it is more accurate than any estimate
+    derived from stack deltas.
+    """
     conn.execute(
         """
         update decision_telemetry
@@ -884,6 +921,84 @@ def update_hand_telemetry_outcome(
         where run_id = ? and hand_id = ?
         """,
         (hero_net_chips, int(won_hand), final_pot, run_id, hand_id),
+    )
+    if commit:
+        conn.commit()
+
+
+def fill_hand_telemetry_outcome_from_delta(
+    conn,
+    *,
+    run_id,
+    hand_id,
+    hero_net_chips,
+    won_hand,
+    commit=True,
+):
+    """Fill outcome columns only where hero_net_chips is currently NULL.
+
+    Fallback path used when the Showdown snapshot was not observed (the
+    common case — hands transition through Showdown faster than the bot
+    polls). Estimates hero_net_chips from the stack delta between the last
+    seen snapshot of the previous hand and the first snapshot of this one.
+    Never overwrites an existing outcome so the more accurate Showdown
+    value wins whenever both fire.
+    """
+    conn.execute(
+        """
+        update decision_telemetry
+        set hero_net_chips = ?,
+            won_hand = ?
+        where run_id = ? and hand_id = ? and hero_net_chips is null
+        """,
+        (hero_net_chips, int(won_hand), run_id, hand_id),
+    )
+    if commit:
+        conn.commit()
+
+
+def fill_hand_telemetry_outcome_from_replay(
+    conn,
+    *,
+    run_id,
+    table_id,
+    chip_delta,
+    won_hand,
+    commit=True,
+):
+    """Fill outcome columns from a /agent/{id}/replays entry.
+
+    The arena's `/replays` endpoint reports `chipDelta` (payoutChips -
+    totalCommittedChips) for the queried agent per settled hand. Joins on
+    ``table_id`` because the arena's `handId` field is documented as
+    *"currently the table cuid"* — i.e. effectively the table id.
+
+    Like the delta-fill, this never overwrites an existing outcome, so
+    the Showdown and stack-delta paths keep precedence when they fire
+    first.
+
+    `won_hand` should be derived by the caller from the sign of
+    ``chip_delta`` (push = loss for our purposes). Set ``won_hand=None``
+    to leave the column NULL; we coerce to 0 for non-null non-truthy
+    values.
+    """
+    if not table_id:
+        return
+    won_hand_int = int(bool(won_hand)) if won_hand is not None else None
+    set_parts = ["hero_net_chips = ?"]
+    params: list = [int(chip_delta)]
+    if won_hand_int is not None:
+        set_parts.append("won_hand = ?")
+        params.append(won_hand_int)
+    params.extend([run_id, table_id])
+    set_clause = ", ".join(set_parts)
+    conn.execute(
+        f"""
+        update decision_telemetry
+        set {set_clause}
+        where run_id = ? and table_id = ? and hero_net_chips is null
+        """,
+        params,
     )
     if commit:
         conn.commit()
@@ -1084,19 +1199,20 @@ def merge_worker_db(main_path, worker_path):
         main_conn.execute(
             """
             INSERT INTO decision_telemetry (
-                run_id, hand_id, decision_index, strategy, street, hero_agent_id,
-                hero_seat_number, button_seat_number, hero_position,
-                hero_position_offset, seated_players, active_players,
-                table_style, pot_chips, current_bet, call_amount, min_bet,
-                min_raise_to, hero_stack, hero_current_bet, max_opponent_stack,
-                covered_by_larger_stack, hole_cards, board_cards, preflop_score,
-                made_hand_rank, hand_bucket, board_wet, board_paired,
-                board_high, top_pair_or_better, available_actions, chosen_action,
-                chosen_amount, amount_ratio_pot, amount_ratio_stack, facing_bet,
-                voluntary, strategy_message, hero_net_chips, won_hand, final_pot,
-                created_at
+                run_id, hand_id, table_id, decision_index, strategy, street,
+                hero_agent_id, hero_seat_number, button_seat_number,
+                hero_position, hero_position_offset, seated_players,
+                active_players, table_style, pot_chips, current_bet,
+                call_amount, min_bet, min_raise_to, hero_stack,
+                hero_current_bet, max_opponent_stack, covered_by_larger_stack,
+                hole_cards, board_cards, preflop_score, made_hand_rank,
+                hand_bucket, board_wet, board_paired, board_high,
+                top_pair_or_better, available_actions, chosen_action,
+                chosen_amount, amount_ratio_pot, amount_ratio_stack,
+                facing_bet, voluntary, strategy_message, hero_net_chips,
+                won_hand, final_pot, created_at
             )
-            SELECT run_id, hand_id, decision_index, strategy, street,
+            SELECT run_id, hand_id, table_id, decision_index, strategy, street,
                    hero_agent_id, hero_seat_number, button_seat_number,
                    hero_position, hero_position_offset, seated_players,
                    active_players, table_style, pot_chips, current_bet,
