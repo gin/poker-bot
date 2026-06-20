@@ -2660,18 +2660,32 @@ def vulnerable_flush_guard(table, my_seat, base) -> ActionDecision | None:
     available = allowed.get("availableActions", [])
     price = call_amount(allowed)
     pot = int(table.get("potChips") or 0)
+    profiles = profiled_table_profiles(table, my_seat)
+    has_tight = any(profile.is_tight_aggressive() or profile.label() == "patient_methodical" for profile in profiles)
 
     if action == "raise" and "fold" in available:
         if int(table.get("facing_bet") or 0) == 1:
+            if has_tight:
+                return (
+                    "fold",
+                    None,
+                    "non-nut flush on paired board: folded vs tight bluff catch",
+                )
             return (
                 "call",
                 price,
                 "non-nut flush on paired board: bluff catch",
             )
+        if has_tight:
+            return (
+                "fold",
+                None,
+                "non-nut flush on paired board: folded value-raise vs tight",
+            )
         return (
-            "fold",
-            None,
-            "non-nut flush on paired board: folded value-raise",
+            "call",
+            price,
+            "non-nut flush on paired board: bluff catch vs loose",
         )
 
     if action == "bet" and "check" in available:

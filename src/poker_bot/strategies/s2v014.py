@@ -11,8 +11,6 @@ Targeted patch barrel
 Targeted patch set-mining for paired board (need to verify scenario)
 Targeted patch sliver shove
 Unify board-made hand logic
-Patch overcalling TAG opponent
-Patch medium hand paired board flaws
 """
 
 from __future__ import annotations
@@ -133,10 +131,6 @@ VALUE_HEAVY_MAX_FOLD_TO_BET = 0.56
 SET_MINING_MAX_PRICE = 0.118  # 8:1 implied odds required for set-mining
 SET_MINING_TIGHT_OPPONENT_VPIP = 0.18  # fold small pairs vs patient/nitty opponents
 SET_MINING_MIN_SPR = 8.0  # need deep enough stacks to realize implied odds
-SMALL_PAIR_MULTIWAY_MIN_PLAYERS = 3  # 3+ way pots = too much competition to set-mine
-SMALL_PAIR_MULTIWAY_MAX_PRICE = 0.05  # in multi-way, only call if price is very cheap
-MEDIUM_HAND_MULTIWAY_MIN_PLAYERS = 3  # 3+ way pots require tighter medium-hand defense
-MEDIUM_HAND_MULTIWAY_MAX_PRICE = 0.20  # tighter than 0.35 single-way (top pair value drops)
 
 # Above this observed call frequency, suppress weak-pair wet-board pot-control
 # checks and keep the base bet. Empirically (champion-gate ablation) checking
@@ -280,12 +274,6 @@ def research_probe_pressure(table, my_seat, base):
     top_pair = has_top_pair_or_better(hole_cards, board_cards)
     score = preflop_score(hole_cards)
     if rank >= 2 and fragile_rank_two(hole_cards, board_cards, rank):
-        return None
-    if texture.get("paired", False) and rank == 1 and not top_pair:
-        return None
-    # High-card boards dominate bottom pair with weak kickers. Don't probe-bet
-    # one-pair hands that don't use a top board card.
-    if texture.get("high", False) and rank == 1 and not top_pair:
         return None
     if rank >= 1 or top_pair or score >= 49:
         amount = pressure_bet_amount(
@@ -535,19 +523,6 @@ def balanced_postflop_adjustment(table, my_seat, blueprint):
     if rank >= 2 and fragile_rank_two(hole_cards, board_cards, rank):
         return None
 
-    # Paired boards punish thin value with medium-strength hands. Against any
-    # opponent, middle pair with a weak kicker on a paired board is
-    # vulnerable to sets and two pair. Don't probe-bet for thin value into
-    # a board that dominates us.
-    texture = board_texture(board_cards) if board_cards else {"wet": False}
-    paired = texture.get("paired", False)
-    if paired and rank == 1 and not top_pair:
-        return None
-    # High-card boards (A/K/Q/J) dominate bottom pair and weak two pair.
-    # Don't probe-bet one-pair hands that don't use a top board card.
-    if texture.get("high", False) and rank == 1 and not top_pair:
-        return None
-
     if rank >= 2 or top_pair:
         amount = balanced_bet_amount(table, allowed, strong=rank >= 3)
         return "bet", amount, f"balanced value pressure rank {rank}"
@@ -715,90 +690,6 @@ def postflop_raise_back_defense(table, my_seat, blueprint):
     return None
 
 
-def high_card_bottom_pair_check(table, my_seat, blueprint):
-    action, _amount, _message = blueprint
-    allowed = table.get("allowedActions", {})
-    available = allowed.get("availableActions", [])
-    if action != "bet" or "check" not in available:
-        return None
-    if table.get("street", "Preflop") == "Preflop":
-        return None
-
-    hole_cards = my_seat.get("holeCards", [])
-    board_cards = table.get("boardCards", [])
-    if len(board_cards) < 3:
-        return None
-
-    texture = board_texture(board_cards) if board_cards else {"high": False}
-    if not texture.get("high", False):
-        return None
-
-    rank = made_hand_rank(hole_cards, board_cards)
-    top_pair = has_top_pair_or_better(hole_cards, board_cards)
-    if rank != 1 or top_pair:
-        return None
-
-    return "check", None, "high-card board: checking bottom pair"
-
-
-def tag_opponent_paired_board_check(table, my_seat, blueprint):
-    action, _amount, _message = blueprint
-    allowed = table.get("allowedActions", {})
-    available = allowed.get("availableActions", [])
-    if action != "bet" or "check" not in available:
-        return None
-    if table.get("street", "Preflop") == "Preflop":
-        return None
-
-    hole_cards = my_seat.get("holeCards", [])
-    board_cards = table.get("boardCards", [])
-    if len(board_cards) < 3:
-        return None
-
-    rank = made_hand_rank(hole_cards, board_cards)
-    if rank != 1:
-        return None
-
-    texture = board_texture(board_cards) if board_cards else {"paired": False}
-    if not texture.get("paired", False):
-        return None
-
-    if not _has_tag_opponent(table, my_seat):
-        return None
-
-    return "check", None, "TAG opponent: checking medium hand on paired board"
-
-
-def tag_opponent_medium_hand_fold(table, my_seat, blueprint):
-    action, _amount, _message = blueprint
-    allowed = table.get("allowedActions", {})
-    available = allowed.get("availableActions", [])
-    if action != "call" or "fold" not in available:
-        return None
-    if table.get("street", "Preflop") == "Preflop":
-        return None
-
-    hole_cards = my_seat.get("holeCards", [])
-    board_cards = table.get("boardCards", [])
-    if len(board_cards) < 3:
-        return None
-
-    rank = made_hand_rank(hole_cards, board_cards)
-    if rank not in {1, 2}:
-        return None
-
-    if not _has_tag_opponent(table, my_seat):
-        return None
-
-    price = call_amount(allowed)
-    stack = int(my_seat.get("stackChips") or 0)
-    stack_price = price / max(stack, 1)
-    if stack_price <= 0.50:
-        return None
-
-    return "fold", None, "TAG opponent: folding medium hand at high stack price"
-
-
 def patch1_choose_action(table, my_seat):
     allowed = table.get("allowedActions", {})
     available = allowed.get("availableActions", [])
@@ -819,14 +710,6 @@ def patch1_choose_action(table, my_seat):
     if raise_back is not None:
         return raise_back
 
-    paired_check = tag_opponent_paired_board_check(table, my_seat, blueprint)
-    if paired_check is not None:
-        return paired_check
-
-    high_card_check = high_card_bottom_pair_check(table, my_seat, blueprint)
-    if high_card_check is not None:
-        return high_card_check
-
     defense = anti_bully_defense(table, my_seat, blueprint)
     if defense is not None:
         return defense
@@ -838,10 +721,6 @@ def patch1_choose_action(table, my_seat):
     postflop = balanced_postflop_adjustment(table, my_seat, blueprint)
     if postflop is not None:
         return postflop
-
-    tag_fold = tag_opponent_medium_hand_fold(table, my_seat, blueprint)
-    if tag_fold is not None:
-        return tag_fold
 
     action, amount, message = blueprint
     return action, amount, f"balanced postflop-pressure blueprint: {message}"
@@ -890,12 +769,6 @@ def heads_up_dry_board_pressure(table, my_seat, base):
     score = preflop_score(hole_cards)
     paired = texture.get("paired", False)
     if rank >= 2 and fragile_rank_two(hole_cards, board_cards, rank):
-        return None
-    if paired and rank == 1 and not top_pair:
-        return None
-    # High-card boards dominate bottom pair with weak kickers. Don't pressure-bet
-    # one-pair hands that don't use a top board card.
-    if texture.get("high", False) and rank == 1 and not top_pair:
         return None
     if rank >= 1 or top_pair or score >= (56 if paired else 52):
         amount = pressure_bet_amount(table, allowed, 0.34 if rank or top_pair else 0.26)
@@ -1385,20 +1258,10 @@ def adaptive_choose_action(table, my_seat):
         return "fold", None, f"Rank {made_rank} below price, folding"
 
     if "bet" in available:
-        # Paired boards punish thin value with medium-strength hands. Against
-        # any opponent, middle pair with a weak kicker on a paired board is
-        # vulnerable to sets and two pair. Check back rather than thin-value
-        # bet into a board that dominates us.
-        if texture.get("paired", False) and made_rank == 1 and not top_pair:
-            pass
-        # High-card boards (A/K/Q/J) dominate bottom pair and weak two pair.
-        # Don't thin-value bet one-pair hands that don't use a top board card.
-        elif texture.get("high", False) and made_rank == 1 and not top_pair:
-            pass
-        elif strong:
+        if strong:
             amount = adaptive_value_bet_amount(pot, allowed, strong=made_rank >= 3)
             return "bet", amount, f"Value betting rank {made_rank}"
-        elif medium:
+        if medium:
             amount = adaptive_value_bet_amount(pot, allowed)
             return "bet", amount, "Thin value against simple"
         if (
@@ -1551,12 +1414,6 @@ def profiled_choose_action(table, my_seat):
             return "call", call_amount, "High WTSD medium hand defense"
         if medium and opponents <= 2 and required <= 0.14:
             return "call", call_amount, "Heads-up medium hand defense"
-        if (
-            medium
-            and has_overpair_to_board(hole_cards, board_cards)
-            and required <= 0.40
-        ):
-            return "call", call_amount, "Overpair defense vs barrel"
         if "check" in available:
             return "check", None, "Profiled marginal hand, checking"
         return "fold", None, f"Profiled fold rank {made_rank}"
@@ -1762,11 +1619,7 @@ def anti_threshold_choose_action(table, my_seat):
         ):
             amount = small_pressure_bet(pot, allowed, spr=spr)
             return "bet", amount, "C-bet semi-bluff"
-        if (
-            medium
-            and opponents <= 2
-            and not (texture.get("paired", False) and not top_pair)
-        ):
+        if medium and opponents <= 2:
             amount = value_bet(pot, allowed, spr=spr)
             return "bet", amount, "Multiway thin bet"
 
@@ -1964,23 +1817,6 @@ def _sixmax_guarded_baseline(table, my_seat, max_call_fraction=0.10):
     return None
 
 
-def _is_tag_profile(profile):
-    """Detect tight-aggressive profiles from VPIP/PFR ratios."""
-    hands_seen = max(int(profile.hands_seen or 0), 1)
-    vpip = profile.vpip / hands_seen
-    pfr = profile.pfr / hands_seen
-    label = profile.label().lower()
-    return (
-        label in {"tight", "patient_methodical"}
-        or (vpip <= 0.20 and pfr >= 0.10 and pfr / max(vpip, 0.01) >= 0.60)
-    )
-
-
-def _has_tag_opponent(table, my_seat):
-    profiles = profiled_table_profiles(table, my_seat)
-    return any(_is_tag_profile(profile) for profile in profiles)
-
-
 def _sixmax_anti_bully_action(table, my_seat):
     ctx = bully_context(table, my_seat)
     if ctx is None:
@@ -1997,19 +1833,9 @@ def _sixmax_anti_bully_action(table, my_seat):
     score = preflop_score(hole_cards)
     made_rank = made_hand_rank(hole_cards, board_cards) if board_cards else 0
     top_pair = has_top_pair_or_better(hole_cards, board_cards)
-    medium = made_rank in {1, 2} or top_pair
-    weak = made_rank == 0
-    strong = made_rank >= 3
+    medium = made_rank == 1 or top_pair
+    strong = made_rank >= 2
     hand = hand_class(hole_cards)
-    stack = int(my_seat.get("stackChips") or 0)
-    stack_price = price / max(stack, 1)
-    has_tag = _has_tag_opponent(table, my_seat)
-
-    if has_tag and weak and "fold" in available:
-        return "fold", None, "TAG opponent: folding weak hand"
-
-    if has_tag and medium and stack_price > 0.50 and "fold" in available:
-        return "fold", None, "TAG opponent: folding medium hand at high stack price"
 
     if street == "Preflop":
         if "raise" in available and (hand in _SIXMAX_PREMIUMS or score >= 88):
@@ -2860,119 +2686,6 @@ def pocket_pair_set_mining_guard(table, my_seat, base) -> ActionDecision | None:
     )
 
 
-def small_pair_multiway_fold_guard(table, my_seat, base) -> ActionDecision | None:
-    """Fold small pocket pairs (22-66) when FACING a raise in 3+ player pots.
-
-    Evidence (selfplay_s2vbase_pair_board.sqlite, 50k hands):
-    - 22-77 lose -1000 chips avg with 0 wins in 3+ player pots
-    - SPR drops below 8.0 in multi-way, making set-mining unprofitable
-    - More players = more likely someone has a higher set/flush
-
-    Conditions (all must be true):
-    - Preflop
-    - Hero is FACING a raise (not opening) — check raise_seat != hero_seat
-    - Hero has small pocket pair (22-66)
-    - active_players >= 3 (multi-way pot)
-    - Price > 5% of stack (multi-way requires very cheap entry)
-
-    Why this scope: Opening 55 from MP is +EV when it takes down the
-    blinds. The leak is CALLING a raise in multi-way, not opening.
-    """
-    if table.get("street", "Preflop") != "Preflop":
-        return None
-
-    # Only fire when hero is FACING a raise (not opening).
-    raise_seat = table.get("raiseSeatNumber")
-    hero_seat_num = my_seat.get("seatNumber")
-    if raise_seat is None or raise_seat == hero_seat_num:
-        return None
-
-    action, _amount, _message = base
-    if action not in ("fold", "raise", "call"):
-        return None
-
-    allowed = table.get("allowedActions", {})
-    available = allowed.get("availableActions", [])
-    if "fold" not in available:
-        return None
-
-    active = lookup_active_players(table)
-    if active < SMALL_PAIR_MULTIWAY_MIN_PLAYERS:
-        return None
-
-    hole_cards = my_seat.get("holeCards", [])
-    rank = hole_pair_rank(hole_cards)
-    if rank is None or rank > RANK_VALUES["7"]:
-        return None
-
-    call = int(allowed.get("callAmount") or 0)
-    stack = int(my_seat.get("stackChips") or 0)
-    if call <= 0 or stack <= 0:
-        return None
-
-    price_to_stack = call / stack
-    if price_to_stack <= SMALL_PAIR_MULTIWAY_MAX_PRICE:
-        return None
-
-    return (
-        "fold",
-        None,
-        f"small-pair multiway guard: {rank}{hole_cards[0][1]}{hole_cards[1][1]} "
-        f"folded at {price_to_stack:.1%} stack in {active}-way pot",
-    )
-
-
-def medium_pair_paired_board_fold_guard(table, my_seat, base) -> ActionDecision | None:
-    """Fold 77 on paired boards — the hand is crushed against any reasonable range.
-
-    Evidence: selfplay_s2vbase_pair_board.sqlite shows 77 on paired boards
-    loses massively. Against a 3-bettor's range on a paired board, 77 has
-    ~5-10% equity. The bot was calling/raising instead of folding.
-
-    Conditions (all must be true):
-    - Postflop
-    - Hero has exactly 77 (rank == 7)
-    - Board is paired
-    - There is a bet to face (price > 0)
-
-    Targeted: only fires for exactly 77 on paired boards. Does not affect
-    88, 99, TT (which have more showdown value) or 22-66 (handled by
-    other guards).
-    """
-    if table.get("street", "Preflop") == "Preflop":
-        return None
-
-    action, _amount, _message = base
-    if action not in ("call", "raise"):
-        return None
-
-    allowed = table.get("allowedActions", {})
-    available = allowed.get("availableActions", [])
-    if "fold" not in available:
-        return None
-
-    hole_cards = my_seat.get("holeCards", [])
-    rank = hole_pair_rank(hole_cards)
-    if rank != RANK_VALUES["7"]:
-        return None
-
-    board_cards = table.get("boardCards", [])
-    if len(board_cards) < 3:
-        return None
-    if not board_has_pair(board_cards):
-        return None
-
-    price = call_amount(allowed)
-    if price <= 0:
-        return None
-
-    return (
-        "fold",
-        None,
-        "77 on paired board: crushed against any reasonable range",
-    )
-
-
 def _clamp(value, low, high):
     return max(low, min(high, value))
 
@@ -3103,7 +2816,7 @@ def top_pair_defense_price_cap(
     if kicker is None:
         return 0.24
 
-    cap = 0.35
+    cap = 0.30
     if kicker == RANK_VALUES["A"]:
         cap += 0.06
     elif kicker >= RANK_VALUES["Q"]:
@@ -3166,74 +2879,6 @@ def strong_top_pair_defense(table, my_seat, base) -> ActionDecision | None:
         "call",
         price,
         f"strong top-pair defense required {required:.0%} cap {cap:.0%}",
-    )
-
-
-def medium_hand_multiway_fold_guard(table, my_seat, base) -> ActionDecision | None:
-    """Fold medium-strength hands postflop in 3+ player pots at bad prices.
-
-    Evidence (selfplay_s2vbase_pair_board.sqlite, 50k hands):
-    - "medium" hand bucket calling postflop loses -22 chips avg in 3-way pots
-    - "medium" hand bucket calling postflop loses -41 chips avg in 4-way pots
-    - Top pair / one pair value drops significantly in multi-way
-
-    Conditions (all must be true):
-    - Postflop
-    - Hero has a medium hand (one pair, not two pair+)
-    - active_players >= 3 (multi-way pot)
-    - Required pot odds > 20% (tighter than 35% single-way)
-
-    Why this scope: In heads-up, top pair with good kicker is a clear
-    call at 2:1. In multi-way, the same hand has only ~30% equity vs
-    two ranges, and reverse implied odds from draws make it worse.
-    """
-    if table.get("street", "Preflop") != "Preflop" and table.get("street") is None:
-        return None
-    street = table.get("street", "Preflop")
-    if street == "Preflop":
-        return None
-
-    action, _amount, _message = base
-    if action not in ("call", "raise"):
-        return None
-
-    allowed = table.get("allowedActions", {})
-    available = allowed.get("availableActions", [])
-    if "fold" not in available:
-        return None
-
-    active = lookup_active_players(table)
-    if active < MEDIUM_HAND_MULTIWAY_MIN_PLAYERS:
-        return None
-
-    hole_cards = my_seat.get("holeCards", [])
-    board_cards = table.get("boardCards", [])
-    if len(board_cards) < 3:
-        return None
-
-    # Only trigger on medium hands (one pair). Two pair+ is value territory.
-    rank = private_made_hand_rank(hole_cards, board_cards)
-    if rank != 1:
-        return None
-
-    # Overpairs (AA/KJ/QQ) retain high equity in multi-way pots even at
-    # 30-40% pot odds. Don't fold them to a single barrel — call instead.
-    if has_overpair_to_board(hole_cards, board_cards):
-        return None
-
-    price = call_amount(allowed)
-    if price <= 0:
-        return None
-
-    pot = int(table.get("potChips") or 0)
-    required = pot_odds(price, pot)
-    if required <= MEDIUM_HAND_MULTIWAY_MAX_PRICE:
-        return None
-
-    return (
-        "fold",
-        None,
-        f"medium-hand multiway guard: {rank}-pair folded at {required:.0%} price in {active}-way pot",
     )
 
 
@@ -3513,37 +3158,9 @@ def paired_board_pot_control(table, my_seat, base) -> ActionDecision | None:
         required = pot_odds(price, pot)
         stack = int(my_seat.get("stackChips") or 0)
         texture = board_texture(board_cards)
-        if board_dominated_two_pair(hole_cards, board_cards, 2):
-            if "fold" in available:
-                return (
-                    "fold",
-                    None,
-                    "folded board-dominated two pair on paired board",
-                )
-            return None
         if fragile_rank_two and (
             required > PAIRED_BOARD_MIN_FOLD_PRICE or price > max(stack, 1)
         ):
-            if "fold" in available:
-                return (
-                    "fold",
-                    None,
-                    f"folded fragile paired-board hand at {required:.0%} price",
-                )
-            return None
-        if (
-            fragile_rank_two
-            and texture.get("high", False)
-            and texture.get("paired", False)
-            and required > 0.25
-        ):
-            if "fold" in available:
-                return (
-                    "fold",
-                    None,
-                    f"folded vulnerable two pair on A-high paired board at {required:.0%}",
-                )
-            return None
             if "fold" in available:
                 return (
                     "fold",
@@ -5590,14 +5207,6 @@ def spr_commitment_lock(table, my_seat, base) -> ActionDecision | None:
 
     opponents = active_opponents(table, my_seat)
     hand_rank = made_hand_rank(hole_cards, board_cards)
-    
-    # TAG opponents with 0 all-ins are value-heavy when they jam. Don't rescue
-    # medium-strength hands (one pair/two pair) from folding at high stack prices.
-    if hand_rank in {1, 2} and _has_tag_opponent(table, my_seat):
-        stack = int(my_seat.get("stackChips") or 0)
-        stack_price = price / max(stack, 1)
-        if stack_price > 0.50:
-            return None
 
     # Restrict the rescue to genuinely strong made hands (two pair or better):
     # forcing thin top-pair calls vs value-heavy opponents is -EV and only picks
@@ -5847,13 +5456,6 @@ def sixmax_adjustment(table, my_seat, base) -> ActionDecision | None:
     if decision is not None:
         return decision
 
-    # 0.7a. Targeted multi-way patch: fold small pairs in 3+ way pots.
-    # Must run before preflop open-raise / isolation / 3-bet so it can
-    # override the wide MP open range in 6-max games.
-    decision = small_pair_multiway_fold_guard(table, my_seat, base)
-    if decision is not None:
-        return decision
-
     # 1. GTO preflop 3-bet vs a single open-raise (v5: profile-gated bluffs + sizing)
     decision = preflop_three_bet(table, my_seat, base)
     if decision is not None:
@@ -5871,11 +5473,6 @@ def sixmax_adjustment(table, my_seat, base) -> ActionDecision | None:
 
     # 3.5. Preflop isolation raise over limpers
     decision = preflop_isolation_raise(table, my_seat, base)
-    if decision is not None:
-        return decision
-
-    # 3.6. Targeted multi-way patch: fold small pairs in 3+ way pots.
-    decision = small_pair_multiway_fold_guard(table, my_seat, base)
     if decision is not None:
         return decision
 
@@ -5916,10 +5513,8 @@ def sixmax_adjustment(table, my_seat, base) -> ActionDecision | None:
     # v4 never gives back EV in spots the specialised branches did not handle.
     for adjustment in (
         preflop_premium_pressure,  # from v003
-        medium_pair_paired_board_fold_guard,  # 77 on paired boards (must run first)
         paired_board_pot_control,  # from v005
         paired_board_range_fold,  # from v007
-        medium_hand_multiway_fold_guard,  # Patch B: tighten multi-way medium hands
         weak_pair_wet_board_pot_control,  # from v004 (was dropped in v2)
         strong_top_pair_defense,  # from v005
         mixed_threshold_pressure_response,  # from v004 (was dropped in v2)
