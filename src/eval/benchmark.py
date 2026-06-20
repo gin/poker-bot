@@ -91,6 +91,7 @@ class BenchmarkReport:
     comparisons: tuple[BenchmarkComparison, ...] = ()
     min_delta_bb_per_100: float = 0.0
     workers: int = 1
+    h2h: bool = False
 
     @property
     def passed(self):
@@ -102,7 +103,7 @@ class BenchmarkReport:
         if self.baseline_strat is not None:
             checks.append(all(row.passed for row in self.comparisons))
         if not checks:
-            return False
+            return None
         return all(checks)
 
 
@@ -157,13 +158,24 @@ def resolve_options(args):
         or parse_csv_ints(config.get("players"))
         or DEFAULT_PLAYERS
     )
+    h2h = bool(args.h2h or config.get("h2h", False))
+    if h2h:
+        players = (
+            parse_csv_ints(args.players)
+            or parse_csv_ints(config.get("players"))
+            or (2,)
+        )
+        if players != (2,):
+            raise ValueError("--h2h only supports heads-up --players 2")
     seeds = (
         parse_csv_ints(args.seeds)
         or parse_csv_ints(config.get("seeds"))
         or DEFAULT_SEEDS
     )
     hands = args.hands if args.hands is not None else config.get("hands", DEFAULT_HANDS)
-    track_opponents = bool(args.track_opponents or config.get("track_opponents", False))
+    track_opponents = bool(
+        h2h or args.track_opponents or config.get("track_opponents", False)
+    )
     baseline = args.baseline if args.baseline is not None else config.get("baseline")
     min_delta_bb_per_100 = (
         args.min_delta_bb_per_100
@@ -192,6 +204,7 @@ def resolve_options(args):
         else float(fail_under_bb100),
         "profile": use_profile,
         "workers": workers,
+        "h2h": h2h,
     }
 
 
@@ -223,7 +236,7 @@ def aggregate_results(cases, results):
         grouped.setdefault(key, []).append((case, result))
 
     rows = []
-    for (strat, opponent, players), group in sorted(grouped.items()):
+    for (strat, opponent, players), group in grouped.items():
         profiles = []
         for _case, r in group:
             if r.profile is not None:
@@ -287,6 +300,12 @@ def _resolve_workers(workers: int) -> int:
     return workers
 
 
+def _h2h_platform(case: BenchmarkCase) -> str:
+    return (
+        f"benchmark-h2h:{case.strat}:vs:{case.opponent}:p{case.players}:seed{case.seed}"
+    )
+
+
 def _run_case_worker(args):
     """Run a single benchmark case in a worker process.
 
@@ -295,8 +314,11 @@ def _run_case_worker(args):
     opponent DB (a per-worker private file) so that parallel writes
     do not collide; the orchestrator merges those files afterwards.
     """
-    case, runner, track_opponents, profile, worker_db_path = args
+    case, runner, track_opponents, profile, worker_db_path, h2h = args
     profiler = PlayProfiler() if profile else None
+    runner_kwargs = {}
+    if h2h:
+        runner_kwargs["platform"] = _h2h_platform(case)
     result = runner(
         case.strat,
         hands=case.hands,
@@ -306,6 +328,7 @@ def _run_case_worker(args):
         track_opponents=track_opponents,
         opponent_db=worker_db_path,
         profiler=profiler,
+        **runner_kwargs,
     )
     if profile and profiler is not None:
         sp = profiler.compute_profile()
@@ -320,6 +343,7 @@ def _run_cases_parallel(
     track_opponents,
     profile,
     worker_db_paths,
+    h2h,
     label: str,
 ) -> list[SelfPlayResult]:
     actual_workers = len(worker_db_paths) if worker_db_paths else _resolve_workers(0)
@@ -332,7 +356,7 @@ def _run_cases_parallel(
             worker_db = worker_db_paths[i % actual_workers] if worker_db_paths else None
             future = pool.submit(
                 _run_case_worker,
-                (case, runner, track_opponents, profile, worker_db),
+                (case, runner, track_opponents, profile, worker_db, h2h),
             )
             futures[future] = i
         for future in concurrent.futures.as_completed(futures):
@@ -355,9 +379,10 @@ def _run_cases_sequential(
     track_opponents,
     profile,
     opponent_db,
+    h2h,
 ) -> list[SelfPlayResult]:
     return [
-        _run_case_worker((case, runner, track_opponents, profile, opponent_db))
+        _run_case_worker((case, runner, track_opponents, profile, opponent_db, h2h))
         for case in cases
     ]
 
@@ -377,7 +402,12 @@ def run_benchmark(
     profile=False,
     runner=run_selfplay,
     workers=0,
+    h2h=False,
 ):
+    if h2h:
+        if tuple(players) != (2,):
+            raise ValueError("--h2h only supports heads-up --players 2")
+        track_opponents = True
     cases = build_cases(strat, opponents, players, seeds, hands)
     started = time.perf_counter()
     actual_workers = _resolve_workers(workers)
@@ -400,6 +430,7 @@ def run_benchmark(
             track_opponents=track_opponents,
             profile=profile,
             opponent_db=opponent_db,
+            h2h=h2h,
         )
     else:
         results = _run_cases_parallel(
@@ -408,6 +439,7 @@ def run_benchmark(
             track_opponents=track_opponents,
             profile=profile,
             worker_db_paths=worker_db_paths,
+            h2h=h2h,
             label="candidate",
         )
 
@@ -421,6 +453,7 @@ def run_benchmark(
                 track_opponents=track_opponents,
                 profile=profile,
                 opponent_db=opponent_db,
+                h2h=h2h,
             )
         else:
             baseline_results = _run_cases_parallel(
@@ -429,6 +462,7 @@ def run_benchmark(
                 track_opponents=track_opponents,
                 profile=profile,
                 worker_db_paths=worker_db_paths,
+                h2h=h2h,
                 label="baseline",
             )
 
@@ -462,6 +496,7 @@ def run_benchmark(
         comparisons=comparisons,
         min_delta_bb_per_100=min_delta_bb_per_100,
         workers=actual_workers,
+        h2h=h2h,
     )
 
 
@@ -554,6 +589,7 @@ def report_to_jsonable(report):
         "baseline_strat": report.baseline_strat,
         "min_delta_bb_per_100": report.min_delta_bb_per_100,
         "workers": report.workers,
+        "h2h": report.h2h,
         "cases": [asdict(case) for case in report.cases],
         "results": [asdict(result) for result in report.results],
         "baseline_results": [asdict(result) for result in report.baseline_results],
@@ -607,6 +643,8 @@ def build_parser():
     )
     parser.add_argument(
         "--opponents",
+        "--opponent",
+        dest="opponents",
         default=None,
         help="Comma-separated opponent strategies. Overrides config.",
     )
@@ -629,7 +667,15 @@ def build_parser():
     parser.add_argument(
         "--track-opponents",
         action="store_true",
-        help="Maintain opponent profiles during multiway self-play.",
+        help="Maintain opponent profiles during self-play.",
+    )
+    parser.add_argument(
+        "--h2h",
+        action="store_true",
+        help=(
+            "Run heads-up matchups against each opponent with opponent tracking "
+            "enabled for both strategies."
+        ),
     )
     parser.add_argument(
         "--opponent-db",
@@ -698,6 +744,7 @@ def main(argv=None):
             min_delta_bb_per_100=options["min_delta_bb_per_100"],
             profile=options["profile"],
             workers=options["workers"],
+            h2h=options["h2h"],
         )
     except ValueError as exc:
         print(f"benchmark: {exc}", file=sys.stderr)

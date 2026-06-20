@@ -387,7 +387,14 @@ class PokerBotTests(unittest.TestCase):
                     .fetchone()
                 )
                 self.assertIsNotNone(row)
-                self.assertEqual(row["hand_id"], "table-1")
+                # Hand identity is now derived from tableId + the snapshot
+                # boundary timestamp — see _derive_hand_id. Asserting the
+                # prefix is sufficient (the exact timestamp is non-deterministic).
+                self.assertTrue(
+                    row["hand_id"].startswith("table-1:"),
+                    "expected derived hand_id with tableId prefix",
+                )
+                self.assertNotEqual(row["hand_id"], "table-1")
                 self.assertEqual(row["chosen_action"], "raise")
                 self.assertEqual(state["telemetry_decision_indexes"]["table-1"], 1)
             finally:

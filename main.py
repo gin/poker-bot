@@ -24,6 +24,8 @@ from poker_bot.arena_stats import (  # noqa: E402
 from poker_bot.opponent_store import (  # noqa: E402
     connect,
     create_telemetry_run,
+    fill_hand_telemetry_outcome_from_delta,
+    fill_hand_telemetry_outcome_from_replay,
     increment_hand_seen,
     load_profile,
     load_profiles_for_agents,
@@ -67,6 +69,13 @@ PUBLIC_MESSAGE_ALPHABET = string.ascii_letters + string.digits
 POLL_INTERVAL_SECONDS = 2
 ERROR_POLL_INTERVAL_SECONDS = 5
 JOIN_RETRY_SECONDS = 30
+# How often the bot reconciles its decision_telemetry rows with the arena's
+# /agent/{id}/replays endpoint while idle. Throttled so the API isn't hit
+# on every 2s poll, but recent enough that offline analysis is near-real-time.
+REPLAY_BACKFILL_INTERVAL_SECONDS = int(
+    os.environ.get("POKER_BOT_REPLAY_BACKFILL_INTERVAL", "60")
+)
+REPLAY_BACKFILL_LIMIT = int(os.environ.get("POKER_BOT_REPLAY_BACKFILL_LIMIT", "50"))
 
 
 def load_credentials(path=CRED_FILE):
@@ -331,6 +340,110 @@ def init_live_telemetry(state, competition_id, strategy_name=DEFAULT_STRATEGY_NA
     return conn, run_id
 
 
+def _process_hand_identity(table, state):
+    """Resolve a stable per-hand identifier and detect hand boundaries.
+
+    The arena payload does not expose a handId field (verified empirically —
+    ``startedAt`` is constant across hands at the same table, and no
+    ``handId``/``handNumber`` key exists). Two hands at the same table would
+    otherwise collide on the same ``hand_id`` in decision_telemetry, causing
+    outcome backfills to overwrite each other.
+
+    Hand identity is synthesized as ``f"{tableId}:{boundary_iso}"`` where
+    ``boundary_iso`` is the timestamp at which we first observed the current
+    hand at this table. A new hand is detected when:
+
+    * this is the first snapshot we've ever seen at this ``tableId``, OR
+    * ``street == "Preflop"`` is observed after we had already recorded a
+      non-Preflop street for the previous hand (Flop/Turn/River/Showdown) —
+      i.e. the previous hand has ended and a new one has begun.
+
+    Returns:
+        (current_hand_id, is_new_hand, prev_hand_id, prev_last_stack,
+         prev_last_committed) — ``prev_*`` fields are valid only when
+        ``is_new_hand`` is True; otherwise they are None.
+
+    State shape (mutated in place):
+        ``state["live_hand_state"][table_id]`` is a dict with keys
+        ``hand_id``, ``last_street``, ``last_hero_stack``,
+        ``last_hero_committed``.
+    """
+    table_id = str(table.get("tableId") or table.get("id") or "unknown-table")
+    street = table.get("street")
+    live = state.setdefault("live_hand_state", {})
+    hand_info = live.get(table_id)
+
+    # A new hand is detected when:
+    #   - this is the first snapshot we've ever seen at this tableId, OR
+    #   - we now see Preflop and the last_street we recorded was a non-Preflop
+    #     street (Flop/Turn/River/Showdown), which means the previous hand has
+    #     ended and a new one has begun.
+    if hand_info is None or (
+        street == "Preflop" and hand_info.get("last_street") not in (None, "Preflop")
+    ):
+        is_new_hand = True
+    else:
+        is_new_hand = False
+
+    if is_new_hand:
+        if hand_info is None:
+            prev_hand_id = None
+            prev_stack = None
+            prev_committed = None
+        else:
+            prev_hand_id = hand_info.get("hand_id")
+            prev_stack = hand_info.get("last_hero_stack")
+            prev_committed = hand_info.get("last_hero_committed")
+        boundary = datetime.now(UTC).isoformat()
+        live[table_id] = {
+            "hand_id": f"{table_id}:{boundary}",
+            "last_street": street,
+            "last_hero_stack": None,
+            "last_hero_committed": None,
+        }
+        return live[table_id]["hand_id"], True, prev_hand_id, prev_stack, prev_committed
+
+    # hand_info is guaranteed non-None here: we returned in the is_new_hand branch
+    # when hand_info was None or needed replacement.
+    assert hand_info is not None
+    hand_info["last_street"] = street
+
+    return hand_info["hand_id"], False, None, None, None
+
+
+def _derive_hand_id(table, state):
+    """Public (within main) hand-id resolver used by the telemetry writers.
+
+    Idempotent for repeated calls within the same snapshot — calling this
+    multiple times on the same ``table`` returns the same ``hand_id`` without
+    re-triggering boundary detection.
+    """
+    hand_id, _, _, _, _ = _process_hand_identity(table, state)
+    return hand_id
+
+
+def _record_hand_stack_state(table, state, hero_agent_id):
+    """Record hero's stackChips/totalCommittedChips under the current hand_id.
+
+    These values are consumed by ``backfill_hand_outcome_from_stack_delta``
+    on the next hand boundary to estimate the previous hand's hero_net_chips.
+    Called once per snapshot, after ``_process_hand_identity`` has resolved
+    the current hand_id.
+    """
+    table_id = str(table.get("tableId") or table.get("id") or "unknown-table")
+    hand_info = state.get("live_hand_state", {}).get(table_id)
+    if hand_info is None:
+        return
+    hero_seat = next(
+        (s for s in table.get("seats", []) if s.get("agentId") == hero_agent_id),
+        None,
+    )
+    if hero_seat is None:
+        return
+    hand_info["last_hero_stack"] = _safe_int(hero_seat.get("stackChips"))
+    hand_info["last_hero_committed"] = _safe_int(hero_seat.get("totalCommittedChips"))
+
+
 def record_live_decision(
     telemetry_conn,
     telemetry_run_id,
@@ -353,7 +466,7 @@ def record_live_decision(
         record_decision_telemetry(
             telemetry_conn,
             run_id=telemetry_run_id,
-            hand_id=table_id,
+            hand_id=_derive_hand_id(table, state),
             decision_index=decision_index,
             strategy=strategy_name,
             table=table,
@@ -721,7 +834,7 @@ def record_live_observed_actions(telemetry_conn, state, table, hero_agent_id):
     prior_keys = list(state.get("observed_action_event_keys", []))
     seen = set(prior_keys)
     newly_seen = []
-    hand_id = str(table.get("handId") or table.get("tableId") or table.get("id"))
+    hand_id = _derive_hand_id(table, state)
     recorded = 0
 
     try:
@@ -875,6 +988,28 @@ def handle_idle_state(ctx: BotContext, pending: dict, consecutive_empty: int) ->
         print(f"  Idle: {idle_description}", flush=True)
         ctx.state["last_reported_idle_state"] = idle_description
 
+    # While idle, reconcile our decision_telemetry rows with the arena's
+    # /agent/{id}/replays. Throttled so we don't hammer the API on every
+    # 2 s poll. Runs on every idle case (lobby, available, busted) — the
+    # exact idle reason doesn't matter; what matters is that we're not
+    # actively playing a hand.
+    last_replay_epoch = float(ctx.state.get("last_replay_backfill_epoch", 0) or 0)
+    if now - last_replay_epoch >= REPLAY_BACKFILL_INTERVAL_SECONDS:
+        replay_seen = backfill_outcomes_from_replays(
+            ctx.telemetry_conn,
+            ctx.telemetry_run_id,
+            agent_id=ctx.agent_id,
+            competition_id=ctx.competition_id,
+            api_fn=ctx.api_fn,
+        )
+        ctx.state["last_replay_backfill_epoch"] = now
+        ctx.state["last_replay_backfill_count"] = replay_seen
+        if replay_seen:
+            print(
+                f"  Replay backfill: reconciled {replay_seen} hand(s) from /replays",
+                flush=True,
+            )
+
     save_state(ctx.state)
     time.sleep(POLL_INTERVAL_SECONDS)
 
@@ -916,7 +1051,124 @@ def dump_raw_table(table: dict) -> None:
         print(f"  Raw table dump failed: {exc}", flush=True)
 
 
-def backfill_hand_outcome(telemetry_conn, run_id, table, hero_agent_id):
+def backfill_outcomes_from_replays(
+    telemetry_conn,
+    run_id,
+    *,
+    agent_id,
+    competition_id,
+    api_fn,
+    limit=REPLAY_BACKFILL_LIMIT,
+):
+    """Reconcile decision_telemetry with the arena's /agent/{id}/replays.
+
+    Called while the bot is idle. Fetches recent settled hands for our
+    agent from the arena and fills `hero_net_chips` + `won_hand` on any
+    matching `decision_telemetry` rows that are still NULL. The fill is
+    idempotent (UPDATE … WHERE hero_net_chips IS NULL), so Showdown and
+    stack-delta backfills keep precedence when they fire first.
+
+    Returns the number of replay entries seen (not the number of rows
+    updated — they are usually the same but can differ if a single
+    `tableId` matches multiple decision rows from multiple hands).
+
+    Never raises: any API or DB failure is caught and logged so live
+    play is never blocked.
+    """
+    if telemetry_conn is None or run_id is None or not agent_id:
+        return 0
+    path = f"/agent/{agent_id}/replays"
+    if competition_id:
+        path += f"?competitionId={competition_id}&limit={int(limit)}"
+    else:
+        path += f"?limit={int(limit)}"
+    try:
+        response = api_fn("GET", path)
+    except Exception as exc:
+        print(f"  Replay backfill GET failed: {exc}", flush=True)
+        return 0
+    if not isinstance(response, list):
+        # Some failures return dicts with `error`. Don't crash; log and bail.
+        if isinstance(response, dict) and response.get("error"):
+            print(
+                f"  Replay backfill error: {response.get('error')}",
+                flush=True,
+            )
+        return 0
+
+    seen = 0
+    for entry in response:
+        if not isinstance(entry, dict):
+            continue
+        table_id = entry.get("tableId") or entry.get("handId")
+        chip_delta = entry.get("chipDelta")
+        if table_id is None or chip_delta is None:
+            continue
+        try:
+            fill_hand_telemetry_outcome_from_replay(
+                telemetry_conn,
+                run_id=run_id,
+                table_id=str(table_id),
+                chip_delta=int(chip_delta),
+                won_hand=int(chip_delta) > 0,
+            )
+        except Exception as exc:
+            print(f"  Replay backfill write failed: {exc}", flush=True)
+            continue
+        seen += 1
+    return seen
+
+
+def backfill_hand_outcome_from_stack_delta(
+    telemetry_conn,
+    run_id,
+    *,
+    prev_hand_id,
+    prev_stack,
+    cur_stack,
+    cur_committed,
+):
+    """Estimate previous hand's hero_net_chips from a stack delta at the boundary.
+
+    Called on the first snapshot of a new hand at a table where we observed
+    the previous hand. The formula:
+
+        prev_net = (cur_stack + cur_committed) - prev_stack
+
+    treats the delta between the last seen stack of the previous hand and
+    the first seen stack of the new hand as ``settlement_of_prev -
+    committed_to_cur_so_far``. This holds whenever the previous hand's
+    last-seen snapshot is before settlement, which is the common case.
+
+    Uses ``fill_hand_telemetry_outcome_from_delta`` (only fills NULL
+    columns) so the more accurate Showdown snapshot, if observed, is
+    never overwritten.
+
+    Returns True when an UPDATE was issued, False otherwise. Safe to call
+    with any of the inputs None — it just no-ops.
+    """
+    if telemetry_conn is None or run_id is None:
+        return False
+    if not prev_hand_id or prev_stack is None or cur_stack is None:
+        return False
+    if cur_committed is None:
+        cur_committed = 0
+    net = int(cur_stack + cur_committed - prev_stack)
+    try:
+        fill_hand_telemetry_outcome_from_delta(
+            telemetry_conn,
+            run_id=run_id,
+            hand_id=prev_hand_id,
+            hero_net_chips=net,
+            won_hand=net > 0,
+        )
+        return True
+    except Exception as exc:
+        print(f"  Stack-delta backfill failed: {exc}", flush=True)
+        return False
+
+
+def backfill_hand_outcome(telemetry_conn, run_id, state, table, hero_agent_id):
     """If the table is a completed hand with winners, backfill outcome columns.
 
     Called from process_single_table on every table poll. Best-effort: any
@@ -929,7 +1181,7 @@ def backfill_hand_outcome(telemetry_conn, run_id, table, hero_agent_id):
         if not winners:
             return  # hand still in progress, nothing to backfill
 
-        hand_id = str(table.get("tableId") or table.get("id") or "?")
+        hand_id = _derive_hand_id(table, state)
         seats = table.get("seats", [])
 
         # Find hero's seat to extract per-hand net
@@ -973,12 +1225,48 @@ def process_single_table(table: dict, ctx: BotContext) -> None:
 
     print(f"\n📍 Table {table_id} | {street} | Pot: {pot}", flush=True)
 
-    # Hand-outcome backfill: when the arena returns a completed table
-    # (Showdown/Completed with winners), update all telemetry decision rows
-    # for this hand with the final result.
+    # Resolve hand identity and detect boundaries. Side effect: state now
+    # holds the current hand_id for this tableId so every downstream
+    # telemetry writer uses the same one.
+    _, is_new_hand, prev_hand_id, prev_stack, _prev_committed = _process_hand_identity(
+        table, ctx.state
+    )
+    _record_hand_stack_state(table, ctx.state, ctx.agent_id)
+    hero_seat_for_delta = next(
+        (s for s in table.get("seats", []) if s.get("agentId") == ctx.agent_id),
+        None,
+    )
+    cur_stack = (
+        _safe_int(hero_seat_for_delta.get("stackChips"))
+        if hero_seat_for_delta
+        else None
+    )
+    cur_committed = (
+        _safe_int(hero_seat_for_delta.get("totalCommittedChips"))
+        if hero_seat_for_delta
+        else None
+    )
+
+    # Hand-outcome backfill (A: stack delta on every boundary, B: Showdown
+    # when observed). Stack-delta runs first and never overwrites; Showdown
+    # runs after and is canonical. Order matters: Showdown must win.
+    if is_new_hand and ctx.telemetry_conn is not None:
+        backfill_hand_outcome_from_stack_delta(
+            ctx.telemetry_conn,
+            ctx.telemetry_run_id,
+            prev_hand_id=prev_hand_id,
+            prev_stack=prev_stack,
+            cur_stack=cur_stack,
+            cur_committed=cur_committed,
+        )
+
     if ctx.telemetry_conn is not None:
         backfill_hand_outcome(
-            ctx.telemetry_conn, ctx.telemetry_run_id, table, ctx.agent_id
+            ctx.telemetry_conn,
+            ctx.telemetry_run_id,
+            ctx.state,
+            table,
+            ctx.agent_id,
         )
 
     queued_stats = schedule_table_opponent_stats(ctx.stats_fetcher, table, ctx.agent_id)

@@ -203,9 +203,7 @@ def run_selfplay(
 
     for hand_index in range(hands):
         hand_id_base = f"{seed or 'run'}-{hand_index}"
-        hand_id = (
-            f"{hand_id_prefix}-{hand_id_base}" if hand_id_prefix else hand_id_base
-        )
+        hand_id = f"{hand_id_prefix}-{hand_id_base}" if hand_id_prefix else hand_id_base
         if use_profiler:
             profiler.start_hand(hand_id)
 
@@ -566,9 +564,7 @@ def build_parser():
         "--players",
         type=int,
         default=None,
-        help=(
-            "Total players including hero, 2-6. Defaults to opponent count + 1."
-        ),
+        help=("Total players including hero, 2-6. Defaults to opponent count + 1."),
     )
     parser.add_argument(
         "--seed",

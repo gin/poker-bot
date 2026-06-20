@@ -102,6 +102,38 @@ def test_resolve_options_loads_config_and_allows_cli_overrides(tmp_path):
     assert options["fail_under_bb100"] == -10.0
 
 
+def test_resolve_options_h2h_defaults_to_heads_up_and_tracking():
+    args = benchmark.build_parser().parse_args(
+        [
+            "--strat",
+            "candidate",
+            "--h2h",
+            "--opponent",
+            "simple,all_in_everytime,adaptive",
+            "--hands",
+            "50",
+            "--seeds",
+            "1",
+        ]
+    )
+
+    options = benchmark.resolve_options(args)
+
+    assert options["h2h"] is True
+    assert options["opponents"] == ("simple", "all_in_everytime", "adaptive")
+    assert options["players"] == (2,)
+    assert options["track_opponents"] is True
+
+
+def test_resolve_options_h2h_rejects_non_heads_up_players():
+    args = benchmark.build_parser().parse_args(
+        ["--strat", "candidate", "--h2h", "--players", "6"]
+    )
+
+    with pytest.raises(ValueError, match="heads-up"):
+        benchmark.resolve_options(args)
+
+
 def test_run_benchmark_aggregates_by_opponent_and_player_count():
     report = benchmark.run_benchmark(
         "candidate",
@@ -120,6 +152,76 @@ def test_run_benchmark_aggregates_by_opponent_and_player_count():
     assert rows[("simple", 2)].net_chips == 30
     assert rows[("simple", 6)].wins == 3
     assert rows[("simple", 6)].losses == 12
+
+
+def test_run_benchmark_preserves_requested_opponent_order():
+    report = benchmark.run_benchmark(
+        "candidate",
+        opponents=("adaptive", "simple", "all_in_everytime"),
+        players=(2,),
+        seeds=(1,),
+        hands=100,
+        runner=fake_runner,
+        workers=1,
+    )
+
+    assert [row.opponent for row in report.aggregates] == [
+        "adaptive",
+        "simple",
+        "all_in_everytime",
+    ]
+    text = benchmark.format_report(report)
+    assert text.index("adaptive") < text.index("simple")
+    assert text.index("simple") < text.index("all_in_everytime")
+
+
+def test_run_benchmark_h2h_enables_tracking_and_isolated_platforms():
+    calls = []
+
+    def capture_runner(
+        strat,
+        *,
+        hands,
+        seed,
+        opponent_name,
+        players,
+        track_opponents=False,
+        opponent_db=None,
+        **kwargs,
+    ):
+        calls.append(
+            {
+                "opponent": opponent_name,
+                "track_opponents": track_opponents,
+                "platform": kwargs.get("platform"),
+            }
+        )
+        return fake_runner(
+            strat,
+            hands=hands,
+            seed=seed,
+            opponent_name=opponent_name,
+            players=players,
+            track_opponents=track_opponents,
+            opponent_db=opponent_db,
+            **kwargs,
+        )
+
+    report = benchmark.run_benchmark(
+        "candidate",
+        opponents=("simple", "adaptive"),
+        players=(2,),
+        seeds=(1,),
+        hands=100,
+        runner=capture_runner,
+        workers=1,
+        h2h=True,
+    )
+
+    assert report.h2h is True
+    assert all(call["track_opponents"] is True for call in calls)
+    assert calls[0]["platform"] == "benchmark-h2h:candidate:vs:simple:p2:seed1"
+    assert calls[1]["platform"] == "benchmark-h2h:candidate:vs:adaptive:p2:seed1"
 
 
 def test_run_benchmark_compares_candidate_to_baseline():
@@ -187,6 +289,22 @@ def test_format_report_includes_gate_status():
     assert "benchmark   : candidate" in text
     assert "simple" in text
     assert "gate        : PASS bb/100 >= 0.0" in text
+
+
+def test_format_report_omits_gate_when_no_gate_configured():
+    report = benchmark.run_benchmark(
+        "candidate",
+        opponents=("simple",),
+        players=(2,),
+        seeds=(1,),
+        hands=100,
+        runner=fake_runner,
+    )
+
+    text = benchmark.format_report(report)
+
+    assert report.passed is None
+    assert "gate        :" not in text
 
 
 def test_format_report_includes_baseline_comparison():
