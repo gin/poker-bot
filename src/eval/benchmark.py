@@ -310,15 +310,27 @@ def _run_case_worker(args):
     """Run a single benchmark case in a worker process.
 
     ``args`` is a tuple ``(case, runner, track_opponents, profile,
-    worker_db_path)``. The worker uses ``worker_db_path`` as the
-    opponent DB (a per-worker private file) so that parallel writes
-    do not collide; the orchestrator merges those files afterwards.
+    worker_db_path, h2h, telemetry, telemetry_run_id)``. The worker uses
+    ``worker_db_path`` as the opponent DB (a per-worker private file) so
+    that parallel writes do not collide; the orchestrator merges those
+    files afterwards.
     """
-    case, runner, track_opponents, profile, worker_db_path, h2h = args
+    (
+        case,
+        runner,
+        track_opponents,
+        profile,
+        worker_db_path,
+        h2h,
+        telemetry,
+        telemetry_run_id,
+    ) = args
     profiler = PlayProfiler() if profile else None
     runner_kwargs = {}
     if h2h:
         runner_kwargs["platform"] = _h2h_platform(case)
+    if telemetry_run_id is not None:
+        runner_kwargs["telemetry_run_id"] = telemetry_run_id
     result = runner(
         case.strat,
         hands=case.hands,
@@ -328,6 +340,7 @@ def _run_case_worker(args):
         track_opponents=track_opponents,
         opponent_db=worker_db_path,
         profiler=profiler,
+        telemetry=telemetry,
         **runner_kwargs,
     )
     if profile and profiler is not None:
@@ -344,6 +357,8 @@ def _run_cases_parallel(
     profile,
     worker_db_paths,
     h2h,
+    telemetry,
+    telemetry_run_id,
     label: str,
 ) -> list[SelfPlayResult]:
     actual_workers = len(worker_db_paths) if worker_db_paths else _resolve_workers(0)
@@ -356,7 +371,16 @@ def _run_cases_parallel(
             worker_db = worker_db_paths[i % actual_workers] if worker_db_paths else None
             future = pool.submit(
                 _run_case_worker,
-                (case, runner, track_opponents, profile, worker_db, h2h),
+                (
+                    case,
+                    runner,
+                    track_opponents,
+                    profile,
+                    worker_db,
+                    h2h,
+                    telemetry,
+                    telemetry_run_id,
+                ),
             )
             futures[future] = i
         for future in concurrent.futures.as_completed(futures):
@@ -380,9 +404,22 @@ def _run_cases_sequential(
     profile,
     opponent_db,
     h2h,
+    telemetry,
+    telemetry_run_id,
 ) -> list[SelfPlayResult]:
     return [
-        _run_case_worker((case, runner, track_opponents, profile, opponent_db, h2h))
+        _run_case_worker(
+            (
+                case,
+                runner,
+                track_opponents,
+                profile,
+                opponent_db,
+                h2h,
+                telemetry,
+                telemetry_run_id,
+            )
+        )
         for case in cases
     ]
 
@@ -403,11 +440,19 @@ def run_benchmark(
     runner=run_selfplay,
     workers=0,
     h2h=False,
+    telemetry=False,
+    telemetry_run_id=None,
 ):
     if h2h:
         if tuple(players) != (2,):
             raise ValueError("--h2h only supports heads-up --players 2")
         track_opponents = True
+    # When telemetry is enabled but no opponent_db is given, fall back to
+    # the default telemetry DB path so both opponent stats and gameplay
+    # telemetry land in the same place. Mirrors the selfplay CLI's
+    # default behavior so benchmark and selfplay stay symmetric.
+    if telemetry and opponent_db is None:
+        opponent_db = opponent_store.default_telemetry_db_path()
     cases = build_cases(strat, opponents, players, seeds, hands)
     started = time.perf_counter()
     actual_workers = _resolve_workers(workers)
@@ -431,6 +476,8 @@ def run_benchmark(
             profile=profile,
             opponent_db=opponent_db,
             h2h=h2h,
+            telemetry=telemetry,
+            telemetry_run_id=telemetry_run_id,
         )
     else:
         results = _run_cases_parallel(
@@ -440,6 +487,8 @@ def run_benchmark(
             profile=profile,
             worker_db_paths=worker_db_paths,
             h2h=h2h,
+            telemetry=telemetry,
+            telemetry_run_id=telemetry_run_id,
             label="candidate",
         )
 
@@ -454,6 +503,8 @@ def run_benchmark(
                 profile=profile,
                 opponent_db=opponent_db,
                 h2h=h2h,
+                telemetry=telemetry,
+                telemetry_run_id=telemetry_run_id,
             )
         else:
             baseline_results = _run_cases_parallel(
@@ -463,6 +514,8 @@ def run_benchmark(
                 profile=profile,
                 worker_db_paths=worker_db_paths,
                 h2h=h2h,
+                telemetry=telemetry,
+                telemetry_run_id=telemetry_run_id,
                 label="baseline",
             )
 
@@ -724,6 +777,25 @@ def build_parser():
             "POKER_BENCHMARK_ALLOW_HIGH_WORKERS=1 is set."
         ),
     )
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        help=(
+            "Record hero decision telemetry to the SQLite database. "
+            "Writes alongside opponent stats when --opponent-db is set; "
+            "otherwise writes to the default telemetry DB path."
+        ),
+    )
+    parser.add_argument(
+        "--telemetry-run-id",
+        default=None,
+        dest="telemetry_run_id",
+        help=(
+            "Optional run id for decision telemetry. When omitted, a "
+            "fresh UUID is generated per benchmark invocation so all "
+            "cases share one run id (useful for cross-case queries)."
+        ),
+    )
     return parser
 
 
@@ -745,6 +817,8 @@ def main(argv=None):
             profile=options["profile"],
             workers=options["workers"],
             h2h=options["h2h"],
+            telemetry=args.telemetry,
+            telemetry_run_id=args.telemetry_run_id,
         )
     except ValueError as exc:
         print(f"benchmark: {exc}", file=sys.stderr)
