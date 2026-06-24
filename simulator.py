@@ -375,6 +375,8 @@ def run_betting_round(
     active_idx = first_actor_idx
     min_raise = BIG_BLIND
     last_actions = {PLAYER_AGENT_ID: None, BOT_AGENT_ID: None}
+    _round_action_history = []
+
     while True:
         seat = seats[active_idx]
         opponent = seats[1 - active_idx]
@@ -396,6 +398,7 @@ def run_betting_round(
                 for agent_id, profile in opponent_profiles.items()
                 if agent_id != seat["agentId"]
             }
+        table["actionHistory"] = list(_round_action_history)
 
         if verbose:
             print_table(
@@ -461,6 +464,13 @@ def run_betting_round(
                 voluntary=voluntary,
                 street=street,
             )
+
+        _round_action_history.append({
+            "agentId": seat["agentId"],
+            "action": action,
+            "amount": amount,
+            "street": street,
+        })
 
         if action == "fold":
             if verbose:
@@ -580,6 +590,8 @@ def run_betting_round_multiway(
     last_actions = {
         seat["agentId"]: None for seat in seats if not seat.get("folded", False)
     }
+    _round_action_history = []
+
     while True:
         if len(live_seats(seats)) <= 1:
             winner = live_seats(seats)[0]
@@ -616,6 +628,7 @@ def run_betting_round_multiway(
                 for agent_id, profile in opponent_profiles.items()
                 if agent_id != seat["agentId"]
             }
+        table["actionHistory"] = list(_round_action_history)
 
         if verbose:
             print_table(
@@ -672,6 +685,13 @@ def run_betting_round_multiway(
                 voluntary=voluntary,
                 street=street,
             )
+
+        _round_action_history.append({
+            "agentId": seat["agentId"],
+            "action": action,
+            "amount": amount,
+            "street": street,
+        })
 
         if action == "fold":
             seat["folded"] = True
