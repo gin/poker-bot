@@ -2,6 +2,70 @@
 Season 3, base
 Cut from s2base
 Optimize for heads up (1 opponent table)
+
+    Opponent                   s3base  s3v014  Delta  Gate
+    ─────────────────────────  ──────  ──────  ─────  ───────
+    simple                     +25.2   +25.2   +0.0   ✅ PASS
+    all_in_everytime           +482.2  +482.2  +0.0   ✅ PASS
+    adaptive                   +16.3   +16.3   +0.0   ✅ PASS
+    profiled_counter_adaptive  +14.7   +14.7   +0.0   ✅ PASS
+    threshold_pressure         +15.0   +15.0   +0.0   ✅ PASS
+    anti_threshold             +22.7   +22.7   +0.0   ✅ PASS
+    royal_flush                +2.2    +2.2    +0.0   ✅ PASS
+    royal_adaptive             +2.2    +2.2    +0.0   ✅ PASS
+    survival_balanced          +19.7   +19.7   +0.0   ✅ PASS
+    survival_aggressive        +17.9   +17.9   +0.0   ✅ PASS
+    auto_research_v005         +10.6   +10.6   +0.0   ✅ PASS
+    auto_research_v008         +10.6   +10.6   +0.0   ✅ PASS
+    flattened_v2               +10.6   +10.6   +0.0   ✅ PASS
+    s2baseog                   +17.0   +17.0   +0.0   ✅ PASS
+    s2v002                     +9.9    +9.9    +0.0   ✅ PASS
+    s2v004                     +17.0   +17.0   +0.0   ✅ PASS
+    s2v008                     +28.9   +28.9   +0.0   ✅ PASS
+    s2v009                     +16.3   +16.3   +0.0   ✅ PASS
+    s2v014                     +16.6   +16.6   +0.0   ✅ PASS
+
+ Changes made to s3base.py and simulator.py
+
+ 1. Added board_assisted_two_pair_guard(): prevents over-valuing two pair on
+    a paired board when one pair rank is fully on the board. Fires only vs
+    tight opponents (VPIP% < 25%).
+
+ 2. Added river_two_pair_raise_guard(): prevents value-raising with two pair
+    on the river vs tight opponents.
+
+ 3. Added preflop_min_raise_war_cap(): caps preflop raises after 3+ raise-backs
+    in the same hand. Converts raise → call/check.
+
+ 4. Changed counter short-handed open pressure bet sizing from max(score, 56)
+    to score. Bet size is now proportional to preflop score.
+
+ 5. Modified simulator.py to populate actionHistory in the table dict before
+    each strategy call. Enables actionHistory-based guards.
+
+ 6. Added river_one_pair_over_call(): folds one pair on the river when facing
+    a bet > 50% of pot.
+
+ 7. Added postflop_marginal_hand_war_cap(): caps postflop raises with marginal
+    hands (rank < 3) after 3+ raises on the same street. Tuned from threshold
+    2 to 3 after s3v012 arena test showed 55% fold rate / 59% non-fold win
+    rate — too aggressive at threshold 2.
+
+ 8. Added postflop_air_double_barrel_guard(): prevents double-barrelling with
+    complete air (rank 0). First barrel is allowed, but second barrel with
+    air is converted to check. Addresses s3v012 arena leak of -251 chips
+    across 4 hands where bot fired 2-3 barrels with air.
+
+ 9. Added two_pair_paired_board_overfold_guard(): prevents folding genuine two
+    pair (pocket pair + board pair) on paired boards. Must run BEFORE
+    paired_board_pot_control to override its fragility check. Addresses
+    s3v012 arena leak of -32 chips where 4h 4s folded two pair (44 + 99)
+    on 9c Kd Td 9s.
+
+ Note: preflop_3bet_defense_cap was attempted but reverted because it made
+ benchmark regress (-0.9 to -5.1 bb/100 per opponent). The benchmark
+ opponents have legitimate 3-betting ranges that the bot should defend
+ against.
 """
 
 from __future__ import annotations
@@ -3634,7 +3698,15 @@ def board_assisted_two_pair_guard(table, my_seat, blueprint) -> ActionDecision |
 
     # One or both pair ranks are board-only → board-assisted two pair.
     # Against a tight opponent, this hand is a bluff-catcher at best.
-    is_tight = is_tight_opponent(table)
+    profiles = table.get("opponentProfiles", {})
+    is_tight = False
+    for profile in profiles.values():
+        if isinstance(profile, dict):
+            vpip = profile.get("vpip", 0)
+            hands = profile.get("hands_seen", 0)
+            if hands > 0 and (vpip / hands) < 0.25:
+                is_tight = True
+                break
 
     # Convert raise/bet → check (if available) or call. Both branches
     # require is_tight — against wider-range opponents the value-bet
@@ -3693,8 +3765,18 @@ def river_two_pair_raise_guard(table, my_seat, blueprint) -> ActionDecision | No
     if hand_rank[0] != 2:
         return None
 
-    # Check if opponent is tight (VPIP% < 25% or frequency-based)
-    if not is_tight_opponent(table):
+    # Check if opponent is tight (VPIP% < 25%)
+    profiles = table.get("opponentProfiles", {})
+    is_tight = False
+    for profile in profiles.values():
+        if isinstance(profile, dict):
+            vpip = profile.get("vpip", 0)
+            hands = profile.get("hands_seen", 0)
+            if hands > 0 and (vpip / hands) < 0.25:
+                is_tight = True
+                break
+
+    if not is_tight:
         return None
 
     # Convert raise/bet → check (if no bet to face) or call
@@ -4762,54 +4844,6 @@ def profile_fold_to_bet_frequency(profile):
     if opportunities <= 0:
         return 0.0
     return folds_val / opportunities
-
-
-def is_tight_opponent(table, vpip_threshold=0.25, fold_to_bet_threshold=0.55,
-                      aggression_threshold=0.35, min_hands=10,
-                      use_frequency_signal=False, dict_only=True):
-    """Detect tight opponents via VPIP, optionally supplemented by frequencies.
-
-    1. VPIP-based (default): opponent voluntarily enters very few pots
-       (vpip/hands < threshold).  Strong signal — a player who sees < 25%
-       of flops is genuinely tight and has a narrow range.
-
-    2. Frequency-based (opt-in): opponent folds to bets often AND rarely
-       aggresses.  Catches tight players whose VPIP may be inflated by
-       limping but who give up postflop.  **Disabled by default** because
-       it also matches loose-passive calling stations — opponents against
-       whom we should still value-bet, not pot-control.  Enable only for
-       guards that specifically target passive play, not narrow ranges.
-
-    ``dict_only=True`` (default) matches the original inline guard behaviour:
-    only dict profiles are checked, so the guards stay inert in benchmark
-    selfplay (where profiles are ``OpponentProfile`` objects, not dicts).
-    Set ``dict_only=False`` to also evaluate object profiles.
-
-    Returns True if ANY observed opponent matches the active signal(s).
-    """
-    for profile in (table.get("opponentProfiles") or {}).values():
-        if profile is None:
-            continue
-        if dict_only and not isinstance(profile, dict):
-            continue
-        hands = int(profile_value(profile, "hands_seen") or 0)
-        if hands < min_hands:
-            continue
-
-        # Signal 1: VPIP-based (always active)
-        vpip = int(profile_value(profile, "vpip") or 0)
-        if hands > 0 and (vpip / hands) < vpip_threshold:
-            return True
-
-        # Signal 2: frequency-based (opt-in)
-        if use_frequency_signal:
-            fold_to_bet = profile_fold_to_bet_frequency(profile)
-            aggression = float(profile_aggression_frequency_merged(profile))
-            if (fold_to_bet >= fold_to_bet_threshold
-                    and aggression <= aggression_threshold):
-                return True
-
-    return False
 
 
 def observed_profiles(table, minimum_hands=25, active_only=False):

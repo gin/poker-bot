@@ -2,6 +2,50 @@
 Season 3, base
 Cut from s2base
 Optimize for heads up (1 opponent table)
+
+    Opponent                   s3base  s3v015  Delta  Gate
+    ─────────────────────────  ──────  ──────  ─────  ───────
+    simple                     +32.8   +32.8   +0.0   ✅ PASS
+    all_in_everytime          +482.2  +482.2   +0.0   ✅ PASS
+    adaptive                   +36.5   +36.5   +0.0   ✅ PASS
+    profiled_counter_adaptive  +31.4   +31.4   +0.0   ✅ PASS
+    threshold_pressure         +38.9   +38.9   +0.0   ✅ PASS
+    anti_threshold             +51.7   +51.7   +0.0   ✅ PASS
+    royal_flush                +20.5   +20.5   +0.0   ✅ PASS
+    royal_adaptive             +20.5   +20.5   +0.0   ✅ PASS
+    survival_balanced          +29.2   +29.2   +0.0   ✅ PASS
+    survival_aggressive        +30.5   +30.5   +0.0   ✅ PASS
+    auto_research_v005         +28.2   +28.2   +0.0   ✅ PASS
+    auto_research_v008         +28.2   +28.2   +0.0   ✅ PASS
+    flattened_v2               +27.6   +27.6   +0.0   ✅ PASS
+    s2baseog                   +24.5   +24.5   +0.0   ✅ PASS
+    s2v002                     +26.3   +26.3   +0.0   ✅ PASS
+    s2v004                     +24.5   +24.5   +0.0   ✅ PASS
+    s2v008                     +24.5   +24.5   +0.0   ✅ PASS
+    s2v009                      +6.8    +6.8   +0.0   ✅ PASS
+    s2v014                      +9.3    +9.3   +0.0   ✅ PASS
+
+ Changes made to s3base.py (vs s3v015)
+
+ 1. Added is_tight_opponent() helper: consolidates the duplicate inline
+    tightness loops from board_assisted_two_pair_guard and
+    river_two_pair_raise_guard into one reusable function. Provides two
+    signals: VPIP-based (always on, vpip/hands < 0.25) and frequency-based
+    (opt-in via use_frequency_signal, fold_to_bet >= 0.55 AND aggression
+    <= 0.35). dict_only=True default preserves the original
+    isinstance(profile, dict) behaviour so guards stay inert in benchmark
+    selfplay where profiles are OpponentProfile objects.
+
+ 2. Replaced inline tightness checks in board_assisted_two_pair_guard and
+    river_two_pair_raise_guard with is_tight_opponent(table) calls.
+
+ Note: The frequency-based signal was developed during a s3basemulti port
+ attempt. Porting to s3basemulti caused -57 bb/100 regression because the
+ signal also matches loose-passive calling stations (like the simple bot)
+ — opponents against whom we should value-bet, not pot-control. The
+ s3basemulti port was reverted. The signal is kept opt-in (disabled by
+ default) in s3base for future use when dict profiles are expected (arena
+ play with persisted profiles).
 """
 
 from __future__ import annotations

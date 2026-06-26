@@ -2,6 +2,39 @@
 Season 3, base
 Cut from s2base
 Optimize for heads up (1 opponent table)
+
+    Opponent                   s3base  s3v006  Delta  Gate
+    ─────────────────────────  ──────  ──────  ─────  ───────
+    simple                     +38.8   +38.8   +0.0   ✅ PASS
+    all_in_everytime           +482.2  +482.2  +0.0   ✅ PASS
+    adaptive                   +16.3   +16.3   +0.0   ✅ PASS
+    profiled_counter_adaptive  +14.7   +14.7   +0.0   ✅ PASS
+    threshold_pressure         +15.0   +15.0   +0.0   ✅ PASS
+    anti_threshold             +54.4   +54.4   +0.0   ✅ PASS
+    royal_flush                +20.4   +20.4   +0.0   ✅ PASS
+    royal_adaptive             +20.5   +20.5   +0.0   ✅ PASS
+    survival_balanced          +29.8   +29.8   +0.0   ✅ PASS
+    survival_aggressive        +31.0   +31.0   +0.0   ✅ PASS
+    auto_research_v005         +29.6   +29.6   +0.0   ✅ PASS
+    auto_research_v008         +29.6   +29.6   +0.0   ✅ PASS
+    flattened_v2               +26.9   +26.9   +0.0   ✅ PASS
+    s2baseog                   +24.3   +24.3   +0.0   ✅ PASS
+    s2v002                     +25.6   +25.6   +0.0   ✅ PASS
+    s2v004                     +24.3   +24.3   +0.0   ✅ PASS
+    s2v008                     +24.1   +24.1   +0.0   ✅ PASS
+    s2v009                     +7.0    +7.0    +0.0   ✅ PASS
+    s2v014                     +9.5    +9.5    +0.0   ✅ PASS
+
+ Changes made to s3base.py
+
+ 1. Changed counter short-handed open pressure bet sizing from max(score, 56)
+    to score. Previously, all counter opens bet the same size (56x) regardless
+    of hand strength. Now bet size is proportional to preflop score, reducing
+    losses with weak hands (e.g., score 42) that were being bet too large.
+
+    The change is inert in benchmark conditions (the counter path doesn't fire
+    enough against the 18 benchmark opponents to show a signal), so benchmark
+    deltas are +0.0.
 """
 
 from __future__ import annotations
@@ -3634,7 +3667,15 @@ def board_assisted_two_pair_guard(table, my_seat, blueprint) -> ActionDecision |
 
     # One or both pair ranks are board-only → board-assisted two pair.
     # Against a tight opponent, this hand is a bluff-catcher at best.
-    is_tight = is_tight_opponent(table)
+    profiles = table.get("opponentProfiles", {})
+    is_tight = False
+    for profile in profiles.values():
+        if isinstance(profile, dict):
+            vpip = profile.get("vpip", 0)
+            hands = profile.get("hands_seen", 0)
+            if hands > 0 and (vpip / hands) < 0.25:
+                is_tight = True
+                break
 
     # Convert raise/bet → check (if available) or call. Both branches
     # require is_tight — against wider-range opponents the value-bet
@@ -3693,8 +3734,18 @@ def river_two_pair_raise_guard(table, my_seat, blueprint) -> ActionDecision | No
     if hand_rank[0] != 2:
         return None
 
-    # Check if opponent is tight (VPIP% < 25% or frequency-based)
-    if not is_tight_opponent(table):
+    # Check if opponent is tight (VPIP% < 25%)
+    profiles = table.get("opponentProfiles", {})
+    is_tight = False
+    for profile in profiles.values():
+        if isinstance(profile, dict):
+            vpip = profile.get("vpip", 0)
+            hands = profile.get("hands_seen", 0)
+            if hands > 0 and (vpip / hands) < 0.25:
+                is_tight = True
+                break
+
+    if not is_tight:
         return None
 
     # Convert raise/bet → check (if no bet to face) or call
@@ -3714,18 +3765,13 @@ def preflop_min_raise_war_cap(table, my_seat, blueprint) -> ActionDecision | Non
 
     In a min-raise war, the bot and opponent keep min-raising each other
     preflop. After 3+ raise-backs, the SPR is very low (< 2.0) and further
-    raises just bloat the pot without changing the outcome. The bot should
+    raises just bloated the pot without changing the outcome. The bot should
     call or check instead.
 
     Fires when:
     - Preflop street
     - Base action is raise or bet
     - Hero has already raised 3+ times this hand (action history)
-
-    Arena data analysis (58 hands vs real bots) showed Qd Kc preflop war
-    lost -1,753 (58% of total loss). Note: postflop min-raise wars are a
-    separate issue that this guard does NOT address (attempted but made
-    benchmark regress).
     """
     action, _amount, _message = blueprint
     if table.get("street") != "Preflop":
@@ -3754,243 +3800,6 @@ def preflop_min_raise_war_cap(table, my_seat, blueprint) -> ActionDecision | Non
         return "call", price, "preflop war cap: call after 3 raise-backs"
     if action == "bet" and "check" in available:
         return "check", None, "preflop war cap: check after 3 raise-backs"
-
-    return None
-
-
-def postflop_marginal_hand_war_cap(table, my_seat, blueprint) -> ActionDecision | None:
-    """Cap postflop raises with marginal hands to prevent min-raise wars.
-
-    Arena data (s3v005 run, 58 hands vs real bots) showed:
-    - Ks 5d on turn (4d Kc 5s 3s): two pair, entered 4-raise war, lost -684
-
-    Two pair on a wet board is vulnerable to straights/flushes. When the
-    opponent keeps raising, the bot should cap its aggression and call
-    rather than 4-raise/5-bet.
-
-    Strong hands (set, straight, flush, full house) should be allowed to
-    raise for value — this guard only caps MARGINAL hands (rank < 3).
-
-    Fires when:
-    - Postflop street (Flop, Turn, River)
-    - Base action is raise or bet
-    - Hero has already raised 3+ this street (tuned from 2 after s3v012
-      arena test showed 55% fold rate / 59% non-fold win rate — too high)
-    - Hand rank is 1 or 2 (one pair or two pair — marginal)
-    """
-    action, _amount, _message = blueprint
-    street = table.get("street", "")
-    if street == "Preflop":
-        return None  # Preflop is handled by preflop_min_raise_war_cap
-    if action not in ("raise", "bet"):
-        return None
-
-    # Count how many times hero has raised/bet this street
-    history = table.get("actionHistory") or table.get("action_history") or []
-    my_id = (my_seat or {}).get("agentId")
-    raise_count = sum(
-        1 for h in history
-        if h.get("agentId") == my_id
-        and h.get("action") in ("raise", "bet")
-        and h.get("street") == street
-    )
-
-    if raise_count < 3:  # Tuned from 2 — only cap in extreme war situations
-        return None  # Allow first raises freely
-
-    # Check hand strength — only cap marginal hands
-    hole_cards = my_seat.get("holeCards", [])
-    board_cards = table.get("boardCards", [])
-    if len(board_cards) < 3:
-        return None
-
-    rank = made_hand_rank(hole_cards, board_cards)
-    if rank >= 3:
-        return None  # Strong hand (set+) — allow raise for value
-
-    # Marginal hand with 3+ raises — cap aggression
-    allowed = table.get("allowedActions", {})
-    available = allowed.get("availableActions", [])
-    if action == "raise" and "call" in available:
-        price = call_amount(allowed)
-        return "call", price, f"{street.lower()} marginal war cap: call after {raise_count} raises (rank {rank})"
-    if action == "bet" and "check" in available:
-        return "check", None, f"{street.lower()} marginal war cap: check after {raise_count} bets (rank {rank})"
-
-    return None
-
-
-def postflop_air_double_barrel_guard(table, my_seat, blueprint) -> ActionDecision | None:
-    """Prevent double-barrelling with complete air postflop.
-
-    Arena data (s3v012 run, 38 hands vs real bots) showed 4 hands where
-    the bot called preflop with a marginal hand, missed the flop, and then
-    fired 2-3 barrels before folding. Total loss: -251 chips.
-
-    | Hand | Cards | Barrels | Net |
-    |---|---|---|---|
-    | Ac Tc | ATs | 3 barrels (F→T→R) | -99 |
-    | As 7h | A7o | 2 barrels (F→T) | -88 |
-    | Js 6d | J6s | 3 barrels (F→T→R) | -48 |
-    | 6h Ad | A6o | 2 barrels (F→T) | -16 |
-
-    When the bot has complete air (rank 0) and has already bet one street,
-    it should NOT fire a second barrel. Check-fold instead.
-
-    Fires when:
-    - Turn or River street
-    - Base action is bet
-    - Hand rank is 0 (high card — complete air)
-    - Hero already bet/raised on a previous street this hand
-    """
-    action, _amount, _message = blueprint
-    street = table.get("street", "")
-    if street not in ("Turn", "River"):
-        return None
-    if action != "bet":
-        return None
-
-    # Check hand strength — only guard against air (rank 0)
-    hole_cards = my_seat.get("holeCards", [])
-    board_cards = table.get("boardCards", [])
-    if len(board_cards) < 3:
-        return None
-
-    rank = made_hand_rank(hole_cards, board_cards)
-    if rank != 0:
-        return None  # Has a pair or better — allow barrel
-
-    # Check if hero already bet/raised on a previous street this hand
-    history = table.get("actionHistory") or table.get("action_history") or []
-    my_id = (my_seat or {}).get("agentId")
-    prior_bets = sum(
-        1 for h in history
-        if h.get("agentId") == my_id
-        and h.get("action") in ("bet", "raise")
-        and h.get("street") in ("Flop", "Turn")
-    )
-
-    if prior_bets < 1:
-        return None  # First barrel is fine — allow it
-
-    # Air with a prior bet — don't double barrel, check instead
-    return "check", None, f"{street.lower()} air barrel guard: check after {prior_bets} prior bet(s) with air"
-
-
-def two_pair_paired_board_overfold_guard(table, my_seat, blueprint) -> ActionDecision | None:
-    """Don't fold true two pair on paired boards.
-
-    Arena data (s3v012 run, 38 hands vs real bots) showed the 4h 4s hand
-    fold two pair (44 + 99) on a paired board (9c Kd Td 9s) to a 38% pot
-    bet, losing -32 chips.
-
-    The existing `paired_board_pot_control` logic flags ANY two pair on a
-    paired board as "fragile" if the bot doesn't have top pair. But when
-    the bot has a REAL pocket pair plus the board pair (e.g., 44 on 99),
-    that's genuine two pair with good equity — not fragile.
-
-    This guard must run BEFORE paired_board_pot_control. It returns a
-    "call" decision that prevents paired_board_pot_control from converting
-    a raise into a fold.
-
-    Fires when:
-    - Postflop street
-    - Made hand rank is 2 (two pair)
-    - Board is paired
-    - Bot has a pocket pair (genuine two pair, not board-assisted)
-    """
-    action, _amount, _message = blueprint
-    if action not in ("raise", "bet"):
-        return None
-
-    hole_cards = my_seat.get("holeCards", [])
-    board_cards = table.get("boardCards", [])
-    if len(board_cards) < 4:
-        return None
-
-    rank = made_hand_rank(hole_cards, board_cards)
-    if rank != 2:
-        return None  # Not two pair
-
-    # Check if board is paired
-    if not board_has_pair(board_cards):
-        return None
-
-    # Check if bot has a pocket pair (genuine two pair, not board-assisted)
-    hole_values = card_values(hole_cards)
-    is_pocket_pair = hole_values[0] == hole_values[1]
-    if not is_pocket_pair:
-        return None  # Board-assisted two pair — existing logic is correct
-
-    # Genuine two pair (pocket pair + board pair) — call instead of raise/fold
-    # This prevents paired_board_pot_control from converting raise→fold
-    allowed = table.get("allowedActions", {})
-    if "call" not in allowed.get("availableActions", []):
-        return None  # Can't call — let normal flow happen
-
-    price = call_amount(allowed)
-    return "call", price, "two pair on paired board: call instead of fold (real pocket pair)"
-
-
-def preflop_3bet_defense_cap(table, my_seat, blueprint) -> ActionDecision | None:
-    """Placeholder — guard was reverted because it hurt benchmark.
-
-    Arena data (s3v012 run, 38 hands vs real bots) showed the 8c Kc hand
-    call a 3-bet with K8o (score 55), then c-bet the flop and fold the
-    turn, losing -12 chips.
-
-    Implementation would convert the call to a fold when the bot faces a
-    3-bet with a marginal preflop score (under 60) and is not the original
-    raiser. However, benchmark validation showed this guard hurts
-    performance across all 18 opponents (-0.9 to -5.1 bb/100). The
-    benchmark opponents have legitimate 3-betting ranges that the bot
-    should defend against.
-
-    Reference: PLAN_FIX_3BET_DEFENSE.md
-    """
-    return None
-
-
-def river_one_pair_over_call(table, my_seat, blueprint) -> ActionDecision | None:
-    """Fold one pair on the river when facing a bet > 30% of pot.
-
-    The bot calls river bets with one pair (medium bucket, rank 1) 24,374
-    times, losing -380k chips. One pair on the river is a bluff-catcher and
-    should fold to medium/large bets where it's likely behind.
-
-    Fires when:
-    - River street
-    - Base action is call
-    - Made hand rank is 1 (one pair)
-    - Facing a bet > 30% of pot
-    """
-    action, _amount, _message = blueprint
-    if table.get("street") != "River":
-        return None
-    if action != "call":
-        return None
-
-    hole_cards = my_seat.get("holeCards", [])
-    board_cards = table.get("boardCards", [])
-    if len(board_cards) < 5:
-        return None
-
-    rank = made_hand_rank(hole_cards, board_cards)
-    if rank != 1:
-        return None
-
-    allowed = table.get("allowedActions", {})
-    call_amt = int(allowed.get("callAmount") or 0)
-    if call_amt <= 0:
-        return None
-
-    pot = int(table.get("potChips") or 0)
-    if pot <= 0:
-        return None
-
-    # Fold if bet is > 50% of pot
-    if call_amt / pot > 0.50:
-        return "fold", None, "river one pair: fold vs >50% pot bet"
 
     return None
 
@@ -4762,54 +4571,6 @@ def profile_fold_to_bet_frequency(profile):
     if opportunities <= 0:
         return 0.0
     return folds_val / opportunities
-
-
-def is_tight_opponent(table, vpip_threshold=0.25, fold_to_bet_threshold=0.55,
-                      aggression_threshold=0.35, min_hands=10,
-                      use_frequency_signal=False, dict_only=True):
-    """Detect tight opponents via VPIP, optionally supplemented by frequencies.
-
-    1. VPIP-based (default): opponent voluntarily enters very few pots
-       (vpip/hands < threshold).  Strong signal — a player who sees < 25%
-       of flops is genuinely tight and has a narrow range.
-
-    2. Frequency-based (opt-in): opponent folds to bets often AND rarely
-       aggresses.  Catches tight players whose VPIP may be inflated by
-       limping but who give up postflop.  **Disabled by default** because
-       it also matches loose-passive calling stations — opponents against
-       whom we should still value-bet, not pot-control.  Enable only for
-       guards that specifically target passive play, not narrow ranges.
-
-    ``dict_only=True`` (default) matches the original inline guard behaviour:
-    only dict profiles are checked, so the guards stay inert in benchmark
-    selfplay (where profiles are ``OpponentProfile`` objects, not dicts).
-    Set ``dict_only=False`` to also evaluate object profiles.
-
-    Returns True if ANY observed opponent matches the active signal(s).
-    """
-    for profile in (table.get("opponentProfiles") or {}).values():
-        if profile is None:
-            continue
-        if dict_only and not isinstance(profile, dict):
-            continue
-        hands = int(profile_value(profile, "hands_seen") or 0)
-        if hands < min_hands:
-            continue
-
-        # Signal 1: VPIP-based (always active)
-        vpip = int(profile_value(profile, "vpip") or 0)
-        if hands > 0 and (vpip / hands) < vpip_threshold:
-            return True
-
-        # Signal 2: frequency-based (opt-in)
-        if use_frequency_signal:
-            fold_to_bet = profile_fold_to_bet_frequency(profile)
-            aggression = float(profile_aggression_frequency_merged(profile))
-            if (fold_to_bet >= fold_to_bet_threshold
-                    and aggression <= aggression_threshold):
-                return True
-
-    return False
 
 
 def observed_profiles(table, minimum_hands=25, active_only=False):
@@ -6398,14 +6159,10 @@ def sixmax_adjustment(table, my_seat, base) -> ActionDecision | None:
     for adjustment in (
         preflop_premium_pressure,  # from v003
         medium_pair_paired_board_fold_guard,  # 77 on paired boards (must run first)
-        two_pair_paired_board_overfold_guard,  # don't fold real two pair on paired boards (must run BEFORE paired_board_pot_control)
-        paired_board_pot_control,  # from v005 (after two_pair overfold guard)
+        paired_board_pot_control,  # from v005
         board_assisted_two_pair_guard,  # over-value leak: board-assisted two pair on paired board
         river_two_pair_raise_guard,  # river two-pair value-raise leak vs tight opponents
         preflop_min_raise_war_cap,  # cap preflop min-raise wars after 3 raise-backs
-        postflop_marginal_hand_war_cap,  # cap postflop raises with marginal hands (rank < 3)
-        postflop_air_double_barrel_guard,  # prevent double-barrelling with air
-        river_one_pair_over_call,  # fold one pair on river vs >50% pot bet
         paired_board_range_fold,  # from v007
         medium_hand_multiway_fold_guard,  # Patch B: tighten multi-way medium hands
         weak_pair_wet_board_pot_control,  # from v004 (was dropped in v2)
