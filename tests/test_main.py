@@ -329,6 +329,7 @@ class PokerBotTests(unittest.TestCase):
         self.assertEqual(body["tableId"], "table-1")
         self.assertEqual(body["action"], "raise")
         self.assertEqual(body["amount"], 150)
+        self.assertEqual(body["reasoning"], body["message"])
         self.assertTrue(set(body["message"]).issubset(set(PUBLIC_MESSAGE_ALPHABET)))
 
     def test_live_telemetry_records_decision(self):

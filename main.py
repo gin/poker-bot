@@ -193,11 +193,13 @@ def public_action_message(length=16):
     return "glhf"
 
 
-def action_request_body(_competition_id, table_id, action, amount=None):
+def action_request_body(_competition_id, table_id, action, amount=None, message=None):
+    msg = message if message is not None else public_action_message()
     body = {
         "tableId": table_id,
         "action": action,
-        "message": public_action_message(),
+        "message": "glhf",
+        "reasoning": msg,
     }
     if amount is not None:
         body["amount"] = amount
@@ -1382,7 +1384,7 @@ def process_single_table(table: dict, ctx: BotContext) -> None:
                 flush=True,
             )
 
-            body = action_request_body(ctx.competition_id, table_id, action, amount)
+            body = action_request_body(ctx.competition_id, table_id, action, amount, message=message)
             with span_action_result(action, amount, accepted=True) as action_span:
                 resp = ctx.api_fn("POST", "/texas/action", body)
 
