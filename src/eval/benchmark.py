@@ -554,7 +554,7 @@ def run_benchmark(
 
 
 def _signed_int(value):
-    return f"{value:+d}"
+    return f"{int(value):+d}"
 
 
 def _signed_float(value):

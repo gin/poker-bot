@@ -505,7 +505,7 @@ def format_opponent_label(opponent_names):
 
 
 def format_signed_number(value):
-    return f"{value:+d}"
+    return f"{int(value):+d}"
 
 
 def format_signed_float(value):
