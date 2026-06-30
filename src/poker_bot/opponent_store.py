@@ -178,6 +178,12 @@ def init_db(conn):
             facing_bet integer not null default 0,
             voluntary integer not null default 0,
             strategy_message text,
+            opp_vpip real not null default 0.5,
+            opp_pfr real not null default 0.3,
+            opp_fold_to_bet real not null default 0.5,
+            opp_aggro real not null default 0.5,
+            opp_showdown real not null default 0.3,
+            opp_hands_seen real not null default 0.0,
             hero_net_chips integer,
             won_hand integer,
             final_pot integer,
@@ -829,6 +835,9 @@ def record_decision_telemetry(
     button_seat = _button_seat_number(table)
     hero_position, hero_position_offset, seated_players = _hero_position(table, seat)
 
+    # Extract opponent profiling features for the active opponent
+    opp_features = _extract_telemetry_opp_features(table, seat)
+
     conn.execute(
         """
         insert into decision_telemetry(
@@ -841,13 +850,16 @@ def record_decision_telemetry(
             made_hand_rank, hand_bucket, board_wet, board_paired, board_high,
             top_pair_or_better, available_actions, chosen_action, chosen_amount,
             amount_ratio_pot, amount_ratio_stack, facing_bet, voluntary,
-            strategy_message
+            strategy_message,
+            opp_vpip, opp_pfr, opp_fold_to_bet, opp_aggro, opp_showdown,
+            opp_hands_seen
         )
         values (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?
         )
-        """,
+        """, 
         (
             run_id,
             hand_id,
@@ -889,10 +901,62 @@ def record_decision_telemetry(
             int(facing_bet),
             int(voluntary),
             message,
+            *opp_features,
         ),
     )
     if commit:
         conn.commit()
+
+
+def _extract_telemetry_opp_features(table, seat):
+    """Extract normalized opponent profile features for telemetry storage.
+
+    Returns a list of 6 float values:
+    [vpip, pfr, fold_to_bet, aggro, showdown_rate, hands_seen_norm]
+    """
+    profiles = table.get("opponentProfiles")
+    if not profiles:
+        return [0.5, 0.3, 0.5, 0.5, 0.3, 0.0]
+
+    hero_id = seat.get("agentId")
+    # Find the primary opponent (first non-folded, non-hero)
+    opp_profile = None
+    for other_seat in table.get("seats", []):
+        if other_seat.get("agentId") == hero_id:
+            continue
+        if other_seat.get("folded"):
+            continue
+        opp_id = other_seat.get("agentId")
+        if opp_id in profiles:
+            opp_profile = profiles[opp_id]
+            break
+
+    if opp_profile is None:
+        return [0.5, 0.3, 0.5, 0.5, 0.3, 0.0]
+
+    hands_seen = max(getattr(opp_profile, "hands_seen", 0), 1)
+    vpip_count = getattr(opp_profile, "vpip", 0)
+    pfr_count = getattr(opp_profile, "pfr", 0)
+    calls = getattr(opp_profile, "calls", 0)
+    bets = getattr(opp_profile, "bets", 0)
+    raises = getattr(opp_profile, "raises", 0)
+    fold_to_bet = getattr(opp_profile, "fold_to_bet", 0)
+    fold_opp = getattr(opp_profile, "opportunities_to_fold_to_bet", 0)
+    showdowns = getattr(opp_profile, "showdowns", 0)
+
+    # Normalize: VPIP can exceed hands_seen (multiple voluntary actions/hand)
+    vpip = min(vpip_count / (hands_seen * 2.5), 1.0)
+    pfr = min(pfr_count / (hands_seen * 2.5), 1.0)
+    fold_to_bet_rate = (
+        min(fold_to_bet / fold_opp, 1.0) if fold_opp > 0 else 0.5
+    )
+    bet_raise = bets + raises
+    total_actions = calls + bets + raises + getattr(opp_profile, "folds", 0)
+    aggro = min(bet_raise / total_actions, 1.0) if total_actions > 0 else 0.5
+    showdown_rate = min(showdowns / hands_seen, 1.0)
+    hands_norm = min(hands_seen / 500.0, 1.0)
+
+    return [vpip, pfr, fold_to_bet_rate, aggro, showdown_rate, hands_norm]
 
 
 def update_hand_telemetry_outcome(
