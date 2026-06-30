@@ -56,8 +56,8 @@ CRED_FILE = os.environ.get(
 )
 STRATEGY_CONFIG_FILE = os.path.expanduser("~/.arena-poker-strategy")
 STRATEGY_ENV_VAR = "POKER_BOT_STRATEGY"
-DEFAULT_AGENT_ID = "cmpzvsdsavulpc7zaxq9t2j6c"
-DEFAULT_STRATEGY_NAME = "flattened_v2"
+DEFAULT_AGENT_ID = ""
+DEFAULT_STRATEGY_NAME = "all_in_everytime"
 
 # Raw arena table payload dump (diagnostic). When enabled, the unmodified table
 # dict received from the arena is written to ./raw-data/ before any local
