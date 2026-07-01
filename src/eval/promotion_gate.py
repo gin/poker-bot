@@ -567,10 +567,12 @@ def run_promotion_gate(
     nn_mode=None,
     candidate_checkpoint=None,
     champion_checkpoint=None,
-    workers=0,
+    workers=None,
 ):
     started = time.perf_counter()
     config = load_promotion_config(config_path)
+    # Use config's workers if not explicitly provided; default to 0 (auto)
+    actual_workers = workers if workers is not None else config.workers
     champion_metadata = load_champion_metadata(champion_json)
     champion = champion_metadata.get("strategy")
     if not isinstance(champion, str) or not champion:
@@ -672,7 +674,7 @@ def run_promotion_gate(
                 baseline_strat=None,  # no baseline for candidate-only run
                 min_delta_bb_per_100=config.min_delta_bb_per_100,
                 runner=benchmark_runner,
-                workers=workers,
+                workers=actual_workers,
             )
 
         # Run baseline with champion's checkpoint
@@ -690,7 +692,7 @@ def run_promotion_gate(
                 baseline_strat=None,
                 min_delta_bb_per_100=config.min_delta_bb_per_100,
                 runner=benchmark_runner,
-                workers=workers,
+                workers=actual_workers,
             )
 
     # Combine candidate and baseline reports for gate evaluation
