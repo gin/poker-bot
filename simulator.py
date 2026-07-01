@@ -465,12 +465,14 @@ def run_betting_round(
                 street=street,
             )
 
-        _round_action_history.append({
-            "agentId": seat["agentId"],
-            "action": action,
-            "amount": amount,
-            "street": street,
-        })
+        _round_action_history.append(
+            {
+                "agentId": seat["agentId"],
+                "action": action,
+                "amount": amount,
+                "street": street,
+            }
+        )
 
         if action == "fold":
             if verbose:
@@ -686,12 +688,14 @@ def run_betting_round_multiway(
                 street=street,
             )
 
-        _round_action_history.append({
-            "agentId": seat["agentId"],
-            "action": action,
-            "amount": amount,
-            "street": street,
-        })
+        _round_action_history.append(
+            {
+                "agentId": seat["agentId"],
+                "action": action,
+                "amount": amount,
+                "street": street,
+            }
+        )
 
         if action == "fold":
             seat["folded"] = True

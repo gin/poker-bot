@@ -539,5 +539,7 @@ def train_value_network(
 
 
 if __name__ == "__main__":
-    train_policy_network(project_root="/home/luigi/github/gin/poker-bot")
-    train_value_network(project_root="/home/luigi/github/gin/poker-bot")
+    # Use relative path from this file's location
+    project_root = str(Path(__file__).resolve().parents[3])
+    train_policy_network(project_root=project_root)
+    train_value_network(project_root=project_root)

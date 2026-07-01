@@ -218,6 +218,12 @@ def init_db(conn):
             "hero_position_offset": "integer",
             "seated_players": "integer",
             "table_id": "text",
+            "opp_vpip": "real not null default 0.5",
+            "opp_pfr": "real not null default 0.3",
+            "opp_fold_to_bet": "real not null default 0.5",
+            "opp_aggro": "real not null default 0.5",
+            "opp_showdown": "real not null default 0.3",
+            "opp_hands_seen": "real not null default 0.0",
         },
     )
     # Indexes on columns added by _ensure_columns must be created AFTER
@@ -857,9 +863,9 @@ def record_decision_telemetry(
         values (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?
         )
-        """, 
+        """,
         (
             run_id,
             hand_id,
@@ -947,9 +953,7 @@ def _extract_telemetry_opp_features(table, seat):
     # Normalize: VPIP can exceed hands_seen (multiple voluntary actions/hand)
     vpip = min(vpip_count / (hands_seen * 2.5), 1.0)
     pfr = min(pfr_count / (hands_seen * 2.5), 1.0)
-    fold_to_bet_rate = (
-        min(fold_to_bet / fold_opp, 1.0) if fold_opp > 0 else 0.5
-    )
+    fold_to_bet_rate = min(fold_to_bet / fold_opp, 1.0) if fold_opp > 0 else 0.5
     bet_raise = bets + raises
     total_actions = calls + bets + raises + getattr(opp_profile, "folds", 0)
     aggro = min(bet_raise / total_actions, 1.0) if total_actions > 0 else 0.5

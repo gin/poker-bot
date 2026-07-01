@@ -1,9 +1,9 @@
 """Opponent profiling helpers."""
 
+import json
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-import json
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -215,7 +215,7 @@ def profile_from_mapping(agent_id, data):
         if isinstance(raw_fetched, datetime):
             # Already a datetime — assume UTC if naive.
             profile.api_fetched_at = (
-                raw_fetched.replace(tzinfo=timezone.utc)
+                raw_fetched.replace(tzinfo=UTC)
                 if raw_fetched.tzinfo is None
                 else raw_fetched
             )
@@ -226,9 +226,7 @@ def profile_from_mapping(agent_id, data):
                     normalized = text.replace("Z", "+00:00")
                     parsed = datetime.fromisoformat(normalized)
                     profile.api_fetched_at = (
-                        parsed.replace(tzinfo=timezone.utc)
-                        if parsed.tzinfo is None
-                        else parsed
+                        parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
                     )
                 except (ValueError, TypeError):
                     profile.api_fetched_at = None

@@ -16,6 +16,8 @@ cfr-train = "eval.cfr_train:main"
 neural-train = "eval.neural_train:main"
 population-selfplay = "eval.population_selfplay:main"
 promotion-gate = "eval.promotion_gate:main"
+selfimprove = "eval.self_improve:main"
+self-improve-bootstrap = "eval.bootstrap_self_improve:main"
 selfplay = "eval.selfplay:main"
 simulator = "eval.simulator_cli:main"
 

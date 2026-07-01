@@ -65,6 +65,8 @@ def _train(
     opponents: list[str],
     device: str = "cpu",
     workers: int = 0,
+    pool_size: int | None = None,
+    rotate_opponents: bool = True,
 ) -> bool:
     """Run PPO training. Returns True on success."""
     from poker_bot.neural.ppo_trainer import train_ppo
@@ -77,6 +79,8 @@ def _train(
             lr=lr,
             device=device,
             workers=workers,
+            pool_size=pool_size,
+            rotate_opponents=rotate_opponents,
         )
         return True
     except Exception as exc:
@@ -120,6 +124,7 @@ def _run_gate(candidate_checkpoint: str) -> bool:
             nn_mode="6max_active",
             candidate_checkpoint=candidate_checkpoint,
             champion_checkpoint=champion_ckpt,
+            workers=1,  # Use sequential mode to avoid multiprocessing deadlock
         )
         print(f"[gate] Passed: {report.passed}, Promoted: {report.promoted}")
         if report.passed:
@@ -141,6 +146,8 @@ def run_cycle(
     opponents: list[str],
     device: str = "cpu",
     workers: int = 0,
+    pool_size: int | None = None,
+    rotate_opponents: bool = True,
     dry_run: bool = False,
 ) -> dict:
     """Execute one full self-improvement cycle."""
@@ -171,6 +178,8 @@ def run_cycle(
             opponents=opponents,
             device=device,
             workers=workers,
+            pool_size=pool_size,
+            rotate_opponents=rotate_opponents,
         )
         result["trained"] = trained
         if not trained:
@@ -222,6 +231,8 @@ def run_loop(
     sleep_seconds: int,
     device: str = "cpu",
     workers: int = 0,
+    pool_size: int | None = None,
+    rotate_opponents: bool = True,
     max_cycles: int | None = None,
     dry_run: bool = False,
 ) -> None:
@@ -251,6 +262,8 @@ def run_loop(
             opponents=opponents,
             device=device,
             workers=workers,
+            pool_size=pool_size,
+            rotate_opponents=rotate_opponents,
             dry_run=dry_run,
         )
         _log_iteration(result)
@@ -314,6 +327,17 @@ def build_parser():
         help="Number of workers for self-play (0 = auto, default: %(default)s)",
     )
     parser.add_argument(
+        "--pool-size",
+        type=int,
+        default=None,
+        help="Limit opponent pool size for training (None = all, default: %(default)s)",
+    )
+    parser.add_argument(
+        "--no-rotate-opponents",
+        action="store_true",
+        help="Disable opponent pool rotation each iteration (default: rotate enabled)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Train and stage but skip the promotion gate",
@@ -336,6 +360,9 @@ def main(argv=None):
             lr=args.lr,
             opponents=args.opponents,
             device=args.device,
+            workers=args.workers,
+            pool_size=args.pool_size,
+            rotate_opponents=not args.no_rotate_opponents,
             dry_run=args.dry_run,
         )
         _log_iteration(result)
@@ -348,6 +375,9 @@ def main(argv=None):
         opponents=args.opponents,
         sleep_seconds=args.sleep,
         device=args.device,
+        workers=args.workers,
+        pool_size=args.pool_size,
+        rotate_opponents=not args.no_rotate_opponents,
         max_cycles=args.max_cycles,
         dry_run=args.dry_run,
     )
