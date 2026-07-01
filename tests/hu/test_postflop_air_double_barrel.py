@@ -8,14 +8,14 @@ The guard prevents double-barrelling with complete air (rank 0). First barrel
 is allowed, but second barrel with air is converted to check.
 """
 
-import pytest
-
 from poker_bot.strategies.s3base import choose_action
 
 HERO = "hero"
 
 
-def make_seat(seat_number, agent_id, hole_cards=None, *, folded=False, stack=2000, current_bet=0):
+def make_seat(
+    seat_number, agent_id, hole_cards=None, *, folded=False, stack=2000, current_bet=0
+):
     return {
         "seatNumber": seat_number,
         "agentId": agent_id,
@@ -73,8 +73,11 @@ def test_air_double_barrel_on_turn():
         {"agentId": "hero", "action": "bet", "street": "Flop"},
     ]
     action = action_for(
-        AIR_DOUBLE_BARREL["hole"], AIR_DOUBLE_BARREL["board"],
-        action_history=history, pot=50, street="Turn",
+        AIR_DOUBLE_BARREL["hole"],
+        AIR_DOUBLE_BARREL["board"],
+        action_history=history,
+        pot=50,
+        street="Turn",
     )
     assert action == "check", (
         f"air with prior flop bet should check on turn, got {action!r}"
@@ -90,8 +93,11 @@ def test_air_double_barrel_on_river():
         {"agentId": "villain", "action": "raise", "street": "Turn"},
     ]
     action = action_for(
-        AIR_DOUBLE_BARREL["hole"], AIR_DOUBLE_BARREL["board"],
-        action_history=history, pot=150, street="River",
+        AIR_DOUBLE_BARREL["hole"],
+        AIR_DOUBLE_BARREL["board"],
+        action_history=history,
+        pot=150,
+        street="River",
     )
     assert action == "check", (
         f"air with prior bets should check on river, got {action!r}"
@@ -102,8 +108,11 @@ def test_air_first_barrel_allowed():
     """Air on flop with no prior bets should be allowed to bet (first barrel)."""
     history = []
     action = action_for(
-        AIR_DOUBLE_BARREL["hole"], AIR_DOUBLE_BARREL["board"][:3],  # Flop only
-        action_history=history, pot=20, street="Flop",
+        AIR_DOUBLE_BARREL["hole"],
+        AIR_DOUBLE_BARREL["board"][:3],  # Flop only
+        action_history=history,
+        pot=20,
+        street="Flop",
     )
     # First barrel with air is allowed
     assert action == "bet", (
@@ -117,10 +126,11 @@ def test_two_pair_not_capped():
         {"agentId": "hero", "action": "bet", "street": "Flop"},
     ]
     action = action_for(
-        TWO_PAIR_TURN["hole"], TWO_PAIR_TURN["board"],
-        action_history=history, pot=50, street="Turn",
+        TWO_PAIR_TURN["hole"],
+        TWO_PAIR_TURN["board"],
+        action_history=history,
+        pot=50,
+        street="Turn",
     )
     # Two pair is not air — should be allowed to bet
-    assert action == "bet", (
-        f"two pair should not be capped, got {action!r}"
-    )
+    assert action == "bet", f"two pair should not be capped, got {action!r}"

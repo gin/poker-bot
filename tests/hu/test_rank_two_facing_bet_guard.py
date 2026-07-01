@@ -11,8 +11,6 @@ The guard must:
 - Allow rank-2 raises on the river (different street dynamics)
 """
 
-import pytest
-
 from poker_bot.strategies.hubase import choose_action, made_hand_rank
 
 HERO = "hero"
@@ -78,8 +76,12 @@ def test_rank2_facing_bet_flop_calls_instead_of_raise():
     """7C KC on 7S 3D KH board, facing a bet on flop → call, not raise."""
     assert made_hand_rank(["7C", "KC"], ["7S", "3D", "KH"]) == 2
     action = action_for(
-        ["7C", "KC"], ["7S", "3D", "KH"],
-        street="Flop", pot=80, call=40, facing_bet=True,
+        ["7C", "KC"],
+        ["7S", "3D", "KH"],
+        street="Flop",
+        pot=80,
+        call=40,
+        facing_bet=True,
     )
     assert action == "call", f"rank 2 facing bet on flop should call, got {action!r}"
 
@@ -88,8 +90,12 @@ def test_rank2_facing_bet_turn_calls_instead_of_raise():
     """9C 5D on 9H 5S 2C KH board, facing a bet on turn → call, not raise."""
     assert made_hand_rank(["9C", "5D"], ["9H", "5S", "2C", "KH"]) == 2
     action = action_for(
-        ["9C", "5D"], ["9H", "5S", "2C", "KH"],
-        street="Turn", pot=200, call=80, facing_bet=True,
+        ["9C", "5D"],
+        ["9H", "5S", "2C", "KH"],
+        street="Turn",
+        pot=200,
+        call=80,
+        facing_bet=True,
     )
     assert action == "call", f"rank 2 facing bet on turn should call, got {action!r}"
 
@@ -103,11 +109,17 @@ def test_rank2_not_facing_bet_flop_allows_raise():
     """
     assert made_hand_rank(["7C", "KC"], ["7S", "3D", "KH"]) == 2
     action = action_for(
-        ["7C", "KC"], ["7S", "3D", "KH"],
-        street="Flop", pot=80, call=0, facing_bet=False,
+        ["7C", "KC"],
+        ["7S", "3D", "KH"],
+        street="Flop",
+        pot=80,
+        call=0,
+        facing_bet=False,
     )
     # Not facing bet: either raise (base) or call (patch1 pot-control) is fine
-    assert action in ("raise", "call"), f"rank 2 not facing bet should not fold, got {action!r}"
+    assert action in ("raise", "call"), (
+        f"rank 2 not facing bet should not fold, got {action!r}"
+    )
 
 
 def test_rank1_facing_bet_not_affected():
@@ -115,20 +127,30 @@ def test_rank1_facing_bet_not_affected():
     rank = made_hand_rank(["AC", "5H"], ["AS", "7D", "3C"])
     assert rank == 1
     action = action_for(
-        ["AC", "5H"], ["AS", "7D", "3C"],
-        street="Flop", pot=80, call=40, facing_bet=True,
+        ["AC", "5H"],
+        ["AS", "7D", "3C"],
+        street="Flop",
+        pot=80,
+        call=40,
+        facing_bet=True,
     )
     # Rank 1 is not affected by the rank-2 guard
     # Base may fold (as the data shows), but guard shouldn't convert raise to call
-    assert action in ("fold", "call", "raise"), f"rank 1 should not be forced by rank-2 guard, got {action!r}"
+    assert action in ("fold", "call", "raise"), (
+        f"rank 1 should not be forced by rank-2 guard, got {action!r}"
+    )
 
 
 def test_rank3_facing_bet_allows_raise():
     """8C 8D on 8H KS 3D board (trips, rank 3), facing bet → raise allowed."""
     assert made_hand_rank(["8C", "8D"], ["8H", "KS", "3D"]) == 3
     action = action_for(
-        ["8C", "8D"], ["8H", "KS", "3D"],
-        street="Flop", pot=80, call=40, facing_bet=True,
+        ["8C", "8D"],
+        ["8H", "KS", "3D"],
+        street="Flop",
+        pot=80,
+        call=40,
+        facing_bet=True,
     )
     assert action == "raise", f"trips facing bet should raise, got {action!r}"
 
@@ -137,8 +159,14 @@ def test_rank2_facing_bet_river_not_affected():
     """7C KC on 7S 3D KH 2S 9C (river), facing bet → guard doesn't fire on river."""
     assert made_hand_rank(["7C", "KC"], ["7S", "3D", "KH", "2S", "9C"]) == 2
     action = action_for(
-        ["7C", "KC"], ["7S", "3D", "KH", "2S", "9C"],
-        street="River", pot=400, call=150, facing_bet=True,
+        ["7C", "KC"],
+        ["7S", "3D", "KH", "2S", "9C"],
+        street="River",
+        pot=400,
+        call=150,
+        facing_bet=True,
     )
     # Guard only covers Flop/Turn, so river raises are allowed
-    assert action in ("raise", "call", "fold"), f"rank 2 on river should not be affected, got {action!r}"
+    assert action in ("raise", "call", "fold"), (
+        f"rank 2 on river should not be affected, got {action!r}"
+    )

@@ -29,14 +29,34 @@ from poker_bot.strategies import s3base as strategy
 HERO = "hero"
 
 
-def _fragile_table(hole, board, *, street="River", pot=400, call=100,
-                   available=("fold", "call"), profiles=None):
+def _fragile_table(
+    hole,
+    board,
+    *,
+    street="River",
+    pot=400,
+    call=100,
+    available=("fold", "call"),
+    profiles=None,
+):
     """Minimal table/seat the strategy can act on (2-seat HU)."""
     seats = [
-        {"seatNumber": 1, "agentId": HERO, "holeCards": hole,
-         "folded": False, "stackChips": 5000, "currentBetChips": 0},
-        {"seatNumber": 2, "agentId": "villain", "holeCards": [],
-         "folded": False, "stackChips": 5000, "currentBetChips": call},
+        {
+            "seatNumber": 1,
+            "agentId": HERO,
+            "holeCards": hole,
+            "folded": False,
+            "stackChips": 5000,
+            "currentBetChips": 0,
+        },
+        {
+            "seatNumber": 2,
+            "agentId": "villain",
+            "holeCards": [],
+            "folded": False,
+            "stackChips": 5000,
+            "currentBetChips": call,
+        },
     ]
     t = {
         "street": street,
@@ -56,7 +76,9 @@ def _fragile_table(hole, board, *, street="River", pot=400, call=100,
 
 
 def _fragile_act(hole, board, **kw):
-    action, _amount, _reason = strategy.choose_action(*_fragile_table(hole, board, **kw))
+    action, _amount, _reason = strategy.choose_action(
+        *_fragile_table(hole, board, **kw)
+    )
     return action
 
 
@@ -69,10 +91,16 @@ def test_fragile_two_pair_on_paired_board_folds_vs_tight_opponent():
     houses. Folding is correct.
     """
     profiles = {"villain": {"hands_seen": 50, "vpip": 6, "pfr": 4}}
-    assert _fragile_act(
-        ["Qd", "Tc"], ["Jd", "Kc", "3d", "Js", "Kd"],
-        pot=403, call=134, profiles=profiles,
-    ) == "fold"
+    assert (
+        _fragile_act(
+            ["Qd", "Tc"],
+            ["Jd", "Kc", "3d", "Js", "Kd"],
+            pot=403,
+            call=134,
+            profiles=profiles,
+        )
+        == "fold"
+    )
 
 
 def test_fragile_two_pair_on_paired_board_continues_vs_loose_opponent():
@@ -84,24 +112,51 @@ def test_fragile_two_pair_on_paired_board_continues_vs_loose_opponent():
     with a call is reasonable.
     """
     profiles = {"villain": {"hands_seen": 50, "vpip": 23, "pfr": 15}}
-    assert _fragile_act(
-        ["6d", "6s"], ["Qs", "Kh", "Js", "4h", "4d"],
-        pot=416, call=145, profiles=profiles,
-    ) != "fold"
+    assert (
+        _fragile_act(
+            ["6d", "6s"],
+            ["Qs", "Kh", "Js", "4h", "4d"],
+            pot=416,
+            call=145,
+            profiles=profiles,
+        )
+        != "fold"
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # From test_observed_high_flush_.py
 # ════════════════════════════════════════════════════════════════════════════
 
-def _flush_table(hole, board, *, street="River", pot=400, call=100,
-                 available=("fold", "call"), profiles=None):
+
+def _flush_table(
+    hole,
+    board,
+    *,
+    street="River",
+    pot=400,
+    call=100,
+    available=("fold", "call"),
+    profiles=None,
+):
     """Minimal table/seat the strategy can act on (2-seat HU)."""
     seats = [
-        {"seatNumber": 1, "agentId": HERO, "holeCards": hole,
-         "folded": False, "stackChips": 5000, "currentBetChips": 0},
-        {"seatNumber": 2, "agentId": "villain", "holeCards": [],
-         "folded": False, "stackChips": 5000, "currentBetChips": call},
+        {
+            "seatNumber": 1,
+            "agentId": HERO,
+            "holeCards": hole,
+            "folded": False,
+            "stackChips": 5000,
+            "currentBetChips": 0,
+        },
+        {
+            "seatNumber": 2,
+            "agentId": "villain",
+            "holeCards": [],
+            "folded": False,
+            "stackChips": 5000,
+            "currentBetChips": call,
+        },
     ]
     t = {
         "street": street,
@@ -135,23 +190,47 @@ def test_k_high_flush_on_paired_board_folds_vs_tight_opponent():
     """
     profiles = {"villain": {"hands_seen": 95, "vpip": 15, "pfr": 1}}
     # Adjust to not fold if hero has A or K flush
-    assert _flush_act(
-        ["Jd", "Kh"], ["9h", "9d", "3h", "8h", "2h"],
-        pot=124, call=70, profiles=profiles,
-    ) != "fold"
-    assert _flush_act(
-        ["Jd", "Ah"], ["9h", "9d", "3h", "8h", "2h"],
-        pot=124, call=70, profiles=profiles,
-    ) != "fold"
+    assert (
+        _flush_act(
+            ["Jd", "Kh"],
+            ["9h", "9d", "3h", "8h", "2h"],
+            pot=124,
+            call=70,
+            profiles=profiles,
+        )
+        != "fold"
+    )
+    assert (
+        _flush_act(
+            ["Jd", "Ah"],
+            ["9h", "9d", "3h", "8h", "2h"],
+            pot=124,
+            call=70,
+            profiles=profiles,
+        )
+        != "fold"
+    )
 
-    assert _flush_act(
-        ["Jd", "Qh"], ["9h", "9d", "3h", "8h", "2h"],
-        pot=124, call=70, profiles=profiles,
-    ) == "fold"
-    assert _flush_act(
-        ["Jd", "Jh"], ["9h", "9d", "3h", "8h", "2h"],
-        pot=124, call=70, profiles=profiles,
-    ) == "fold"
+    assert (
+        _flush_act(
+            ["Jd", "Qh"],
+            ["9h", "9d", "3h", "8h", "2h"],
+            pot=124,
+            call=70,
+            profiles=profiles,
+        )
+        == "fold"
+    )
+    assert (
+        _flush_act(
+            ["Jd", "Jh"],
+            ["9h", "9d", "3h", "8h", "2h"],
+            pot=124,
+            call=70,
+            profiles=profiles,
+        )
+        == "fold"
+    )
 
 
 def test_k_high_flush_on_paired_board_continues_vs_loose_opponent():
@@ -162,10 +241,16 @@ def test_k_high_flush_on_paired_board_continues_vs_loose_opponent():
     flush should continue rather than auto-fold to the flush guard.
     """
     profiles = {"villain": {"hands_seen": 50, "vpip": 45, "pfr": 30}}
-    assert _flush_act(
-        ["Jd", "Kh"], ["9h", "9d", "3h", "8h", "2h"],
-        pot=124, call=35, profiles=profiles,
-    ) != "fold"
+    assert (
+        _flush_act(
+            ["Jd", "Kh"],
+            ["9h", "9d", "3h", "8h", "2h"],
+            pot=124,
+            call=35,
+            profiles=profiles,
+        )
+        != "fold"
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -296,6 +381,7 @@ def test_medium_pair_does_not_thin_value_bet_high_card_boards(hole, board):
 # From test_telemetry_cmqlqloirlrqwf6jt9qg7xwzk.py
 # ════════════════════════════════════════════════════════════════════════════
 
+
 def _cmqlqlo_make_turn_table(opponent_vpip=38, opponent_pfr=23):
     """Build the 6d Jd on 4s Tc Th 2c scenario from telemetry."""
     return {
@@ -370,14 +456,21 @@ def test_middle_pair_on_paired_board_checks_vs_tight_turn():
             "folds": 99,
         }
     }
-    assert _cmqlqlo_act(
-        ["6d", "Jd"], ["4s", "Tc", "Th", "2c"], pot=157, profiles=profiles,
-    ) == "check"
+    assert (
+        _cmqlqlo_act(
+            ["6d", "Jd"],
+            ["4s", "Tc", "Th", "2c"],
+            pot=157,
+            profiles=profiles,
+        )
+        == "check"
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # From test_telemetry_s2v012_overcalling.py
 # ════════════════════════════════════════════════════════════════════════════
+
 
 def _s2v012_make_turn_table(opponent_vpip=16, opponent_pfr=14):
     """Build the 5c Ks on As 2s 5s Kc scenario from telemetry."""
@@ -446,10 +539,16 @@ def test_two_pair_on_paired_board_folds_vs_tight_aggressive_turn_jam():
     remaining stack against a TAG's first-ever all-in.
     """
     profiles = {"villain": {"hands_seen": 127, "vpip": 16, "pfr": 14}}
-    assert _s2v012_act(
-        ["5c", "Ks"], ["As", "2s", "5s", "Kc"],
-        pot=3122, call=2490, profiles=profiles,
-    ) == "fold"
+    assert (
+        _s2v012_act(
+            ["5c", "Ks"],
+            ["As", "2s", "5s", "Kc"],
+            pot=3122,
+            call=2490,
+            profiles=profiles,
+        )
+        == "fold"
+    )
 
 
 def test_two_pair_on_paired_board_continues_vs_loose_aggressive_turn_jam():
@@ -460,10 +559,16 @@ def test_two_pair_on_paired_board_continues_vs_loose_aggressive_turn_jam():
     and thinner value, so two pair should continue rather than auto-fold.
     """
     profiles = {"villain": {"hands_seen": 127, "vpip": 43, "pfr": 23}}
-    assert _s2v012_act(
-        ["5c", "Ks"], ["As", "2s", "5s", "Kc"],
-        pot=3122, call=2490, profiles=profiles,
-    ) != "fold"
+    assert (
+        _s2v012_act(
+            ["5c", "Ks"],
+            ["As", "2s", "5s", "Kc"],
+            pot=3122,
+            call=2490,
+            profiles=profiles,
+        )
+        != "fold"
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════

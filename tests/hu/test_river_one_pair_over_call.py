@@ -16,7 +16,9 @@ from poker_bot.strategies.s3base import choose_action
 HERO = "hero"
 
 
-def make_seat(seat_number, agent_id, hole_cards=None, *, folded=False, stack=2000, current_bet=0):
+def make_seat(
+    seat_number, agent_id, hole_cards=None, *, folded=False, stack=2000, current_bet=0
+):
     return {
         "seatNumber": seat_number,
         "agentId": agent_id,
@@ -30,8 +32,10 @@ def make_seat(seat_number, agent_id, hole_cards=None, *, folded=False, stack=200
 
 def make_table(hole, board, *, call_amount=50, pot=150):
     """Build a river table where hero has one pair and faces a bet."""
-    seats = [make_seat(1, HERO, hole, current_bet=0),
-             make_seat(2, "villain", current_bet=call_amount)]
+    seats = [
+        make_seat(1, HERO, hole, current_bet=0),
+        make_seat(2, "villain", current_bet=call_amount),
+    ]
     table = {
         "street": "River",
         "boardCards": board,

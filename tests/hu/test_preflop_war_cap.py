@@ -53,7 +53,11 @@ def make_table(
         history.append({"agentId": "villain", "action": "raise", "street": "Preflop"})
         history.append({"agentId": HERO, "action": "raise", "street": "Preflop"})
 
-    available = ["fold", "call", "raise", "all-in"] if facing_bet > 0 else ["fold", "check", "bet", "all-in"]
+    available = (
+        ["fold", "call", "raise", "all-in"]
+        if facing_bet > 0
+        else ["fold", "check", "bet", "all-in"]
+    )
 
     table = {
         "street": "Preflop",

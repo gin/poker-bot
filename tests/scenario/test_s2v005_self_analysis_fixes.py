@@ -15,7 +15,6 @@ Reference hands from telemetry-luigi-tournament.sqlite:
 
 from poker_bot.strategies import s2v005_self_patch as strategy
 
-
 # ════════════════════════════════════════════════════════════════════════════
 # Test fixtures
 # ════════════════════════════════════════════════════════════════════════════
@@ -623,7 +622,7 @@ def test_unprofiled_field_widens_utg_kts_open():
     base = ("fold", None, "base")
     result = strategy.preflop_open_raise(table, hero, base)
     assert result is not None, (
-        f"Expected raise for KTs UTG vs unprofiled field, got None"
+        "Expected raise for KTs UTG vs unprofiled field, got None"
     )
     assert result[0] == "raise", f"Expected raise, got {result[0]}"
 

@@ -15,8 +15,6 @@ These tests lock in the two major leaks found in telemetry-luigi-tournament.sqli
 The strategy under test is s2base.py.
 """
 
-import pytest
-
 from poker_bot.strategies import s2base as strategy
 
 

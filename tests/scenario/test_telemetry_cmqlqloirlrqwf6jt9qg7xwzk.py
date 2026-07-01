@@ -89,4 +89,7 @@ def test_middle_pair_on_paired_board_checks_vs_tight_turn():
             "folds": 99,
         }
     }
-    assert act(["6d", "Jd"], ["4s", "Tc", "Th", "2c"], pot=157, profiles=profiles) == "check"
+    assert (
+        act(["6d", "Jd"], ["4s", "Tc", "Th", "2c"], pot=157, profiles=profiles)
+        == "check"
+    )

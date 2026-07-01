@@ -78,11 +78,11 @@ def action_for(hole, board, **kwargs):
 # T7 on Q-7-7: made_hand_rank == 3 (three sevens), but hero doesn't hold a 7.
 # Any opponent with a pocket pair has trips; any Q has top pair.
 PAIRED_BOARD_DOMINATED_TRIPS_CASES = (
-    (["Tc", "7h"], ["Qh", "7s", "7d"]),      # tens on Q-7-7 (trips on board)
-    (["9d", "8c"], ["Jh", "8s", "8d"]),      # nines on J-8-8 (trips on board)
-    (["Kh", "5s"], ["Ah", "5d", "5c"]),      # kings on A-5-5 (trips on board)
-    (["Qd", "3h"], ["9s", "3c", "3d"]),      # queens on 9-3-3 (trips on board)
-    (["Ac", "Jh"], ["Ks", "Jd", "Jc"]),      # aces on K-J-J (trips on board)
+    (["Tc", "7h"], ["Qh", "7s", "7d"]),  # tens on Q-7-7 (trips on board)
+    (["9d", "8c"], ["Jh", "8s", "8d"]),  # nines on J-8-8 (trips on board)
+    (["Kh", "5s"], ["Ah", "5d", "5c"]),  # kings on A-5-5 (trips on board)
+    (["Qd", "3h"], ["9s", "3c", "3d"]),  # queens on 9-3-3 (trips on board)
+    (["Ac", "Jh"], ["Ks", "Jd", "Jc"]),  # aces on K-J-J (trips on board)
 )
 
 
@@ -90,16 +90,16 @@ PAIRED_BOARD_DOMINATED_TRIPS_CASES = (
 
 # Real trips on a paired board — hero holds one of the trips cards.
 PAIRED_BOARD_REAL_TRIPS_CASES = (
-    (["7h", "7c"], ["Qh", "7s", "7d"]),      # pocket sevens on Q-7-7 = quads
-    (["8d", "8c"], ["Jh", "8s", "8h"]),      # pocket eights on J-8-8 = quads
-    (["Qd", "7c"], ["Qh", "7s", "7d"]),      # Qc makes real trips (Q-Q-Q)
+    (["7h", "7c"], ["Qh", "7s", "7d"]),  # pocket sevens on Q-7-7 = quads
+    (["8d", "8c"], ["Jh", "8s", "8h"]),  # pocket eights on J-8-8 = quads
+    (["Qd", "7c"], ["Qh", "7s", "7d"]),  # Qc makes real trips (Q-Q-Q)
 )
 
 # Dry board, one pair — no paired board, no suppression.
 DRY_BOARD_ONE_PAIR_CASES = (
-    (["Ac", "5h"], ["Kd", "9s", "3c"]),      # A-high one pair on dry board
-    (["Qh", "Jc"], ["Td", "7s", "2d"]),      # Q-high one pair on dry board
-    (["Kh", "8d"], ["Qc", "6s", "3h"]),      # K-high one pair on dry board
+    (["Ac", "5h"], ["Kd", "9s", "3c"]),  # A-high one pair on dry board
+    (["Qh", "Jc"], ["Td", "7s", "2d"]),  # Q-high one pair on dry board
+    (["Kh", "8d"], ["Qc", "6s", "3h"]),  # K-high one pair on dry board
 )
 
 
@@ -107,9 +107,7 @@ DRY_BOARD_ONE_PAIR_CASES = (
 def test_board_dominated_trips_does_not_raise(hole, board):
     """When trips are fully on board, suppress the value raise, check instead."""
     action = action_for(hole, board)
-    assert action != "raise", (
-        f"board-dominated trips should not raise, got {action!r}"
-    )
+    assert action != "raise", f"board-dominated trips should not raise, got {action!r}"
 
 
 @pytest.mark.parametrize("hole,board", PAIRED_BOARD_REAL_TRIPS_CASES)
@@ -129,8 +127,7 @@ def test_real_trips_on_paired_board_not_suppressed_by_new_guard(hole, board):
     base = ("raise", 40, "base wants to raise")
     result = board_dominated_trips_guard(table, hero, base)
     assert result is None, (
-        f"board_dominated_trips_guard should NOT fire for real trips, "
-        f"got {result!r}"
+        f"board_dominated_trips_guard should NOT fire for real trips, got {result!r}"
     )
 
 

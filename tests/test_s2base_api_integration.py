@@ -19,7 +19,6 @@ strategy must:
 """
 
 from poker_bot.opponents import OpponentProfile
-from poker_bot.strategies import s2base
 from poker_bot.strategies.s2base import (
     opponent_exploit_context,
     profile_aggression_frequency_merged,

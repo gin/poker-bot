@@ -3,8 +3,6 @@
 Prevents folding with AKs preflop and when royal flush is possible postflop.
 """
 
-import pytest
-
 from poker_bot.strategies.s4base import choose_action
 
 HERO = "hero"
@@ -37,7 +35,11 @@ def make_table(
     seats.append(make_seat(2, "villain", stack=hero_stack))
 
     if available is None:
-        available = ["fold", "call", "raise", "all-in"] if facing_bet > 0 else ["fold", "check", "bet", "all-in"]
+        available = (
+            ["fold", "call", "raise", "all-in"]
+            if facing_bet > 0
+            else ["fold", "check", "bet", "all-in"]
+        )
 
     table = {
         "street": street,
@@ -51,7 +53,10 @@ def make_table(
             "availableActions": available,
             "callAmount": facing_bet,
             "callChips": facing_bet,
-            "raiseRange": {"min": facing_bet * 2 if facing_bet > 0 else 40, "max": hero_stack},
+            "raiseRange": {
+                "min": facing_bet * 2 if facing_bet > 0 else 40,
+                "max": hero_stack,
+            },
             "betRange": {"min": 0, "max": hero_stack},
         },
     }
@@ -64,6 +69,7 @@ def action_for(hole, board, **kwargs):
 
 
 # ── Preflop: AKs should not fold ────────────────────────────────────────
+
 
 def test_aks_preflop_facing_bet_calls():
     """AKs preflop facing a bet should call, not fold."""
@@ -104,10 +110,13 @@ def test_non_aks_preflop_can_fold():
     )
     action, _amount, message = result
     # QS/JT is not AKs — guard should not fire, fold is allowed
-    assert action == "fold" or action is not None, f"Non-AKs should be able to fold, got {action!r}"
+    assert action == "fold" or action is not None, (
+        f"Non-AKs should be able to fold, got {action!r}"
+    )
 
 
 # ── Postflop: royal flush possible → never fold ────────────────────────
+
 
 def test_royal_flush_possible_flop_does_not_fold():
     """With royal flush possible on flop, should not fold."""
@@ -121,7 +130,9 @@ def test_royal_flush_possible_flop_does_not_fold():
         pot=100,
     )
     action, _amount, message = result
-    assert action != "fold", f"Royal flush made should not fold, got {action!r}: {message}"
+    assert action != "fold", (
+        f"Royal flush made should not fold, got {action!r}: {message}"
+    )
 
 
 def test_royal_flush_draw_flop_does_not_fold():
@@ -134,7 +145,9 @@ def test_royal_flush_draw_flop_does_not_fold():
         pot=100,
     )
     action, _amount, message = result
-    assert action != "fold", f"Royal flush draw should not fold, got {action!r}: {message}"
+    assert action != "fold", (
+        f"Royal flush draw should not fold, got {action!r}: {message}"
+    )
 
 
 def test_royal_flush_draw_turn_does_not_fold():
@@ -147,10 +160,13 @@ def test_royal_flush_draw_turn_does_not_fold():
         pot=200,
     )
     action, _amount, message = result
-    assert action != "fold", f"Royal flush draw on turn should not fold, got {action!r}: {message}"
+    assert action != "fold", (
+        f"Royal flush draw on turn should not fold, got {action!r}: {message}"
+    )
 
 
 # ── No royal flush chance: guard exits, fold allowed ───────────────────
+
 
 def test_no_royal_flush_chance_folds():
     """Without royal flush chance, fold should be allowed."""
@@ -164,7 +180,9 @@ def test_no_royal_flush_chance_folds():
     )
     action, _amount, message = result
     # No royal flush chance — guard exits, normal fold allowed
-    assert action == "fold" or action is not None, f"Without royal chance, fold is valid, got {action!r}"
+    assert action == "fold" or action is not None, (
+        f"Without royal chance, fold is valid, got {action!r}"
+    )
 
 
 def test_no_royal_flush_chance_river_folds():
@@ -179,10 +197,13 @@ def test_no_royal_flush_chance_river_folds():
     )
     action, _amount, message = result
     # Only 2 royal cards (A, K) — need 3 more but 0 board slots left → impossible
-    assert action == "fold" or action is not None, f"Without royal chance on river, fold is valid, got {action!r}"
+    assert action == "fold" or action is not None, (
+        f"Without royal chance on river, fold is valid, got {action!r}"
+    )
 
 
 # ── Check preferred over call when available ───────────────────────────
+
 
 def test_royal_flush_possible_preflop_checks_when_free():
     """AKs preflop with no bet should check (not call)."""
@@ -209,4 +230,6 @@ def test_royal_flush_possible_postflop_checks_when_free():
         available=["fold", "check", "bet", "all-in"],
     )
     action, _amount, message = result
-    assert action == "check", f"Royal possible + no bet should check, got {action!r}: {message}"
+    assert action == "check", (
+        f"Royal possible + no bet should check, got {action!r}: {message}"
+    )

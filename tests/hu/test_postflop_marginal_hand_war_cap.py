@@ -15,14 +15,14 @@ Tuning history:
 Reference: PLAN_FIX_POSTFLOP_WAR.md
 """
 
-import pytest
-
 from poker_bot.strategies.s3base import choose_action
 
 HERO = "hero"
 
 
-def make_seat(seat_number, agent_id, hole_cards=None, *, folded=False, stack=2000, current_bet=0):
+def make_seat(
+    seat_number, agent_id, hole_cards=None, *, folded=False, stack=2000, current_bet=0
+):
     return {
         "seatNumber": seat_number,
         "agentId": agent_id,
@@ -93,12 +93,13 @@ def test_two_pair_cap_calls_after_3_raises():
         {"agentId": "villain", "action": "raise", "street": "Turn"},
     ]
     action = action_for(
-        TWO_PAIR_TURN["hole"], TWO_PAIR_TURN["board"],
-        facing_bet=50, action_history=history, pot=200,
+        TWO_PAIR_TURN["hole"],
+        TWO_PAIR_TURN["board"],
+        facing_bet=50,
+        action_history=history,
+        pot=200,
     )
-    assert action == "call", (
-        f"two pair with 3 prior raises should call, got {action!r}"
-    )
+    assert action == "call", f"two pair with 3 prior raises should call, got {action!r}"
 
 
 def test_two_pair_still_raises_after_2_raises():
@@ -111,8 +112,11 @@ def test_two_pair_still_raises_after_2_raises():
         {"agentId": "villain", "action": "raise", "street": "Turn"},
     ]
     action = action_for(
-        TWO_PAIR_TURN["hole"], TWO_PAIR_TURN["board"],
-        facing_bet=50, action_history=history, pot=200,
+        TWO_PAIR_TURN["hole"],
+        TWO_PAIR_TURN["board"],
+        facing_bet=50,
+        action_history=history,
+        pot=200,
     )
     # Only 2 prior raises — guard should NOT fire (threshold is 3)
     assert action == "raise", (
@@ -131,13 +135,14 @@ def test_set_can_still_raise_after_3_raises():
         {"agentId": "villain", "action": "raise", "street": "Turn"},
     ]
     action = action_for(
-        SET_TURN["hole"], SET_TURN["board"],
-        facing_bet=50, action_history=history, pot=200,
+        SET_TURN["hole"],
+        SET_TURN["board"],
+        facing_bet=50,
+        action_history=history,
+        pot=200,
     )
     # Set should be allowed to raise — NOT capped
-    assert action == "raise", (
-        f"set with 3 prior raises should raise, got {action!r}"
-    )
+    assert action == "raise", f"set with 3 prior raises should raise, got {action!r}"
 
 
 def test_two_pair_first_raise_allowed():
@@ -147,8 +152,11 @@ def test_two_pair_first_raise_allowed():
         {"agentId": "villain", "action": "raise", "street": "Turn"},
     ]
     action = action_for(
-        TWO_PAIR_TURN["hole"], TWO_PAIR_TURN["board"],
-        facing_bet=50, action_history=history, pot=200,
+        TWO_PAIR_TURN["hole"],
+        TWO_PAIR_TURN["board"],
+        facing_bet=50,
+        action_history=history,
+        pot=200,
     )
     # Only 1 prior raise — guard should NOT fire
     assert action == "raise", (

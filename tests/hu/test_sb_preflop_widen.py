@@ -8,8 +8,6 @@ Fix: add a score-based SB defend path that fires when score >= 35
 and pot odds <= 40%, without requiring opponent profile.
 """
 
-import pytest
-
 from poker_bot.strategies.hubase import choose_action, preflop_score
 
 HERO = "hero"
@@ -69,6 +67,7 @@ def action_for(hole, **kwargs):
 # SB with suited hand at score 35-39 facing raise → call
 # ────────────────────────────────────────────────────────────────────
 
+
 def test_sb_suited_score36_facing_raise_calls():
     """5C 6C (score 36) from SB facing a raise → call."""
     assert preflop_score(["5C", "6C"]) == 36
@@ -101,6 +100,7 @@ def test_sb_suited_score37_facing_raise_calls():
 # SB with junk below threshold → fold
 # ────────────────────────────────────────────────────────────────────
 
+
 def test_sb_junk_score30_facing_raise_folds():
     """2C 7D (score ~30) from SB facing a raise → fold."""
     score = preflop_score(["2C", "7D"])
@@ -113,6 +113,7 @@ def test_sb_junk_score30_facing_raise_folds():
 # SB with suited hand facing expensive raise → fold
 # ────────────────────────────────────────────────────────────────────
 
+
 def test_sb_suited_score36_facing_expensive_raise_folds():
     """5C 6C (score 36) from SB facing 50% pot raise → fold."""
     # Large raise: pot=10, call=10 → 50% pot odds > 40% threshold
@@ -123,6 +124,7 @@ def test_sb_suited_score36_facing_expensive_raise_folds():
 # ────────────────────────────────────────────────────────────────────
 # SB with suited hand at score 40+ → call (already worked before)
 # ────────────────────────────────────────────────────────────────────
+
 
 def test_sb_suited_score40_facing_raise_calls():
     """TC 9C (score 52 actually, but let's use a real score 40 hand)."""

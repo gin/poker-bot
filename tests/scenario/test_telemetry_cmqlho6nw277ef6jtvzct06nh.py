@@ -15,7 +15,6 @@ import pytest
 
 from poker_bot.strategies.s2base import choose_action
 
-
 HERO = "hero"
 DEFAULT_AVAILABLE = ("fold", "check", "bet", "all-in")
 

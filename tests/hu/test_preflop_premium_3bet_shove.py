@@ -49,7 +49,11 @@ def make_table(
         history.append({"agentId": HERO, "action": "raise", "street": "Preflop"})
 
     if available is None:
-        available = ["fold", "call", "raise", "all-in"] if facing_bet > 0 else ["fold", "check", "bet", "all-in"]
+        available = (
+            ["fold", "call", "raise", "all-in"]
+            if facing_bet > 0
+            else ["fold", "check", "bet", "all-in"]
+        )
 
     table = {
         "street": "Preflop",
@@ -77,13 +81,17 @@ def action_for(hole, **kwargs):
 
 # ── Premium hands: should shove all-in after 3+ raise-backs ─────────────
 
-@pytest.mark.parametrize("hole", [
-    ["AS", "AH"],  # AA
-    ["KS", "KH"],  # KK
-    ["QS", "QH"],  # QQ
-    ["AS", "KS"],  # AKs
-    ["KS", "QS"],  # KQs
-])
+
+@pytest.mark.parametrize(
+    "hole",
+    [
+        ["AS", "AH"],  # AA
+        ["KS", "KH"],  # KK
+        ["QS", "QH"],  # QQ
+        ["AS", "KS"],  # AKs
+        ["KS", "QS"],  # KQs
+    ],
+)
 def test_premium_shoves_after_3_raises(hole):
     """Premium hands go all-in after 3+ preflop raise-backs."""
     result = action_for(
@@ -98,13 +106,16 @@ def test_premium_shoves_after_3_raises(hole):
     assert amount == 1800, f"All-in amount should be full stack (1800), got {amount}"
 
 
-@pytest.mark.parametrize("hole", [
-    ["AS", "AH"],  # AA
-    ["KS", "KH"],  # KK
-    ["QS", "QH"],  # QQ
-    ["AS", "KS"],  # AKs
-    ["KS", "QS"],  # KQs
-])
+@pytest.mark.parametrize(
+    "hole",
+    [
+        ["AS", "AH"],  # AA
+        ["KS", "KH"],  # KK
+        ["QS", "QH"],  # QQ
+        ["AS", "KS"],  # AKs
+        ["KS", "QS"],  # KQs
+    ],
+)
 def test_premium_shoves_after_4_raises(hole):
     """Premium hands go all-in after 4+ preflop raise-backs too."""
     result = action_for(
@@ -121,13 +132,17 @@ def test_premium_shoves_after_4_raises(hole):
 
 # ── Non-premium hands: should NOT shove, fall through to war cap ─────────
 
-@pytest.mark.parametrize("hole", [
-    ["JS", "JH"],  # JJ
-    ["TS", "TH"],  # TT
-    ["AS", "KD"],  # AKo
-    ["AS", "QD"],  # AQs
-    ["9S", "9H"],  # 99
-])
+
+@pytest.mark.parametrize(
+    "hole",
+    [
+        ["JS", "JH"],  # JJ
+        ["TS", "TH"],  # TT
+        ["AS", "KD"],  # AKo
+        ["AS", "QD"],  # AQs
+        ["9S", "9H"],  # 99
+    ],
+)
 def test_non_premium_does_not_shove(hole):
     """Non-premium hands should not go all-in after 3+ raise-backs."""
     result = action_for(
@@ -138,10 +153,13 @@ def test_non_premium_does_not_shove(hole):
         pot=300,
     )
     action, _amount, message = result
-    assert action != "all-in", f"Non-premium should not shove, got {action!r}: {message}"
+    assert action != "all-in", (
+        f"Non-premium should not shove, got {action!r}: {message}"
+    )
 
 
 # ── Before 3 raises: guard does not fire ────────────────────────────────
+
 
 @pytest.mark.parametrize("raise_count", [0, 1, 2])
 def test_guard_does_not_fire_early(raise_count):
@@ -163,6 +181,7 @@ def test_guard_does_not_fire_early(raise_count):
 
 
 # ── All-in not available: fall back to raise=stack ──────────────────────
+
 
 def test_premium_shove_fallback_to_raise():
     """If all-in is not available but raise is, raise full stack."""

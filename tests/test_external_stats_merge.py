@@ -15,7 +15,6 @@ import datetime as dt
 from poker_bot.opponent_store import (
     API_STALE_DAYS,
     LOCAL_MIN_HANDS,
-    _parse_fetched_at,
     apply_external_stats_merge,
     connect,
     increment_hand_seen,

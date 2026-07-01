@@ -70,6 +70,7 @@ def act(hero_cards, board_cards, pot, call, profiles=None):
 
 # ── Over-calling large bets with medium-strength hands ────────────────────────
 
+
 def test_two_pair_on_paired_board_folds_vs_tight_aggressive_turn_jam():
     """5c Ks on As 2s 5s Kc vs TAG opponent Turn jam → fold.
 
@@ -81,7 +82,16 @@ def test_two_pair_on_paired_board_folds_vs_tight_aggressive_turn_jam():
     remaining stack against a TAG's first-ever all-in.
     """
     profiles = {"villain": {"hands_seen": 127, "vpip": 16, "pfr": 14}}
-    assert act(["5c", "Ks"], ["As", "2s", "5s", "Kc"], pot=3122, call=2490, profiles=profiles) == "fold"
+    assert (
+        act(
+            ["5c", "Ks"],
+            ["As", "2s", "5s", "Kc"],
+            pot=3122,
+            call=2490,
+            profiles=profiles,
+        )
+        == "fold"
+    )
 
 
 def test_two_pair_on_paired_board_continues_vs_loose_aggressive_turn_jam():
@@ -92,4 +102,13 @@ def test_two_pair_on_paired_board_continues_vs_loose_aggressive_turn_jam():
     and thinner value, so two pair should continue rather than auto-fold.
     """
     profiles = {"villain": {"hands_seen": 127, "vpip": 43, "pfr": 23}}
-    assert act(["5c", "Ks"], ["As", "2s", "5s", "Kc"], pot=3122, call=2490, profiles=profiles) != "fold"
+    assert (
+        act(
+            ["5c", "Ks"],
+            ["As", "2s", "5s", "Kc"],
+            pot=3122,
+            call=2490,
+            profiles=profiles,
+        )
+        != "fold"
+    )

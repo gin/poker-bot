@@ -99,9 +99,7 @@ def action_for(hole, board, **kwargs):
 
 
 def assert_does_not_raise(action):
-    assert action != "raise", (
-        f"river two pair over-valued: chose {action!r}"
-    )
+    assert action != "raise", f"river two pair over-valued: chose {action!r}"
 
 
 def assert_does_not_value_bet(action):
@@ -125,7 +123,8 @@ def test_river_two_pair_does_not_raise_vs_tight(hole, board):
     sets, straights, and flushes. Two pair is a bluff-catcher at best.
     """
     action = action_for(
-        hole, board,
+        hole,
+        board,
         available=CHECK_BET_AVAILABLE,
         profiles=TIGHT_OPPONENT,
     )
@@ -140,8 +139,10 @@ def test_river_two_pair_calls_vs_tight_facing_bet(hole, board):
     re-raising is -EV against a tight range.
     """
     action = action_for(
-        hole, board,
-        pot=300, call=100,
+        hole,
+        board,
+        pot=300,
+        call=100,
         profiles=TIGHT_OPPONENT,
     )
     assert_does_not_raise(action)
@@ -155,7 +156,8 @@ def test_river_two_pair_still_raises_vs_loose(hole, board):
     one-pair hands and bluffs. Two pair can extract value.
     """
     action = action_for(
-        hole, board,
+        hole,
+        board,
         available=CHECK_BET_AVAILABLE,
         profiles=LOOSE_OPPONENT,
     )

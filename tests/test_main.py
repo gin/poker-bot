@@ -17,7 +17,6 @@ from main import (
     load_strategy_name,
     make_api_client,
     normalize_live_table_metadata,
-    public_action_message,
     record_join_attempt,
     record_live_decision,
     record_live_observed_actions,

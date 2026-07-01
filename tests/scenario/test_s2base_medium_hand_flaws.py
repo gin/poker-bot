@@ -41,19 +41,21 @@ BIG_BLIND = 40
 SET_MINE_FOLD_CASES = (
     # Reference: cmqh6gkmc4eb7m0toatxdecfq — 7h7d HJ called 19% 3-bet, lost
     # 1459 chips. Set-mining needs ≤11.8% of stack (8:1 odds).
-    (["4c", "4d"], 479, 2484, "fold",
-     "4c4d HJ vs 19% 3-bet (479/2484) → fold"),
-    (["7h", "7d"], 479, 2484, "fold",
-     "7h7d HJ vs 19% 3-bet (479/2484) → fold"),
+    (["4c", "4d"], 479, 2484, "fold", "4c4d HJ vs 19% 3-bet (479/2484) → fold"),
+    (["7h", "7d"], 479, 2484, "fold", "7h7d HJ vs 19% 3-bet (479/2484) → fold"),
 )
 
 SET_MINE_CHEAP_CALL_CASES = (
     # Positive control: cheap raises with good implied odds should still
     # continue. SPR = (stack - call) / future_pot must be >= 8.0.
-    (["4c", "4d"], 37, 2444, "call",
-     "4c4d SB vs 1.5% cheap raise (37/2444) → call"),
-    (["7h", "7d"], 37, 2444, ("call", "raise"),
-     "7h7d BB vs 1.5% cheap raise (37/2444) → call/raise"),
+    (["4c", "4d"], 37, 2444, "call", "4c4d SB vs 1.5% cheap raise (37/2444) → call"),
+    (
+        ["7h", "7d"],
+        37,
+        2444,
+        ("call", "raise"),
+        "7h7d BB vs 1.5% cheap raise (37/2444) → call/raise",
+    ),
 )
 
 # ── Flaw 2: Calling down on paired boards with medium pocket pairs ────────
@@ -80,16 +82,13 @@ PAIRED_BOARD_TT_VALUE_CASES = (
 
 TOP_PAIR_DRY_CALL_CASES = (
     # Dry-ish board, 50% pot bet → call (33% equity needed, KQ has ~35%+)
-    (["8s", "9h", "Qs"], 890, 888, 445, 0.50, "call",
-     "Kd Qc dry board 50% pot → call"),
+    (["8s", "9h", "Qs"], 890, 888, 445, 0.50, "call", "Kd Qc dry board 50% pot → call"),
 )
 
 TOP_PAIR_FOLD_CASES = (
     # Positive controls: bot should still fold at bad prices or wet boards.
-    (["8s", "9h", "Qs"], 500, 888, 400, 0.80, "fold",
-     "Kd Qc dry board 80% pot → fold"),
-    (["8s", "9s", "Ts"], 890, 888, 356, 0.40, "fold",
-     "Kd Qc wet board 40% pot → fold"),
+    (["8s", "9h", "Qs"], 500, 888, 400, 0.80, "fold", "Kd Qc dry board 80% pot → fold"),
+    (["8s", "9s", "Ts"], 890, 888, 356, 0.40, "fold", "Kd Qc wet board 40% pot → fold"),
 )
 
 # ── Opponent-aware: tight opponent + multi-way should fold ───────────────
@@ -101,9 +100,15 @@ def _tight_raiser_profile():
     return {
         "raiser": OpponentProfile(
             agent_id="raiser",
-            hands_seen=100, vpip=12, pfr=8,
-            calls=20, bets=5, raises=3, folds=60,
-            fold_to_bet=10, opportunities_to_fold_to_bet=15,
+            hands_seen=100,
+            vpip=12,
+            pfr=8,
+            calls=20,
+            bets=5,
+            raises=3,
+            folds=60,
+            fold_to_bet=10,
+            opportunities_to_fold_to_bet=15,
         )
     }
 
@@ -112,9 +117,15 @@ def _loose_raiser_profile():
     return {
         "raiser": OpponentProfile(
             agent_id="raiser",
-            hands_seen=100, vpip=45, pfr=35,
-            calls=30, bets=15, raises=20, folds=20,
-            fold_to_bet=8, opportunities_to_fold_to_bet=12,
+            hands_seen=100,
+            vpip=45,
+            pfr=35,
+            calls=30,
+            bets=15,
+            raises=20,
+            folds=20,
+            fold_to_bet=8,
+            opportunities_to_fold_to_bet=12,
         )
     }
 
@@ -127,8 +138,9 @@ def choose():
     return choose_action
 
 
-def make_seat(seat_number, agent_id, hole_cards=None, *,
-              stack=OPPONENT_STACK, folded=False):
+def make_seat(
+    seat_number, agent_id, hole_cards=None, *, stack=OPPONENT_STACK, folded=False
+):
     return {
         "seatNumber": seat_number,
         "agentId": agent_id,
@@ -139,8 +151,13 @@ def make_seat(seat_number, agent_id, hole_cards=None, *,
 
 
 def make_preflop_table(
-    hole, *, raise_amount, hero_stack=HERO_STACK, raise_seat=6,
-    button=5, profiles=None,
+    hole,
+    *,
+    raise_amount,
+    hero_stack=HERO_STACK,
+    raise_seat=6,
+    button=5,
+    profiles=None,
 ):
     """Build a 6-max preflop scenario with hero in seat 3 and a raiser."""
     seats = [
@@ -168,8 +185,15 @@ def make_preflop_table(
 
 
 def make_postflop_table(
-    hole, board, *, pot, call, hero_stack=HERO_STACK,
-    available=DEFAULT_AVAILABLE, button=5, profiles=None,
+    hole,
+    board,
+    *,
+    pot,
+    call,
+    hero_stack=HERO_STACK,
+    available=DEFAULT_AVAILABLE,
+    button=5,
+    profiles=None,
 ):
     """Build a 6-max postflop scenario with hero in seat 3."""
     seats = [
@@ -181,9 +205,9 @@ def make_postflop_table(
         make_seat(6, "opp6"),
     ]
     table = {
-        "street": ("Flop" if len(board) == 3
-                   else "Turn" if len(board) == 4
-                   else "River"),
+        "street": (
+            "Flop" if len(board) == 3 else "Turn" if len(board) == 4 else "River"
+        ),
         "buttonSeatNumber": button,
         "seats": seats,
         "boardCards": board,
@@ -199,21 +223,38 @@ def make_postflop_table(
     return table, next(s for s in seats if s["agentId"] == HERO)
 
 
-def action_for_preflop(hole, *, raise_amount, hero_stack, raise_seat,
-                       choose_fn, profiles=None):
+def action_for_preflop(
+    hole, *, raise_amount, hero_stack, raise_seat, choose_fn, profiles=None
+):
     table, hero = make_preflop_table(
-        hole, raise_amount=raise_amount, hero_stack=hero_stack,
-        raise_seat=raise_seat, profiles=profiles,
+        hole,
+        raise_amount=raise_amount,
+        hero_stack=hero_stack,
+        raise_seat=raise_seat,
+        profiles=profiles,
     )
     return choose_fn(table, hero)[0]
 
 
-def action_for_postflop(hole, board, *, pot, call, hero_stack,
-                        choose_fn, available=DEFAULT_AVAILABLE,
-                        profiles=None):
+def action_for_postflop(
+    hole,
+    board,
+    *,
+    pot,
+    call,
+    hero_stack,
+    choose_fn,
+    available=DEFAULT_AVAILABLE,
+    profiles=None,
+):
     table, hero = make_postflop_table(
-        hole, board, pot=pot, call=call, hero_stack=hero_stack,
-        available=available, profiles=profiles,
+        hole,
+        board,
+        pot=pot,
+        call=call,
+        hero_stack=hero_stack,
+        available=available,
+        profiles=profiles,
     )
     return choose_fn(table, hero)[0]
 
@@ -236,11 +277,19 @@ def assert_action(expected, actual):
     ids=[c[4] for c in SET_MINE_FOLD_CASES],
 )
 def test_set_mine_folds_at_bad_price(
-    choose, hole, raise_amount, hero_stack, expected, description,
+    choose,
+    hole,
+    raise_amount,
+    hero_stack,
+    expected,
+    description,
 ):
     action = action_for_preflop(
-        hole, raise_amount=raise_amount, hero_stack=hero_stack,
-        raise_seat=6, choose_fn=choose,
+        hole,
+        raise_amount=raise_amount,
+        hero_stack=hero_stack,
+        raise_seat=6,
+        choose_fn=choose,
     )
     assert_action(expected, action)
 
@@ -252,11 +301,19 @@ def test_set_mine_folds_at_bad_price(
     ids=[c[4] for c in SET_MINE_CHEAP_CALL_CASES],
 )
 def test_set_mine_continues_at_cheap_price(
-    choose, hole, raise_amount, hero_stack, expected, description,
+    choose,
+    hole,
+    raise_amount,
+    hero_stack,
+    expected,
+    description,
 ):
     action = action_for_preflop(
-        hole, raise_amount=raise_amount, hero_stack=hero_stack,
-        raise_seat=6, choose_fn=choose,
+        hole,
+        raise_amount=raise_amount,
+        hero_stack=hero_stack,
+        raise_seat=6,
+        choose_fn=choose,
     )
     assert_action(expected, action)
 
@@ -264,8 +321,11 @@ def test_set_mine_continues_at_cheap_price(
 # Flaw 1 opponent-aware: tight opponent → fold even at good price
 def test_set_mine_folds_vs_tight_opponent(choose):
     action = action_for_preflop(
-        ["4c", "4d"], raise_amount=37, hero_stack=2444,
-        raise_seat=6, choose_fn=choose,
+        ["4c", "4d"],
+        raise_amount=37,
+        hero_stack=2444,
+        raise_seat=6,
+        choose_fn=choose,
         profiles=_tight_raiser_profile(),
     )
     assert action == "fold"
@@ -274,8 +334,11 @@ def test_set_mine_folds_vs_tight_opponent(choose):
 # Flaw 1 positive control: loose opponent → continue
 def test_set_mine_continues_vs_loose_opponent(choose):
     action = action_for_preflop(
-        ["4c", "4d"], raise_amount=37, hero_stack=2444,
-        raise_seat=6, choose_fn=choose,
+        ["4c", "4d"],
+        raise_amount=37,
+        hero_stack=2444,
+        raise_seat=6,
+        choose_fn=choose,
         profiles=_loose_raiser_profile(),
     )
     assert action in ("call", "raise", "fold")  # 3-way SPR borderline
@@ -289,8 +352,13 @@ def test_set_mine_continues_vs_loose_opponent(choose):
 )
 def test_paired_board_77_folds(choose, board, pot, hero_stack, call, street):
     action = action_for_postflop(
-        ["7h", "7d"], board, pot=pot, call=call, hero_stack=hero_stack,
-        choose_fn=choose, available=("fold", "call", "raise"),
+        ["7h", "7d"],
+        board,
+        pot=pot,
+        call=call,
+        hero_stack=hero_stack,
+        choose_fn=choose,
+        available=("fold", "call", "raise"),
     )
     assert action == "fold", f"77 on paired {street} should fold, got {action!r}"
 
@@ -300,11 +368,17 @@ def test_paired_board_77_folds(choose, board, pot, hero_stack, call, street):
     "board,pot,hero_stack,call,description",
     PAIRED_BOARD_TT_VALUE_CASES,
 )
-def test_paired_board_strong_hand_raises(choose, board, pot, hero_stack,
-                                         call, description):
+def test_paired_board_strong_hand_raises(
+    choose, board, pot, hero_stack, call, description
+):
     action = action_for_postflop(
-        ["Th", "Td"], board, pot=pot, call=call, hero_stack=hero_stack,
-        choose_fn=choose, available=("fold", "call", "raise"),
+        ["Th", "Td"],
+        board,
+        pot=pot,
+        call=call,
+        hero_stack=hero_stack,
+        choose_fn=choose,
+        available=("fold", "call", "raise"),
     )
     assert action == "raise", f"TT top set should raise, got {action!r}"
 
@@ -314,10 +388,15 @@ def test_paired_board_strong_hand_raises(choose, board, pot, hero_stack,
     "board,pot,hero_stack,call,pot_pct,expected,description",
     TOP_PAIR_DRY_CALL_CASES,
 )
-def test_top_pair_dry_continues(choose, board, pot, hero_stack, call,
-                                pot_pct, expected, description):
+def test_top_pair_dry_continues(
+    choose, board, pot, hero_stack, call, pot_pct, expected, description
+):
     action = action_for_postflop(
-        ["Kd", "Qc"], board, pot=pot, call=call, hero_stack=hero_stack,
+        ["Kd", "Qc"],
+        board,
+        pot=pot,
+        call=call,
+        hero_stack=hero_stack,
         choose_fn=choose,
     )
     assert_action(expected, action)
@@ -329,11 +408,17 @@ def test_top_pair_dry_continues(choose, board, pot, hero_stack, call,
     TOP_PAIR_FOLD_CASES,
     ids=[c[6] for c in TOP_PAIR_FOLD_CASES],
 )
-def test_top_pair_folds_at_bad_price(choose, board, pot, hero_stack, call,
-                                      pot_pct, expected, description):
+def test_top_pair_folds_at_bad_price(
+    choose, board, pot, hero_stack, call, pot_pct, expected, description
+):
     action = action_for_postflop(
-        ["Kd", "Qc"], board, pot=pot, call=call, hero_stack=hero_stack,
-        choose_fn=choose, available=("fold", "call", "raise"),
+        ["Kd", "Qc"],
+        board,
+        pot=pot,
+        call=call,
+        hero_stack=hero_stack,
+        choose_fn=choose,
+        available=("fold", "call", "raise"),
     )
     assert_action(expected, action)
 

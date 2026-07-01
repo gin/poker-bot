@@ -15,12 +15,10 @@ The "control" tests at the bottom must stay green:
   - The fix is "tighten multi-way play," NOT "fold everything" — a change
     that makes the bot over-fold in heads-up is over-correcting.
 """
-import pytest
 
 # >>> POINT THIS AT YOUR STRATEGY <<<
-from poker_bot.strategies.s2base import choose_action
 from poker_bot.opponents import OpponentProfile
-
+from poker_bot.strategies.s2base import choose_action
 
 HERO = "hero"
 RAISER = "raiser"
@@ -29,9 +27,19 @@ SB = "sb"
 BB = "bb"
 
 
-def _profile(agent_id, *, vpip=0.25, pfr=0.20, hands=100,
-             calls=20, bets=10, raises=10, folds=30, fold_to_bet=15,
-             opps_fold_to_bet=20):
+def _profile(
+    agent_id,
+    *,
+    vpip=0.25,
+    pfr=0.20,
+    hands=100,
+    calls=20,
+    bets=10,
+    raises=10,
+    folds=30,
+    fold_to_bet=15,
+    opps_fold_to_bet=20,
+):
     """Build an opponent profile with sensible defaults."""
     return OpponentProfile(
         agent_id=agent_id,
@@ -48,8 +56,15 @@ def _profile(agent_id, *, vpip=0.25, pfr=0.20, hands=100,
 
 
 def preflop_table(
-    hole, *, raise_amount, hero_stack, raise_seat, hero_seat=3,
-    button=5, n_players=6, profiles=None,
+    hole,
+    *,
+    raise_amount,
+    hero_stack,
+    raise_seat,
+    hero_seat=3,
+    button=5,
+    n_players=6,
+    profiles=None,
 ):
     """Build a 6-max preflop scenario.
 
@@ -60,29 +75,35 @@ def preflop_table(
     # Build 6 seats
     for i in range(1, 7):
         if i == hero_seat:
-            seats.append({
-                "seatNumber": i,
-                "agentId": HERO,
-                "stackChips": hero_stack,
-                "holeCards": hole,
-                "folded": False,
-            })
+            seats.append(
+                {
+                    "seatNumber": i,
+                    "agentId": HERO,
+                    "stackChips": hero_stack,
+                    "holeCards": hole,
+                    "folded": False,
+                }
+            )
         elif i == raise_seat:
-            seats.append({
-                "seatNumber": i,
-                "agentId": RAISER,
-                "stackChips": 2484,
-                "holeCards": [],
-                "folded": False,
-            })
+            seats.append(
+                {
+                    "seatNumber": i,
+                    "agentId": RAISER,
+                    "stackChips": 2484,
+                    "holeCards": [],
+                    "folded": False,
+                }
+            )
         else:
-            seats.append({
-                "seatNumber": i,
-                "agentId": f"opp{i}",
-                "stackChips": 2484,
-                "holeCards": [],
-                "folded": False,
-            })
+            seats.append(
+                {
+                    "seatNumber": i,
+                    "agentId": f"opp{i}",
+                    "stackChips": 2484,
+                    "holeCards": [],
+                    "folded": False,
+                }
+            )
 
     t = {
         "street": "Preflop",
@@ -101,22 +122,36 @@ def preflop_table(
 
 
 def postflop_table(
-    hole, board, *, pot, call, hero_stack, board_street="Flop",
-    n_players=6, profiles=None,
+    hole,
+    board,
+    *,
+    pot,
+    call,
+    hero_stack,
+    board_street="Flop",
+    n_players=6,
+    profiles=None,
 ):
     """Build a 6-max postflop scenario."""
     seats = [
-        {"seatNumber": 1, "agentId": HERO, "stackChips": hero_stack,
-         "holeCards": hole, "folded": False},
+        {
+            "seatNumber": 1,
+            "agentId": HERO,
+            "stackChips": hero_stack,
+            "holeCards": hole,
+            "folded": False,
+        },
     ]
     for i in range(2, n_players + 1):
-        seats.append({
-            "seatNumber": i,
-            "agentId": f"v{i}",
-            "stackChips": 2484,
-            "holeCards": [],
-            "folded": False,
-        })
+        seats.append(
+            {
+                "seatNumber": i,
+                "agentId": f"v{i}",
+                "stackChips": 2484,
+                "holeCards": [],
+                "folded": False,
+            }
+        )
 
     t = {
         "street": board_street,
@@ -155,12 +190,15 @@ def test_small_pair_folds_3way_pot():
     SPR is 2484-150=2334 remaining / (150+150+150)=450 future_pot = 5.19.
     This is below the 8:1 needed for set-mining.
     """
-    assert act_preflop(
-        ["4c", "4d"],
-        raise_amount=150,
-        hero_stack=2484,
-        raise_seat=2,
-    ) == "fold"
+    assert (
+        act_preflop(
+            ["4c", "4d"],
+            raise_amount=150,
+            hero_stack=2484,
+            raise_seat=2,
+        )
+        == "fold"
+    )
 
 
 def test_small_pair_folds_4way_pot():
@@ -168,12 +206,15 @@ def test_small_pair_folds_4way_pot():
 
     SPR drops further in 4-way pots. Set-mining is not profitable.
     """
-    assert act_preflop(
-        ["5c", "5d"],
-        raise_amount=200,
-        hero_stack=2484,
-        raise_seat=2,
-    ) == "fold"
+    assert (
+        act_preflop(
+            ["5c", "5d"],
+            raise_amount=200,
+            hero_stack=2484,
+            raise_seat=2,
+        )
+        == "fold"
+    )
 
 
 def test_small_pair_folds_5way_pot():
@@ -182,12 +223,15 @@ def test_small_pair_folds_5way_pot():
     Even with a smaller price-to-stack ratio, 5-way pots are too
     competitive for set-mining to be profitable.
     """
-    assert act_preflop(
-        ["6s", "6c"],
-        raise_amount=250,
-        hero_stack=2484,
-        raise_seat=2,
-    ) == "fold"
+    assert (
+        act_preflop(
+            ["6s", "6c"],
+            raise_amount=250,
+            hero_stack=2484,
+            raise_seat=2,
+        )
+        == "fold"
+    )
 
 
 # ── Flaw 2: Medium-strength hands call too much postflop in multi-way pots ──
@@ -202,13 +246,16 @@ def test_top_pair_folds_to_30pct_pot_3way():
     30% pot = need 23% equity. Top pair KQ has only ~30% vs 2 ranges.
     With reverse implied odds from flush/straight draws, this is -EV.
     """
-    assert act_postflop(
-        ["Kd", "Qc"],
-        ["8s", "9h", "Qs"],
-        pot=890,
-        call=267,
-        hero_stack=888,
-    ) == "fold"
+    assert (
+        act_postflop(
+            ["Kd", "Qc"],
+            ["8s", "9h", "Qs"],
+            pot=890,
+            call=267,
+            hero_stack=888,
+        )
+        == "fold"
+    )
 
 
 def test_top_pair_folds_to_50pct_pot_4way():
@@ -217,13 +264,16 @@ def test_top_pair_folds_to_50pct_pot_4way():
     Top pair on a connected board in a 4-way pot is dominated often.
     Need 33% equity; AK vs 3 random ranges has only ~25% equity.
     """
-    assert act_postflop(
-        ["Ah", "Kh"],
-        ["Qs", "Jd", "2h"],
-        pot=400,
-        call=200,
-        hero_stack=2000,
-    ) == "fold"
+    assert (
+        act_postflop(
+            ["Ah", "Kh"],
+            ["Qs", "Jd", "2h"],
+            pot=400,
+            call=200,
+            hero_stack=2000,
+        )
+        == "fold"
+    )
 
 
 def test_one_pair_folds_to_40pct_pot_3way():
@@ -232,13 +282,16 @@ def test_one_pair_folds_to_40pct_pot_3way():
     Pocket pair below top pair has terrible equity in 3-way pots.
     Need 28.5% equity; 77 vs 2 ranges has <20% equity here.
     """
-    assert act_postflop(
-        ["7c", "7d"],
-        ["As", "Kh", "9s"],
-        pot=600,
-        call=240,
-        hero_stack=1500,
-    ) == "fold"
+    assert (
+        act_postflop(
+            ["7c", "7d"],
+            ["As", "Kh", "9s"],
+            pot=600,
+            call=240,
+            hero_stack=1500,
+        )
+        == "fold"
+    )
 
 
 # ── Flaw 3: Position 2 (MP) opening range too wide in 6-max ────────────────
@@ -252,13 +305,16 @@ def test_mp_tightens_4way_pot():
     MP should not open marginal hands like 98o in 4-way pots.
     Need tighter range with 4 players behind.
     """
-    assert act_preflop(
-        ["9c", "8d"],
-        raise_amount=60,
-        hero_stack=2484,
-        raise_seat=5,  # Raise came from BTN, not our decision
-        hero_seat=2,   # MP in 6-max
-    ) == "fold"
+    assert (
+        act_preflop(
+            ["9c", "8d"],
+            raise_amount=60,
+            hero_stack=2484,
+            raise_seat=5,  # Raise came from BTN, not our decision
+            hero_seat=2,  # MP in 6-max
+        )
+        == "fold"
+    )
 
 
 def test_mp_folds_weak_ace_5way_pot():
@@ -271,21 +327,25 @@ def test_mp_folds_weak_ace_5way_pot():
     seats = []
     for i in range(1, 7):
         if i == 2:  # MP
-            seats.append({
-                "seatNumber": i,
-                "agentId": HERO,
-                "stackChips": 2484,
-                "holeCards": ["Ah", "2c"],
-                "folded": False,
-            })
+            seats.append(
+                {
+                    "seatNumber": i,
+                    "agentId": HERO,
+                    "stackChips": 2484,
+                    "holeCards": ["Ah", "2c"],
+                    "folded": False,
+                }
+            )
         else:
-            seats.append({
-                "seatNumber": i,
-                "agentId": f"opp{i}",
-                "stackChips": 2484,
-                "holeCards": [],
-                "folded": False,
-            })
+            seats.append(
+                {
+                    "seatNumber": i,
+                    "agentId": f"opp{i}",
+                    "stackChips": 2484,
+                    "holeCards": [],
+                    "folded": False,
+                }
+            )
 
     t = {
         "street": "Preflop",
@@ -344,14 +404,17 @@ def test_heads_up_value_raise_with_set():
 
     Top set on a wet board is a clear value bet heads-up.
     """
-    assert act_postflop(
-        ["Th", "Td"],
-        ["Ah", "Qd", "Ts"],
-        pot=328,
-        call=77,
-        hero_stack=3917,
-        n_players=2,
-    ) == "raise"
+    assert (
+        act_postflop(
+            ["Th", "Td"],
+            ["Ah", "Qd", "Ts"],
+            pot=328,
+            call=77,
+            hero_stack=3917,
+            n_players=2,
+        )
+        == "raise"
+    )
 
 
 # ── Opponent-aware tests: tight opponent + multi-way should fold ──────────
@@ -366,17 +429,28 @@ def test_small_pair_folds_vs_tight_opponent_3way():
     Set-mining against them is less profitable.
     """
     profiles = {
-        RAISER: _profile(RAISER, vpip=0.12, pfr=0.10, hands=100,
-                         calls=10, bets=5, raises=3, folds=80,
-                         fold_to_bet=10, opps_fold_to_bet=15),
+        RAISER: _profile(
+            RAISER,
+            vpip=0.12,
+            pfr=0.10,
+            hands=100,
+            calls=10,
+            bets=5,
+            raises=3,
+            folds=80,
+            fold_to_bet=10,
+            opps_fold_to_bet=15,
+        ),
     }
-    action, _amount, _reason = choose_action(*preflop_table(
-        ["4c", "4d"],
-        raise_amount=150,
-        hero_stack=2484,
-        raise_seat=2,
-        profiles=profiles,
-    ))
+    action, _amount, _reason = choose_action(
+        *preflop_table(
+            ["4c", "4d"],
+            raise_amount=150,
+            hero_stack=2484,
+            raise_seat=2,
+            profiles=profiles,
+        )
+    )
     assert action == "fold"
 
 
@@ -387,19 +461,30 @@ def test_small_pair_calls_vs_loose_opponent_3way():
     implied odds. This is a positive control.
     """
     profiles = {
-        RAISER: _profile(RAISER, vpip=0.45, pfr=0.35, hands=100,
-                         calls=30, bets=15, raises=20, folds=20,
-                         fold_to_bet=8, opps_fold_to_bet=12),
+        RAISER: _profile(
+            RAISER,
+            vpip=0.45,
+            pfr=0.35,
+            hands=100,
+            calls=30,
+            bets=15,
+            raises=20,
+            folds=20,
+            fold_to_bet=8,
+            opps_fold_to_bet=12,
+        ),
     }
     # The 150 raise is 6% of stack, SPR = 2334/450 = 5.19
     # In 3-way pots, this is borderline. Test documents the current behavior.
     # If the guard is too strict, this will fail and need adjustment.
-    action, _amount, _reason = choose_action(*preflop_table(
-        ["4c", "4d"],
-        raise_amount=150,
-        hero_stack=2484,
-        raise_seat=2,
-        profiles=profiles,
-    ))
+    action, _amount, _reason = choose_action(
+        *preflop_table(
+            ["4c", "4d"],
+            raise_amount=150,
+            hero_stack=2484,
+            raise_seat=2,
+            profiles=profiles,
+        )
+    )
     # Either call or fold is acceptable; raise is also fine
     assert action in ("call", "raise", "fold"), f"Got {action}"

@@ -28,8 +28,14 @@ DEFAULT_AVAILABLE = ("fold", "call", "raise", "all-in")
 # tens where hero holds both 7 and T privately — that's a genuine
 # made hand, not board-assisted.
 REAL_TWO_PAIR_CASES = (
-    (["7d", "Th"], ["7c", "4s", "Tc", "4d"]),  # sevens (private+board) + tens (private+board)
-    (["4d", "Tc"], ["7c", "4s", "Tc", "4d"]),  # fours (private+board) + tens (private+board)
+    (
+        ["7d", "Th"],
+        ["7c", "4s", "Tc", "4d"],
+    ),  # sevens (private+board) + tens (private+board)
+    (
+        ["4d", "Tc"],
+        ["7c", "4s", "Tc", "4d"],
+    ),  # fours (private+board) + tens (private+board)
 )
 
 # Hero holds neither card of the paired board → board-assisted two pair.
@@ -105,9 +111,7 @@ def action_for(hole, board, **kwargs):
 
 
 def assert_does_not_raise(action):
-    assert action != "raise", (
-        f"board-assisted two pair over-valued: chose {action!r}"
-    )
+    assert action != "raise", f"board-assisted two pair over-valued: chose {action!r}"
 
 
 def assert_folds_to_bet(action):

@@ -7,8 +7,6 @@ The bot folded with "Rank 1 below price, folding" even though top pair with
 K kicker on a dry Q-high board is a clear call at 2:1 pot odds.
 """
 
-import pytest
-
 from poker_bot.strategies import s2base as strategy
 
 

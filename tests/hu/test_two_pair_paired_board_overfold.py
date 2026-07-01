@@ -13,14 +13,14 @@ The guard converts the fold to a call when the bot has a pocket pair
 plus the board pair (genuine two pair, not board-assisted).
 """
 
-import pytest
-
 from poker_bot.strategies.s3base import choose_action
 
 HERO = "hero"
 
 
-def make_seat(seat_number, agent_id, hole_cards=None, *, folded=False, stack=2000, current_bet=0):
+def make_seat(
+    seat_number, agent_id, hole_cards=None, *, folded=False, stack=2000, current_bet=0
+):
     return {
         "seatNumber": seat_number,
         "agentId": agent_id,
@@ -34,8 +34,10 @@ def make_seat(seat_number, agent_id, hole_cards=None, *, folded=False, stack=200
 
 def make_table(hole, board, *, facing_bet=0, pot=200):
     """Build a postflop table where hero faces a bet on a paired board."""
-    seats = [make_seat(1, HERO, hole, current_bet=100),
-             make_seat(2, "villain", current_bet=200)]
+    seats = [
+        make_seat(1, HERO, hole, current_bet=100),
+        make_seat(2, "villain", current_bet=200),
+    ]
     table = {
         "street": "Turn",
         "boardCards": board,
@@ -76,11 +78,10 @@ def action_for(hole, board, **kwargs):
 def test_genuine_two_pair_calls_on_paired_board():
     """Pocket pair + board pair (genuine two pair) should call, not fold."""
     # facing_bet=96, pot=160 → 38% pot
-    action = action_for(GENUINE_TWO_PAIR["hole"], GENUINE_TWO_PAIR["board"],
-                        facing_bet=96, pot=160)
-    assert action == "call", (
-        f"pocket pair + board pair should call, got {action!r}"
+    action = action_for(
+        GENUINE_TWO_PAIR["hole"], GENUINE_TWO_PAIR["board"], facing_bet=96, pot=160
     )
+    assert action == "call", f"pocket pair + board pair should call, got {action!r}"
 
 
 def test_board_assisted_two_pair_folds_on_paired_board():
