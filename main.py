@@ -3,13 +3,12 @@
 
 import json
 import os
-import secrets
 import string
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 SRC_DIR = Path(__file__).resolve().parent / "src"
@@ -21,21 +20,6 @@ from poker_bot.arena_stats import (  # noqa: E402
     ArenaStatsFetcher,
     schedule_table_opponent_stats,
 )
-from poker_bot.opponent_store import (  # noqa: E402
-    connect,
-    create_telemetry_run,
-    fill_hand_telemetry_outcome_from_delta,
-    fill_hand_telemetry_outcome_from_replay,
-    increment_hand_seen,
-    load_profile,
-    load_profiles_for_agents,
-    record_decision_telemetry,
-    record_observed_action,
-    update_hand_telemetry_outcome,
-)
-from poker_bot.strategies.loader import load_strategy  # noqa: E402
-from poker_bot.table import find_agent_seat, is_our_turn  # noqa: E402
-
 from poker_bot.langfuse_tracing import (  # noqa: E402
     flush_langfuse,
     span_action_result,
@@ -44,6 +28,19 @@ from poker_bot.langfuse_tracing import (  # noqa: E402
     span_table_process,
     trace_hand,
 )
+from poker_bot.opponent_store import (  # noqa: E402
+    connect,
+    create_telemetry_run,
+    fill_hand_telemetry_outcome_from_delta,
+    fill_hand_telemetry_outcome_from_replay,
+    increment_hand_seen,
+    load_profiles_for_agents,
+    record_decision_telemetry,
+    record_observed_action,
+    update_hand_telemetry_outcome,
+)
+from poker_bot.strategies.loader import load_strategy  # noqa: E402
+from poker_bot.table import find_agent_seat, is_our_turn  # noqa: E402
 
 BASE_URL = "https://arena.dev.fun/api/arena"
 STATE_FILE = os.environ.get(
@@ -1330,146 +1327,144 @@ def process_single_table(table: dict, ctx: BotContext) -> None:
             num_opponents=num_opponents,
         ) as table_span,
     ):
-            # Resolve decision context for the span
-            call_amount = int(
-                (table.get("allowedActions") or {}).get("callAmount")
-                or (table.get("allowedActions") or {}).get("callChips")
-                or 0
-            )
-            hero_stack = _safe_int(my_seat.get("stackChips")) if my_seat else None
-            bb_chips = _safe_int(table.get("bigBlindChips")) or 0
-            decision_index = int(
-                ctx.state.get("telemetry_decision_indexes", {}).get(table_id, 0)
-            )
+        # Resolve decision context for the span
+        call_amount = int(
+            (table.get("allowedActions") or {}).get("callAmount")
+            or (table.get("allowedActions") or {}).get("callChips")
+            or 0
+        )
+        hero_stack = _safe_int(my_seat.get("stackChips")) if my_seat else None
+        bb_chips = _safe_int(table.get("bigBlindChips")) or 0
+        decision_index = int(
+            ctx.state.get("telemetry_decision_indexes", {}).get(table_id, 0)
+        )
 
-            with (
-                span_decision(
-                    decision_index=decision_index,
-                    street=street,
-                    position="unknown",
-                    hand_description=(
-                        (my_seat or {}).get("handDescription")
-                        or (my_seat or {}).get("hand")
-                        or (my_seat or {}).get("cards")
-                        or "unknown"
-                    ),
-                    facing_bet=call_amount > 0,
-                    pot_chips=pot,
-                    stack_chips=hero_stack or 0,
-                    big_blind=bb_chips,
+        with (
+            span_decision(
+                decision_index=decision_index,
+                street=street,
+                position="unknown",
+                hand_description=(
+                    (my_seat or {}).get("handDescription")
+                    or (my_seat or {}).get("hand")
+                    or (my_seat or {}).get("cards")
+                    or "unknown"
                 ),
-                span_strategy_call(ctx.strategy_name) as strat_span,
-            ):
-                    result = ctx.choose_action(table, my_seat)
-                    if result[0] is not None and strat_span is not None:
-                        strat_span.update(
-                            output={
-                                "action": result[0],
-                                "amount": result[1],
-                                "message": result[2],
-                            }
-                        )
+                facing_bet=call_amount > 0,
+                pot_chips=pot,
+                stack_chips=hero_stack or 0,
+                big_blind=bb_chips,
+            ),
+            span_strategy_call(ctx.strategy_name) as strat_span,
+        ):
+            result = ctx.choose_action(table, my_seat)
+            if result[0] is not None and strat_span is not None:
+                strat_span.update(
+                    output={
+                        "action": result[0],
+                        "amount": result[1],
+                        "message": result[2],
+                    }
+                )
 
-            if result[0] is None:
-                print("  No valid action found, skipping", flush=True)
+        if result[0] is None:
+            print("  No valid action found, skipping", flush=True)
+            if table_span is not None:
+                table_span.update(output={"result": "no_valid_action"})
+            return
+
+        action, amount, message = result
+        print(
+            f"  → {action}" + (f" {amount}" if amount else "") + f" | {message}",
+            flush=True,
+        )
+
+        body = action_request_body(
+            ctx.competition_id, table_id, action, amount, message=message
+        )
+        with span_action_result(action, amount, accepted=True) as action_span:
+            resp = ctx.api_fn("POST", "/texas/action", body)
+
+            if "error" in resp:
+                error = resp.get("error")
+                error_message = resp.get("message", "")
+                print(
+                    f"  ✗ Action rejected: {error} - {error_message}",
+                    flush=True,
+                )
+                if action_span is not None:
+                    action_span.update(output={"accepted": False, "error": error})
+
+                if is_not_turn_rejection(resp):
+                    ctx.state["last_not_turn_rejection_at"] = datetime.now(
+                        UTC
+                    ).isoformat()
+                    ctx.state["last_not_turn_rejection_table_id"] = table_id
+                    save_state(ctx.state)
+                    return
+
+                if action != "fold":
+                    if (
+                        action == "call"
+                        and "nothing to call" in str(error or "").lower()
+                    ):
+                        fallback_message = "Fallback check (nothing to call)"
+                        body["action"] = "check"
+                        body["message"] = public_action_message()
+                        body.pop("amount", None)
+                    else:
+                        fallback_message = "Fallback fold after rejection"
+                        body["action"] = "fold"
+                        body["message"] = public_action_message()
+                        body.pop("amount", None)
+
+                    resp = ctx.api_fn("POST", "/texas/action", body)
+                    if "error" not in resp:
+                        print(
+                            f"  → Fallback: {body['action']} accepted",
+                            flush=True,
+                        )
+                        record_live_decision(
+                            ctx.telemetry_conn,
+                            ctx.telemetry_run_id,
+                            ctx.state,
+                            table,
+                            my_seat,
+                            body["action"],
+                            None,
+                            fallback_message,
+                            ctx.strategy_name,
+                        )
+                        save_state(ctx.state)
+            else:
+                print("  ✓ Action accepted", flush=True)
+                record_live_decision(
+                    ctx.telemetry_conn,
+                    ctx.telemetry_run_id,
+                    ctx.state,
+                    table,
+                    my_seat,
+                    action,
+                    amount,
+                    message,
+                    ctx.strategy_name,
+                )
+                new_street = resp.get("street", "?")
+                new_pot = resp.get("potChips", 0)
+                print(f"    Street: {new_street} | Pot: {new_pot}", flush=True)
+
                 if table_span is not None:
                     table_span.update(
-                        output={"result": "no_valid_action"}
+                        output={
+                            "action": action,
+                            "amount": amount,
+                            "new_street": new_street,
+                            "new_pot": new_pot,
+                        }
                     )
-                return
 
-            action, amount, message = result
-            print(
-                f"  → {action}" + (f" {amount}" if amount else "") + f" | {message}",
-                flush=True,
-            )
-
-            body = action_request_body(ctx.competition_id, table_id, action, amount, message=message)
-            with span_action_result(action, amount, accepted=True) as action_span:
-                resp = ctx.api_fn("POST", "/texas/action", body)
-
-                if "error" in resp:
-                    error = resp.get("error")
-                    error_message = resp.get("message", "")
-                    print(
-                        f"  ✗ Action rejected: {error} - {error_message}",
-                        flush=True,
-                    )
-                    if action_span is not None:
-                        action_span.update(
-                            output={"accepted": False, "error": error}
-                        )
-
-                    if is_not_turn_rejection(resp):
-                        ctx.state["last_not_turn_rejection_at"] = (
-                            datetime.now(UTC).isoformat()
-                        )
-                        ctx.state["last_not_turn_rejection_table_id"] = table_id
-                        save_state(ctx.state)
-                        return
-
-                    if action != "fold":
-                        if (
-                            action == "call"
-                            and "nothing to call" in str(error or "").lower()
-                        ):
-                            fallback_message = "Fallback check (nothing to call)"
-                            body["action"] = "check"
-                            body["message"] = public_action_message()
-                            body.pop("amount", None)
-                        else:
-                            fallback_message = "Fallback fold after rejection"
-                            body["action"] = "fold"
-                            body["message"] = public_action_message()
-                            body.pop("amount", None)
-
-                        resp = ctx.api_fn("POST", "/texas/action", body)
-                        if "error" not in resp:
-                            print(
-                                f"  → Fallback: {body['action']} accepted",
-                                flush=True,
-                            )
-                            record_live_decision(
-                                ctx.telemetry_conn,
-                                ctx.telemetry_run_id,
-                                ctx.state,
-                                table,
-                                my_seat,
-                                body["action"],
-                                None,
-                                fallback_message,
-                                ctx.strategy_name,
-                            )
-                            save_state(ctx.state)
-                else:
-                    print("  ✓ Action accepted", flush=True)
-                    record_live_decision(
-                        ctx.telemetry_conn,
-                        ctx.telemetry_run_id,
-                        ctx.state,
-                        table,
-                        my_seat,
-                        action,
-                        amount,
-                        message,
-                        ctx.strategy_name,
-                    )
-                    new_street = resp.get("street", "?")
-                    new_pot = resp.get("potChips", 0)
-                    print(f"    Street: {new_street} | Pot: {new_pot}", flush=True)
-
-                    if table_span is not None:
-                        table_span.update(
-                            output={
-                                "action": action,
-                                "amount": amount,
-                                "new_street": new_street,
-                                "new_pot": new_pot,
-                            }
-                        )
-
-                    ctx.state["last_table_id"] = table_id
-                    save_state(ctx.state)
+                ctx.state["last_table_id"] = table_id
+                save_state(ctx.state)
 
 
 def main():

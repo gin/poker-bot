@@ -16,13 +16,11 @@ Patch overcalling TAG opponent
 
 from __future__ import annotations
 
-import sys
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
 
 from poker_bot.cfr.kuhn import train_kuhn
 from poker_bot.hand_eval import best_hand_rank_without, evaluate_hand
-from poker_bot.mixing import resolve_distribution, choose_weighted
+from poker_bot.mixing import choose_weighted, resolve_distribution
 from poker_bot.opponents import OpponentProfile, profile_from_mapping
 from poker_bot.range_model import (
     BayesianRangeTracker,
@@ -5265,7 +5263,7 @@ def spr_commitment_lock(table, my_seat, base) -> ActionDecision | None:
 
     opponents = active_opponents(table, my_seat)
     hand_rank = made_hand_rank(hole_cards, board_cards)
-    
+
     # TAG opponents with 0 all-ins are value-heavy when they jam. Don't rescue
     # medium-strength hands (one pair/two pair) from folding at high stack prices.
     if hand_rank in {1, 2} and _has_tag_opponent(table, my_seat):

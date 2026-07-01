@@ -13,13 +13,11 @@ To Do: improve on 6 player games. auto_research_v008 and v005 performing better
 
 from __future__ import annotations
 
-import sys
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
 
 from poker_bot.cfr.kuhn import train_kuhn
 from poker_bot.hand_eval import evaluate_hand
-from poker_bot.mixing import resolve_distribution, choose_weighted
+from poker_bot.mixing import choose_weighted, resolve_distribution
 from poker_bot.opponents import OpponentProfile, profile_from_mapping
 from poker_bot.range_model import class_strength, combo_class, estimate_action_range
 

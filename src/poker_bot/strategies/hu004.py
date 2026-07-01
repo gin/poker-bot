@@ -18,25 +18,23 @@ Benchmark (10k hands, 1 seed, 17 opponents):
 
 from __future__ import annotations
 
-import sys
-from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
-
-from dataclasses import dataclass as _dataclass
-from itertools import permutations as _permutations
-import itertools as _itertools
 import hashlib as _hashlib
+import itertools as _itertools
 import json as _json
 import os as _os
 import re as _re
+from collections import deque as _deque
+from dataclasses import dataclass as _dataclass
+from dataclasses import dataclass as _dataclass_opp
+from dataclasses import field as _field
+from datetime import UTC
+from datetime import datetime as _datetime
+from functools import lru_cache
+from itertools import combinations as _combinations
+from itertools import permutations as _permutations
+from itertools import product as _product
 from pathlib import Path as _Path_tracker
 from typing import Any as _Any
-from collections import deque as _deque
-from dataclasses import dataclass as _dataclass_opp, field as _field
-from datetime import datetime as _datetime, timezone as _timezone
-from collections.abc import Sequence as _Sequence
-from itertools import combinations as _combinations, product as _product
-
 
 # ── poker_bot.cfr.kuhn ──────────────────────────────────────────────────────
 
@@ -126,13 +124,25 @@ def _kuhn_current_player(history):
 
 def _kuhn_terminal_utility_player0(cards, history):
     if history == "xx":
-        return 1.0 if _KUHN_CARD_STRENGTH[cards[0]] > _KUHN_CARD_STRENGTH[cards[1]] else -1.0
+        return (
+            1.0
+            if _KUHN_CARD_STRENGTH[cards[0]] > _KUHN_CARD_STRENGTH[cards[1]]
+            else -1.0
+        )
     if history == "bc":
-        return 2.0 if _KUHN_CARD_STRENGTH[cards[0]] > _KUHN_CARD_STRENGTH[cards[1]] else -2.0
+        return (
+            2.0
+            if _KUHN_CARD_STRENGTH[cards[0]] > _KUHN_CARD_STRENGTH[cards[1]]
+            else -2.0
+        )
     if history == "bf":
         return 1.0
     if history == "xbc":
-        return 2.0 if _KUHN_CARD_STRENGTH[cards[0]] > _KUHN_CARD_STRENGTH[cards[1]] else -2.0
+        return (
+            2.0
+            if _KUHN_CARD_STRENGTH[cards[0]] > _KUHN_CARD_STRENGTH[cards[1]]
+            else -2.0
+        )
     if history == "xbf":
         return -1.0
     return None
@@ -144,7 +154,10 @@ def _kuhn_info_set_key(card, history):
 
 def _kuhn_readable_strategy(strategy):
     return {
-        key: {_KUHN_ACTION_LABELS[action]: probability for action, probability in row.items()}
+        key: {
+            _KUHN_ACTION_LABELS[action]: probability
+            for action, probability in row.items()
+        }
         for key, row in sorted(strategy.items())
     }
 
@@ -162,7 +175,9 @@ class _KuhnCfrTrainer:
             self.nodes[key] = _KuhnInfoSetNode.create(key, actions)
         return self.nodes[key]
 
-    def _cfr(self, cards=None, history="", reach0=1.0, reach1=1.0, *, next_history=None):
+    def _cfr(
+        self, cards=None, history="", reach0=1.0, reach1=1.0, *, next_history=None
+    ):
         if next_history is not None:
             history = next_history
         if cards is None:
@@ -297,7 +312,8 @@ def _kuhn_response_value_for_deal(strategy, response, player, cards, history="")
 def _kuhn_response_value(strategy, response, player):
     deals = tuple(_permutations(_KUHN_CARDS, 2))
     return sum(
-        _kuhn_response_value_for_deal(strategy, response, player, cards) for cards in deals
+        _kuhn_response_value_for_deal(strategy, response, player, cards)
+        for cards in deals
     ) / len(deals)
 
 
@@ -572,6 +588,7 @@ def choose_weighted(
 
 # ── poker_bot.opponents ──────────────────────────────────────────────────────
 
+
 @_dataclass_opp
 class OpponentProfile:
     agent_id: str
@@ -770,7 +787,7 @@ def profile_from_mapping(agent_id, data):
     if raw_fetched is not None:
         if isinstance(raw_fetched, _datetime):
             profile.api_fetched_at = (
-                raw_fetched.replace(tzinfo=_timezone.utc)
+                raw_fetched.replace(tzinfo=UTC)
                 if raw_fetched.tzinfo is None
                 else raw_fetched
             )
@@ -781,9 +798,7 @@ def profile_from_mapping(agent_id, data):
                     normalized = text.replace("Z", "+00:00")
                     parsed = _datetime.fromisoformat(normalized)
                     profile.api_fetched_at = (
-                        parsed.replace(tzinfo=_timezone.utc)
-                        if parsed.tzinfo is None
-                        else parsed
+                        parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
                     )
                 except (ValueError, TypeError):
                     profile.api_fetched_at = None
@@ -818,7 +833,9 @@ def _card_sort_key(card):
 def normalize_combo(cards) -> _HR_Combo:
     if len(cards) != 2:
         raise ValueError("a combo must contain exactly two cards")
-    first, second = sorted((_hr_normalize_card(card) for card in cards), key=_card_sort_key)
+    first, second = sorted(
+        (_hr_normalize_card(card) for card in cards), key=_card_sort_key
+    )
     if first == second:
         raise ValueError("a combo cannot contain duplicate cards")
     return first, second
@@ -985,9 +1002,8 @@ class _HandRange:
 # --- preflop.py ---
 
 
-
-
 # --- update.py ---
+
 
 def _pressure_ratio(amount=None, pot=None):
     amount = int(amount or 0)
@@ -1039,7 +1055,10 @@ def _action_factor(action, hand_class, *, amount=None, pot=None):
 def _apply_action_update(hand_range, action, *, amount=None, pot=None, normalize=True):
     updated = hand_range.scale(
         lambda combo: _action_factor(
-            action, combo_class(combo), amount=amount, pot=pot,
+            action,
+            combo_class(combo),
+            amount=amount,
+            pot=pot,
         )
     )
     return updated.normalized() if normalize else updated
@@ -1067,14 +1086,22 @@ def default_preflop_range(position="MP", situation="open"):
 
 
 def estimate_action_range(
-    *, position="MP", situation="open", action=None,
-    known_cards=None, amount=None, pot=None,
+    *,
+    position="MP",
+    situation="open",
+    action=None,
+    known_cards=None,
+    amount=None,
+    pot=None,
 ):
     hand_range = default_preflop_range(position, situation)
     hand_range = _remove_blockers(hand_range, known_cards)
     if action is not None:
         hand_range = _apply_action_update(
-            hand_range, action, amount=amount, pot=pot,
+            hand_range,
+            action,
+            amount=amount,
+            pot=pot,
         )
     return hand_range
 
@@ -1119,7 +1146,7 @@ class _RangeTrackerState:
         }
 
     @classmethod
-    def from_json(cls, data: dict[str, _Any]) -> "_RangeTrackerState":
+    def from_json(cls, data: dict[str, _Any]) -> _RangeTrackerState:
         return cls(
             agent_id=data["agent_id"],
             prior_range=_HandRange(_normalize_weights(data.get("prior_range", []))),
@@ -1158,8 +1185,17 @@ class BayesianRangeTracker:
             self.save(agent_id)
         return state
 
-    def update(self, agent_id, *, position="MP", situation="open",
-               action=None, known_cards=None, amount=None, pot=None):
+    def update(
+        self,
+        agent_id,
+        *,
+        position="MP",
+        situation="open",
+        action=None,
+        known_cards=None,
+        amount=None,
+        pot=None,
+    ):
         state = self.state_for(agent_id)
         if not state.action_history:
             state.prior_range = default_preflop_range(position, situation)
@@ -1171,23 +1207,33 @@ class BayesianRangeTracker:
         prior = _remove_blockers(state.posterior_range, known_cards)
         if prior.total_weight() <= 0:
             prior = _remove_blockers(
-                default_preflop_range(position, situation), known_cards,
+                default_preflop_range(position, situation),
+                known_cards,
             )
 
         updated = prior
         if action is not None:
             updated = _apply_action_update(
-                prior, action, amount=amount, pot=pot, normalize=True,
+                prior,
+                action,
+                amount=amount,
+                pot=pot,
+                normalize=True,
             )
         if updated.total_weight() <= 0:
             updated = prior.normalized()
 
         state.prior_range = default_preflop_range(position, situation)
         state.posterior_range = updated
-        state.action_history.append({
-            "position": position, "situation": situation, "action": action,
-            "amount": amount, "pot": pot,
-        })
+        state.action_history.append(
+            {
+                "position": position,
+                "situation": situation,
+                "action": action,
+                "amount": amount,
+                "pot": pot,
+            }
+        )
         state.confidence = _confidence_after_samples(len(state.action_history))
         if self.auto_save:
             self.save(state.agent_id)
@@ -1216,7 +1262,9 @@ class BayesianRangeTracker:
         else:
             state.posterior_range = _HandRange.from_classes([combo_class(shown)])
 
-        state.confidence = min(_MAX_CONFIDENCE, state.confidence + _CONFIDENCE_INCREMENT)
+        state.confidence = min(
+            _MAX_CONFIDENCE, state.confidence + _CONFIDENCE_INCREMENT
+        )
         if self.auto_save:
             self.save(state.agent_id)
         return state
@@ -1239,13 +1287,17 @@ class BayesianRangeTracker:
             "range_advantage": posterior_strength - prior_strength,
             "bluff_frequency": _bounded(
                 weak_weight / max(total_weight, 1e-9)
-                if _is_bluff_action(last_action) else 0.0
+                if _is_bluff_action(last_action)
+                else 0.0
             ),
             "value_frequency": _bounded(
                 strong_weight / max(total_weight, 1e-9)
-                if _is_value_action(last_action) else 0.0
+                if _is_value_action(last_action)
+                else 0.0
             ),
-            "capped_probability": _capped_probability(state.posterior_range, last_action),
+            "capped_probability": _capped_probability(
+                state.posterior_range, last_action
+            ),
             "top_classes": top_classes,
             "confidence": state.confidence,
             "samples": len(action_history),
@@ -1254,6 +1306,7 @@ class BayesianRangeTracker:
 
     def save(self, agent_id=None):
         import json as _json_save
+
         self.state_dir.mkdir(parents=True, exist_ok=True)
         agent_ids = [agent_id] if agent_id is not None else sorted(self._states)
         for current_agent_id in agent_ids:
@@ -1270,6 +1323,7 @@ class BayesianRangeTracker:
 
     def _load_state(self, agent_id):
         import json as _json_load
+
         path = self._path_for(agent_id)
         if not path.exists():
             return _RangeTrackerState(agent_id=agent_id)
@@ -1293,18 +1347,32 @@ def average_summary(summaries):
     """Average tracker summaries into one compact feature dict."""
     if not summaries:
         return {
-            "tracker_strength": 0.0, "tracker_range_advantage": 0.0,
-            "tracker_bluff_frequency": 0.0, "tracker_value_frequency": 0.0,
-            "tracker_capped_probability": 0.0, "tracker_confidence": 0.0,
-            "tracker_samples": 0, "tracker_top_classes": [],
+            "tracker_strength": 0.0,
+            "tracker_range_advantage": 0.0,
+            "tracker_bluff_frequency": 0.0,
+            "tracker_value_frequency": 0.0,
+            "tracker_capped_probability": 0.0,
+            "tracker_confidence": 0.0,
+            "tracker_samples": 0,
+            "tracker_top_classes": [],
         }
 
     averaged = {
-        "tracker_strength": _tracker_average(s["posterior_strength"] for s in summaries),
-        "tracker_range_advantage": _tracker_average(s["range_advantage"] for s in summaries),
-        "tracker_bluff_frequency": _tracker_average(s["bluff_frequency"] for s in summaries),
-        "tracker_value_frequency": _tracker_average(s["value_frequency"] for s in summaries),
-        "tracker_capped_probability": _tracker_average(s["capped_probability"] for s in summaries),
+        "tracker_strength": _tracker_average(
+            s["posterior_strength"] for s in summaries
+        ),
+        "tracker_range_advantage": _tracker_average(
+            s["range_advantage"] for s in summaries
+        ),
+        "tracker_bluff_frequency": _tracker_average(
+            s["bluff_frequency"] for s in summaries
+        ),
+        "tracker_value_frequency": _tracker_average(
+            s["value_frequency"] for s in summaries
+        ),
+        "tracker_capped_probability": _tracker_average(
+            s["capped_probability"] for s in summaries
+        ),
         "tracker_confidence": _tracker_average(s["confidence"] for s in summaries),
         "tracker_samples": sum(int(s.get("samples", 0)) for s in summaries),
     }
@@ -1315,7 +1383,9 @@ def average_summary(summaries):
     for hand_class, weight in top_classes:
         merged[hand_class] = merged.get(hand_class, 0.0) + float(weight)
     averaged["tracker_top_classes"] = sorted(
-        merged.items(), key=lambda item: item[1], reverse=True,
+        merged.items(),
+        key=lambda item: item[1],
+        reverse=True,
     )[:_MAX_TOP_CLASSES]
     return averaged
 
@@ -1360,14 +1430,16 @@ def _weighted_strength(hand_range):
 
 def _weight_above_strength(hand_range, threshold):
     return sum(
-        weight for combo, weight in hand_range.weights.items()
+        weight
+        for combo, weight in hand_range.weights.items()
         if weight > 0 and class_strength(combo_class(combo)) >= threshold
     )
 
 
 def _weight_below_strength(hand_range, threshold):
     return sum(
-        weight for combo, weight in hand_range.weights.items()
+        weight
+        for combo, weight in hand_range.weights.items()
         if weight > 0 and class_strength(combo_class(combo)) <= threshold
     )
 
@@ -1399,6 +1471,7 @@ def _tracker_average(values):
     if not values:
         return 0.0
     return sum(values) / len(values)
+
 
 # Fixed position label implementation that uses all seated players instead of dynamic active players
 BUTTON_POSITIONS = {
@@ -1503,7 +1576,9 @@ SET_MINING_MIN_SPR = 8.0  # need deep enough stacks to realize implied odds
 SMALL_PAIR_MULTIWAY_MIN_PLAYERS = 3  # 3+ way pots = too much competition to set-mine
 SMALL_PAIR_MULTIWAY_MAX_PRICE = 0.05  # in multi-way, only call if price is very cheap
 MEDIUM_HAND_MULTIWAY_MIN_PLAYERS = 3  # 3+ way pots require tighter medium-hand defense
-MEDIUM_HAND_MULTIWAY_MAX_PRICE = 0.20  # tighter than 0.35 single-way (top pair value drops)
+MEDIUM_HAND_MULTIWAY_MAX_PRICE = (
+    0.20  # tighter than 0.35 single-way (top pair value drops)
+)
 
 # Above this observed call frequency, suppress weak-pair wet-board pot-control
 # checks and keep the base bet. Empirically (champion-gate ablation) checking
@@ -2691,6 +2766,7 @@ def simple_choose_action(table, my_seat):
 
 # ── adaptive strategy (renamed choose_action to adaptive_choose_action) ───────
 
+
 def adaptive_has_overcard_pressure(hole_cards, board_cards):
     if not board_cards:
         return False
@@ -2784,11 +2860,14 @@ def adaptive_choose_action(table, my_seat):
         # any opponent, middle pair with a weak kicker on a paired board is
         # vulnerable to sets and two pair. Check back rather than thin-value
         # bet into a board that dominates us.
-        if texture.get("paired", False) and made_rank == 1 and not top_pair:
-            pass
-        # High-card boards (A/K/Q/J) dominate bottom pair and weak two pair.
-        # Don't thin-value bet one-pair hands that don't use a top board card.
-        elif texture.get("high", False) and made_rank == 1 and not top_pair:
+        if (
+            texture.get("paired", False)
+            and made_rank == 1
+            and not top_pair
+            or texture.get("high", False)
+            and made_rank == 1
+            and not top_pair
+        ):
             pass
         elif strong:
             amount = adaptive_value_bet_amount(pot, allowed, strong=made_rank >= 3)
@@ -3365,9 +3444,8 @@ def _is_tag_profile(profile):
     vpip = profile.vpip / hands_seen
     pfr = profile.pfr / hands_seen
     label = profile.label().lower()
-    return (
-        label in {"tight", "patient_methodical"}
-        or (vpip <= 0.20 and pfr >= 0.10 and pfr / max(vpip, 0.01) >= 0.60)
+    return label in {"tight", "patient_methodical"} or (
+        vpip <= 0.20 and pfr >= 0.10 and pfr / max(vpip, 0.01) >= 0.60
     )
 
 
@@ -5052,7 +5130,7 @@ def board_assisted_two_pair_guard(table, my_seat, blueprint) -> ActionDecision |
         return None
 
     pair_high_rank = hand_rank[1]  # numeric rank of the higher pair
-    pair_low_rank = hand_rank[2]   # numeric rank of the lower pair
+    pair_low_rank = hand_rank[2]  # numeric rank of the lower pair
 
     # Count how many of the two pair ranks appear in hole cards.
     hole_ranks = {card[0] for card in hole_cards}
@@ -5171,7 +5249,8 @@ def preflop_min_raise_war_cap(table, my_seat, blueprint) -> ActionDecision | Non
     history = table.get("actionHistory") or table.get("action_history") or []
     my_id = (my_seat or {}).get("agentId")
     raise_count = sum(
-        1 for h in history
+        1
+        for h in history
         if h.get("agentId") == my_id
         and h.get("action") in ("raise", "bet")
         and h.get("street") == "Preflop"
@@ -5223,7 +5302,8 @@ def postflop_marginal_hand_war_cap(table, my_seat, blueprint) -> ActionDecision 
     history = table.get("actionHistory") or table.get("action_history") or []
     my_id = (my_seat or {}).get("agentId")
     raise_count = sum(
-        1 for h in history
+        1
+        for h in history
         if h.get("agentId") == my_id
         and h.get("action") in ("raise", "bet")
         and h.get("street") == street
@@ -5260,14 +5340,24 @@ def postflop_marginal_hand_war_cap(table, my_seat, blueprint) -> ActionDecision 
                         None,
                         f"{street.lower()} marginal war cap: fold rank 2 after {raise_count} raises (price {required:.0%})",
                     )
-            return "call", price, f"{street.lower()} marginal war cap: call after {raise_count} raises (rank {rank})"
+            return (
+                "call",
+                price,
+                f"{street.lower()} marginal war cap: call after {raise_count} raises (rank {rank})",
+            )
     if action == "bet" and "check" in available:
-        return "check", None, f"{street.lower()} marginal war cap: check after {raise_count} bets (rank {rank})"
+        return (
+            "check",
+            None,
+            f"{street.lower()} marginal war cap: check after {raise_count} bets (rank {rank})",
+        )
 
     return None
 
 
-def postflop_air_double_barrel_guard(table, my_seat, blueprint) -> ActionDecision | None:
+def postflop_air_double_barrel_guard(
+    table, my_seat, blueprint
+) -> ActionDecision | None:
     """Prevent double-barrelling with complete air postflop.
 
     Arena data (s3v012 run, 38 hands vs real bots) showed 4 hands where
@@ -5311,7 +5401,8 @@ def postflop_air_double_barrel_guard(table, my_seat, blueprint) -> ActionDecisio
     history = table.get("actionHistory") or table.get("action_history") or []
     my_id = (my_seat or {}).get("agentId")
     prior_bets = sum(
-        1 for h in history
+        1
+        for h in history
         if h.get("agentId") == my_id
         and h.get("action") in ("bet", "raise")
         and h.get("street") in ("Flop", "Turn")
@@ -5331,10 +5422,16 @@ def postflop_air_double_barrel_guard(table, my_seat, blueprint) -> ActionDecisio
         return None  # Don't bluff into a strong, confident range
 
     # Air with a prior bet — don't double barrel, check instead
-    return "check", None, f"{street.lower()} air barrel guard: check after {prior_bets} prior bet(s) with air"
+    return (
+        "check",
+        None,
+        f"{street.lower()} air barrel guard: check after {prior_bets} prior bet(s) with air",
+    )
 
 
-def two_pair_paired_board_overfold_guard(table, my_seat, blueprint) -> ActionDecision | None:
+def two_pair_paired_board_overfold_guard(
+    table, my_seat, blueprint
+) -> ActionDecision | None:
     """Don't fold true two pair on paired boards.
 
     Arena data (s3v012 run, 38 hands vs real bots) showed the 4h 4s hand
@@ -5386,7 +5483,11 @@ def two_pair_paired_board_overfold_guard(table, my_seat, blueprint) -> ActionDec
         return None  # Can't call — let normal flow happen
 
     price = call_amount(allowed)
-    return "call", price, "two pair on paired board: call instead of fold (real pocket pair)"
+    return (
+        "call",
+        price,
+        "two pair on paired board: call instead of fold (real pocket pair)",
+    )
 
 
 def preflop_3bet_defense_cap(table, my_seat, blueprint) -> ActionDecision | None:
@@ -6221,9 +6322,15 @@ def profile_fold_to_bet_frequency(profile):
     return folds_val / opportunities
 
 
-def is_tight_opponent(table, vpip_threshold=0.25, fold_to_bet_threshold=0.55,
-                      aggression_threshold=0.35, min_hands=10,
-                      use_frequency_signal=False, dict_only=True):
+def is_tight_opponent(
+    table,
+    vpip_threshold=0.25,
+    fold_to_bet_threshold=0.55,
+    aggression_threshold=0.35,
+    min_hands=10,
+    use_frequency_signal=False,
+    dict_only=True,
+):
     """Detect tight opponents via VPIP, optionally supplemented by frequencies.
 
     1. VPIP-based (default): opponent voluntarily enters very few pots
@@ -6262,8 +6369,10 @@ def is_tight_opponent(table, vpip_threshold=0.25, fold_to_bet_threshold=0.55,
         if use_frequency_signal:
             fold_to_bet = profile_fold_to_bet_frequency(profile)
             aggression = float(profile_aggression_frequency_merged(profile))
-            if (fold_to_bet >= fold_to_bet_threshold
-                    and aggression <= aggression_threshold):
+            if (
+                fold_to_bet >= fold_to_bet_threshold
+                and aggression <= aggression_threshold
+            ):
                 return True
 
     return False
@@ -7564,7 +7673,7 @@ def spr_commitment_lock(table, my_seat, base) -> ActionDecision | None:
 
     opponents = active_opponents(table, my_seat)
     hand_rank = made_hand_rank(hole_cards, board_cards)
-    
+
     # TAG opponents with 0 all-ins are value-heavy when they jam. Don't rescue
     # medium-strength hands (one pair/two pair) from folding at high stack prices.
     if hand_rank in {1, 2} and _has_tag_opponent(table, my_seat):

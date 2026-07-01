@@ -64,13 +64,11 @@ Optimize for heads up (1 opponent table)
 
 from __future__ import annotations
 
-import sys
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
 
 from poker_bot.cfr.kuhn import train_kuhn
 from poker_bot.hand_eval import best_hand_rank_without, evaluate_hand
-from poker_bot.mixing import resolve_distribution, choose_weighted
+from poker_bot.mixing import choose_weighted, resolve_distribution
 from poker_bot.opponents import OpponentProfile, profile_from_mapping
 from poker_bot.range_model import (
     BayesianRangeTracker,
@@ -183,7 +181,9 @@ SET_MINING_MIN_SPR = 8.0  # need deep enough stacks to realize implied odds
 SMALL_PAIR_MULTIWAY_MIN_PLAYERS = 3  # 3+ way pots = too much competition to set-mine
 SMALL_PAIR_MULTIWAY_MAX_PRICE = 0.05  # in multi-way, only call if price is very cheap
 MEDIUM_HAND_MULTIWAY_MIN_PLAYERS = 3  # 3+ way pots require tighter medium-hand defense
-MEDIUM_HAND_MULTIWAY_MAX_PRICE = 0.20  # tighter than 0.35 single-way (top pair value drops)
+MEDIUM_HAND_MULTIWAY_MAX_PRICE = (
+    0.20  # tighter than 0.35 single-way (top pair value drops)
+)
 
 # Above this observed call frequency, suppress weak-pair wet-board pot-control
 # checks and keep the base bet. Empirically (champion-gate ablation) checking
@@ -1468,11 +1468,14 @@ def adaptive_choose_action(table, my_seat):
         # any opponent, middle pair with a weak kicker on a paired board is
         # vulnerable to sets and two pair. Check back rather than thin-value
         # bet into a board that dominates us.
-        if texture.get("paired", False) and made_rank == 1 and not top_pair:
-            pass
-        # High-card boards (A/K/Q/J) dominate bottom pair and weak two pair.
-        # Don't thin-value bet one-pair hands that don't use a top board card.
-        elif texture.get("high", False) and made_rank == 1 and not top_pair:
+        if (
+            texture.get("paired", False)
+            and made_rank == 1
+            and not top_pair
+            or texture.get("high", False)
+            and made_rank == 1
+            and not top_pair
+        ):
             pass
         elif strong:
             amount = adaptive_value_bet_amount(pot, allowed, strong=made_rank >= 3)
@@ -2049,9 +2052,8 @@ def _is_tag_profile(profile):
     vpip = profile.vpip / hands_seen
     pfr = profile.pfr / hands_seen
     label = profile.label().lower()
-    return (
-        label in {"tight", "patient_methodical"}
-        or (vpip <= 0.20 and pfr >= 0.10 and pfr / max(vpip, 0.01) >= 0.60)
+    return label in {"tight", "patient_methodical"} or (
+        vpip <= 0.20 and pfr >= 0.10 and pfr / max(vpip, 0.01) >= 0.60
     )
 
 
@@ -3676,7 +3678,7 @@ def board_assisted_two_pair_guard(table, my_seat, blueprint) -> ActionDecision |
         return None
 
     pair_high_rank = hand_rank[1]  # numeric rank of the higher pair
-    pair_low_rank = hand_rank[2]   # numeric rank of the lower pair
+    pair_low_rank = hand_rank[2]  # numeric rank of the lower pair
 
     # Count how many of the two pair ranks appear in hole cards.
     hole_ranks = {card[0] for card in hole_cards}
@@ -3813,7 +3815,8 @@ def preflop_min_raise_war_cap(table, my_seat, blueprint) -> ActionDecision | Non
     history = table.get("actionHistory") or table.get("action_history") or []
     my_id = (my_seat or {}).get("agentId")
     raise_count = sum(
-        1 for h in history
+        1
+        for h in history
         if h.get("agentId") == my_id
         and h.get("action") in ("raise", "bet")
         and h.get("street") == "Preflop"
@@ -3865,7 +3868,8 @@ def postflop_marginal_hand_war_cap(table, my_seat, blueprint) -> ActionDecision 
     history = table.get("actionHistory") or table.get("action_history") or []
     my_id = (my_seat or {}).get("agentId")
     raise_count = sum(
-        1 for h in history
+        1
+        for h in history
         if h.get("agentId") == my_id
         and h.get("action") in ("raise", "bet")
         and h.get("street") == street
@@ -3889,9 +3893,17 @@ def postflop_marginal_hand_war_cap(table, my_seat, blueprint) -> ActionDecision 
     available = allowed.get("availableActions", [])
     if action == "raise" and "call" in available:
         price = call_amount(allowed)
-        return "call", price, f"{street.lower()} marginal war cap: call after {raise_count} raises (rank {rank})"
+        return (
+            "call",
+            price,
+            f"{street.lower()} marginal war cap: call after {raise_count} raises (rank {rank})",
+        )
     if action == "bet" and "check" in available:
-        return "check", None, f"{street.lower()} marginal war cap: check after {raise_count} bets (rank {rank})"
+        return (
+            "check",
+            None,
+            f"{street.lower()} marginal war cap: check after {raise_count} bets (rank {rank})",
+        )
 
     return None
 
@@ -5968,7 +5980,7 @@ def spr_commitment_lock(table, my_seat, base) -> ActionDecision | None:
 
     opponents = active_opponents(table, my_seat)
     hand_rank = made_hand_rank(hole_cards, board_cards)
-    
+
     # TAG opponents with 0 all-ins are value-heavy when they jam. Don't rescue
     # medium-strength hands (one pair/two pair) from folding at high stack prices.
     if hand_rank in {1, 2} and _has_tag_opponent(table, my_seat):

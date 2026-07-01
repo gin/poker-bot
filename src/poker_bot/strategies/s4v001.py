@@ -5,9 +5,7 @@ cut from s3v017
 
 from __future__ import annotations
 
-import sys
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
 
 from poker_bot.cfr.kuhn import train_kuhn
 from poker_bot.hand_eval import evaluate_hand
@@ -16,7 +14,6 @@ from poker_bot.opponents import OpponentProfile, profile_from_mapping
 from poker_bot.range_model import class_strength, combo_class, estimate_action_range
 from poker_bot.range_model.preflop import position_label
 from poker_bot.strategies import auto_research as original_champion
-from poker_bot.strategies import auto_research_v004 as champion
 from poker_bot.strategies.auto_research_v003 import (
     active_opponents,
     average_opponent_range_strength,
@@ -1763,7 +1760,8 @@ def preflop_premium_3bet_shove(table, my_seat, blueprint) -> ActionDecision | No
     history = table.get("actionHistory") or table.get("action_history") or []
     my_id = (my_seat or {}).get("agentId")
     raise_count = sum(
-        1 for h in history
+        1
+        for h in history
         if h.get("agentId") == my_id
         and h.get("action") in ("raise", "bet")
         and h.get("street") == "Preflop"
@@ -1786,10 +1784,18 @@ def preflop_premium_3bet_shove(table, my_seat, blueprint) -> ActionDecision | No
     available = allowed.get("availableActions", [])
     if "all-in" in available:
         hero_stack = int(my_seat.get("stackChips") or 0)
-        return "all-in", hero_stack, f"preflop war premium shove: {hand} after {raise_count} raise-backs"
+        return (
+            "all-in",
+            hero_stack,
+            f"preflop war premium shove: {hand} after {raise_count} raise-backs",
+        )
     if "raise" in available:
         hero_stack = int(my_seat.get("stackChips") or 0)
-        return "raise", hero_stack, f"preflop war premium shove: {hand} after {raise_count} raise-backs (raise=stack)"
+        return (
+            "raise",
+            hero_stack,
+            f"preflop war premium shove: {hand} after {raise_count} raise-backs (raise=stack)",
+        )
 
     return None
 

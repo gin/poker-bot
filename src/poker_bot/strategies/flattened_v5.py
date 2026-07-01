@@ -19,13 +19,11 @@ Cut from Flattened v5 with incremental changes:
 
 from __future__ import annotations
 
-import sys
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
 
 from poker_bot.cfr.kuhn import train_kuhn
 from poker_bot.hand_eval import best_hand_rank_without, evaluate_hand
-from poker_bot.mixing import resolve_distribution, choose_weighted
+from poker_bot.mixing import choose_weighted, resolve_distribution
 from poker_bot.opponents import OpponentProfile, profile_from_mapping
 from poker_bot.range_model import (
     BayesianRangeTracker,
@@ -63,7 +61,6 @@ def position_label(table, my_seat):
         labels = BUTTON_POSITIONS.get(len(ordered), BUTTON_POSITIONS[6])
         return labels[ordered.index(seat_number)]
     return CANONICAL_6MAX.get(seat_number, "MP")
-
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -389,8 +386,7 @@ def balanced_preflop_action(table, my_seat):
     raise_threshold, call_threshold = preflop_thresholds(table, my_seat)
     blind_size = max(int(allowed.get("minBet") or 0), BIG_BLIND)
     facing_raise = (
-        int(table.get("currentBet") or 0) > blind_size
-        or call_amount_value > blind_size
+        int(table.get("currentBet") or 0) > blind_size or call_amount_value > blind_size
     )
 
     if "raise" in available and score >= raise_threshold:
@@ -569,7 +565,11 @@ def postflop_raise_back_defense(table, my_seat, blueprint):
             amount = postflop_raise_amount(table, allowed)
             return "raise", amount, "postflop value/protection raise rank 2"
         if required <= 0.40:
-            return "call", call_amount_value, "postflop strong pair/trips defense rank 2"
+            return (
+                "call",
+                call_amount_value,
+                "postflop strong pair/trips defense rank 2",
+            )
 
     if medium:
         if (
@@ -682,9 +682,7 @@ def heads_up_dry_board_pressure(table, my_seat, base):
     if rank >= 2 and fragile_rank_two(hole_cards, board_cards, rank):
         return None
     if rank >= 1 or top_pair or score >= (56 if paired else 52):
-        amount = pressure_bet_amount(
-            table, allowed, 0.34 if rank or top_pair else 0.26
-        )
+        amount = pressure_bet_amount(table, allowed, 0.34 if rank or top_pair else 0.26)
         return "bet", amount, f"counter dry-board pressure rank {rank}"
     return None
 
@@ -1081,7 +1079,11 @@ def adaptive_choose_action(table, my_seat):
 
     made_rank = made_hand_rank(hole_cards, board_cards)
     top_pair = has_top_pair_or_better(hole_cards, board_cards)
-    texture = board_texture(board_cards) if board_cards else {"wet": False, "paired": False, "high": False}
+    texture = (
+        board_texture(board_cards)
+        if board_cards
+        else {"wet": False, "paired": False, "high": False}
+    )
     strong = made_rank >= 2
     medium = made_rank == 1 or top_pair
 
@@ -1208,7 +1210,9 @@ def profiled_choose_action(table, my_seat):
 
     if "bet" in available:
         if strong:
-            amount = value_bet(pot, allowed, strong=made_rank >= 4 or tendencies["has_station"])
+            amount = value_bet(
+                pot, allowed, strong=made_rank >= 4 or tendencies["has_station"]
+            )
             return "bet", amount, f"Profiled value bet rank {made_rank}"
         if medium and opponents <= 2:
             amount = value_bet(pot, allowed)
@@ -1333,7 +1337,11 @@ def anti_threshold_choose_action(table, my_seat):
         if medium and opponents <= 1 and anti_threshold_should_cbet(texture, opponents):
             amount = value_bet(pot, allowed)
             return "bet", amount, "Thin value / c-bet"
-        if no_made and opponents <= 1 and anti_threshold_should_cbet(texture, opponents):
+        if (
+            no_made
+            and opponents <= 1
+            and anti_threshold_should_cbet(texture, opponents)
+        ):
             amount = small_pressure_bet(pot, allowed)
             return "bet", amount, "C-bet semi-bluff"
         if medium and opponents <= 2:
@@ -1358,23 +1366,113 @@ def anti_threshold_choose_action(table, my_seat):
 _SIXMAX_OPEN_RANGES = {
     "UTG": {"AA", "KK", "QQ", "JJ", "TT", "99", "AKs", "AKo", "AQs", "AJs", "KQs"},
     "MP": {
-        "AA", "KK", "QQ", "JJ", "TT", "99", "88", "AKs", "AKo", "AQs", "AQo",
-        "AJs", "ATs", "KQs", "KJs", "QJs",
+        "AA",
+        "KK",
+        "QQ",
+        "JJ",
+        "TT",
+        "99",
+        "88",
+        "AKs",
+        "AKo",
+        "AQs",
+        "AQo",
+        "AJs",
+        "ATs",
+        "KQs",
+        "KJs",
+        "QJs",
     },
     "CO": {
-        "AA", "KK", "QQ", "JJ", "TT", "99", "88", "77", "66", "AKs", "AKo",
-        "AQs", "AQo", "AJs", "AJo", "ATs", "A9s", "KQs", "KQo", "KJs", "KTs",
-        "QJs", "QTs", "JTs", "T9s",
+        "AA",
+        "KK",
+        "QQ",
+        "JJ",
+        "TT",
+        "99",
+        "88",
+        "77",
+        "66",
+        "AKs",
+        "AKo",
+        "AQs",
+        "AQo",
+        "AJs",
+        "AJo",
+        "ATs",
+        "A9s",
+        "KQs",
+        "KQo",
+        "KJs",
+        "KTs",
+        "QJs",
+        "QTs",
+        "JTs",
+        "T9s",
     },
     "BTN": {
-        "AA", "KK", "QQ", "JJ", "TT", "99", "88", "77", "66", "55", "44", "33", "22",
-        "AKs", "AKo", "AQs", "AQo", "AJs", "AJo", "ATs", "ATo", "A9s", "A8s", "A7s",
-        "A6s", "A5s", "A4s", "A3s", "A2s", "KQs", "KQo", "KJs", "KJo", "KTs", "K9s",
-        "QJs", "QTs", "Q9s", "JTs", "J9s", "T9s", "98s", "87s", "76s",
+        "AA",
+        "KK",
+        "QQ",
+        "JJ",
+        "TT",
+        "99",
+        "88",
+        "77",
+        "66",
+        "55",
+        "44",
+        "33",
+        "22",
+        "AKs",
+        "AKo",
+        "AQs",
+        "AQo",
+        "AJs",
+        "AJo",
+        "ATs",
+        "ATo",
+        "A9s",
+        "A8s",
+        "A7s",
+        "A6s",
+        "A5s",
+        "A4s",
+        "A3s",
+        "A2s",
+        "KQs",
+        "KQo",
+        "KJs",
+        "KJo",
+        "KTs",
+        "K9s",
+        "QJs",
+        "QTs",
+        "Q9s",
+        "JTs",
+        "J9s",
+        "T9s",
+        "98s",
+        "87s",
+        "76s",
     },
     "SB": {
-        "AA", "KK", "QQ", "JJ", "TT", "99", "88", "AKs", "AKo", "AQs", "AQo",
-        "AJs", "ATs", "KQs", "KJs", "QJs",
+        "AA",
+        "KK",
+        "QQ",
+        "JJ",
+        "TT",
+        "99",
+        "88",
+        "AKs",
+        "AKo",
+        "AQs",
+        "AQo",
+        "AJs",
+        "ATs",
+        "KQs",
+        "KJs",
+        "QJs",
     },
     "BB": {"AA", "KK", "QQ", "JJ", "TT", "AKs", "AKo", "AQs", "AQo", "AJs"},
 }
@@ -1385,7 +1483,8 @@ _SIXMAX_DEFEND_RANGES = {
     "CO": _SIXMAX_OPEN_RANGES["MP"] | {"77", "ATs", "KTs", "QTs", "JTs"},
     "BTN": _SIXMAX_OPEN_RANGES["CO"] | {"55", "44", "33", "22", "A5s", "A4s", "K9s"},
     "SB": {"AA", "KK", "QQ", "JJ", "TT", "99", "AKs", "AKo", "AQs", "AJs", "KQs"},
-    "BB": _SIXMAX_OPEN_RANGES["BTN"] | {"K8s", "Q8s", "J8s", "T8s", "97s", "86s", "75s"},
+    "BB": _SIXMAX_OPEN_RANGES["BTN"]
+    | {"K8s", "Q8s", "J8s", "T8s", "97s", "86s", "75s"},
 }
 
 _SIXMAX_PREMIUMS = {"AA", "KK", "QQ", "JJ", "AKs", "AKo"}
@@ -1508,7 +1607,11 @@ def survival_sixmax_choose_action(table, my_seat):
         table, my_seat
     )
     if baseline_action in available:
-        if street == "Preflop" and baseline_action == "raise" and hand in _SIXMAX_PREMIUMS:
+        if (
+            street == "Preflop"
+            and baseline_action == "raise"
+            and hand in _SIXMAX_PREMIUMS
+        ):
             return baseline_action, baseline_amount, f"Premium {hand} from {position}"
         if street == "Preflop" and baseline_action == "fold":
             return (
@@ -1635,23 +1738,63 @@ _LOOKUP_LOOSE_LABELS = {"bluffer", "loose_aggressive", "calling_station"}
 _LOOKUP_TIGHT_LABELS = {"patient_methodical", "tight_aggressive"}
 
 _LOOKUP_STYLE_POLICY = {
-    "unknown": {"preflop": "profiled", "pressure": "anti_threshold", "defense": "profiled", "open_adjust": 0},
-    "short_handed": {"preflop": "profiled", "pressure": "anti_threshold", "defense": "profiled", "open_adjust": -4},
-    "loose_aggressive": {"preflop": "profiled", "pressure": "anti_threshold", "defense": "profiled", "open_adjust": 4},
-    "loose_passive": {"preflop": "profiled", "pressure": "anti_threshold", "defense": "profiled", "open_adjust": -2},
-    "tight": {"preflop": "profiled", "pressure": "anti_threshold", "defense": "profiled", "open_adjust": -6},
+    "unknown": {
+        "preflop": "profiled",
+        "pressure": "anti_threshold",
+        "defense": "profiled",
+        "open_adjust": 0,
+    },
+    "short_handed": {
+        "preflop": "profiled",
+        "pressure": "anti_threshold",
+        "defense": "profiled",
+        "open_adjust": -4,
+    },
+    "loose_aggressive": {
+        "preflop": "profiled",
+        "pressure": "anti_threshold",
+        "defense": "profiled",
+        "open_adjust": 4,
+    },
+    "loose_passive": {
+        "preflop": "profiled",
+        "pressure": "anti_threshold",
+        "defense": "profiled",
+        "open_adjust": -2,
+    },
+    "tight": {
+        "preflop": "profiled",
+        "pressure": "anti_threshold",
+        "defense": "profiled",
+        "open_adjust": -6,
+    },
 }
 
 _LOOKUP_PREFLOP = {
     "tight": {"steal_scores": {"BTN": 42, "CO": 48, "SB": 52}, "value_3bet_score": 82},
-    "loose_aggressive": {"steal_scores": {"BTN": 54, "CO": 60, "SB": 64}, "value_3bet_score": 76},
-    "loose_passive": {"steal_scores": {"BTN": 48, "CO": 54, "SB": 58}, "value_3bet_score": 80},
-    "unknown": {"steal_scores": {"BTN": 50, "CO": 56, "SB": 60}, "value_3bet_score": 80},
-    "short_handed": {"steal_scores": {"BTN": 38, "CO": 44, "SB": 48}, "value_3bet_score": 74},
+    "loose_aggressive": {
+        "steal_scores": {"BTN": 54, "CO": 60, "SB": 64},
+        "value_3bet_score": 76,
+    },
+    "loose_passive": {
+        "steal_scores": {"BTN": 48, "CO": 54, "SB": 58},
+        "value_3bet_score": 80,
+    },
+    "unknown": {
+        "steal_scores": {"BTN": 50, "CO": 56, "SB": 60},
+        "value_3bet_score": 80,
+    },
+    "short_handed": {
+        "steal_scores": {"BTN": 38, "CO": 44, "SB": 48},
+        "value_3bet_score": 74,
+    },
 }
 
 _LOOKUP_POSTFLOP = {
-    ("loose_aggressive", "medium", "call"): {"max_pot_odds": 0.30, "policy": "bluff_catch"},
+    ("loose_aggressive", "medium", "call"): {
+        "max_pot_odds": 0.30,
+        "policy": "bluff_catch",
+    },
     ("loose_passive", "strong", "bet"): {"size": "large_value", "policy": "thin_value"},
     ("tight", "air", "bet"): {"size": "small_pressure", "policy": "steal_dry_boards"},
     ("unknown", "strong", "bet"): {"size": "value", "policy": "default_value"},
@@ -1740,7 +1883,9 @@ def lookup_style_adjustment(table, my_seat, style, hint):
         score = preflop_score(hole_cards)
         threshold = int(hint.get("value_3bet_score", 80))
         if score >= threshold and style == "loose_aggressive":
-            amount = allowed.get("minRaiseTo") or (allowed.get("raiseRange") or {}).get("min")
+            amount = allowed.get("minRaiseTo") or (allowed.get("raiseRange") or {}).get(
+                "min"
+            )
             return "raise", amount, f"lookup value pressure score {score}"
 
     if street != "Preflop":
@@ -1940,7 +2085,9 @@ def _lookahead_score_candidate(table, my_seat, style, candidate, blueprint):
     active = lookup_active_players(table)
     equity = _lookahead_hand_equity_proxy(table, my_seat)
     rank = made_hand_rank(my_seat.get("holeCards", []), table.get("boardCards", []))
-    bucket = lookup_hand_bucket(my_seat.get("holeCards", []), table.get("boardCards", []))
+    bucket = lookup_hand_bucket(
+        my_seat.get("holeCards", []), table.get("boardCards", [])
+    )
 
     if action == "fold":
         return -call_amount * 0.35 - equity * max(pot, BIG_BLIND) * 0.10
@@ -1990,7 +2137,9 @@ def _lookahead_should_lookahead(table, my_seat, style, blueprint):
     call_amount = int(allowed.get("callAmount") or allowed.get("callChips") or 0)
     required = pot_odds(call_amount, int(table.get("potChips") or 0))
     rank = made_hand_rank(my_seat.get("holeCards", []), table.get("boardCards", []))
-    bucket = lookup_hand_bucket(my_seat.get("holeCards", []), table.get("boardCards", []))
+    bucket = lookup_hand_bucket(
+        my_seat.get("holeCards", []), table.get("boardCards", [])
+    )
     has_profiles = bool(table.get("opponentProfiles"))
     if not has_profiles or style != "loose_aggressive":
         return False
@@ -2014,12 +2163,17 @@ def _lookahead_action(table, my_seat, blueprint_action, blueprint_amount):
         return None
 
     scored = [
-        (_lookahead_score_candidate(table, my_seat, style, candidate, blueprint), candidate)
+        (
+            _lookahead_score_candidate(table, my_seat, style, candidate, blueprint),
+            candidate,
+        )
         for candidate in candidates
     ]
     scored.sort(key=lambda item: item[0], reverse=True)
     best_score, best = scored[0]
-    blueprint_score = _lookahead_score_candidate(table, my_seat, style, blueprint, blueprint)
+    blueprint_score = _lookahead_score_candidate(
+        table, my_seat, style, blueprint, blueprint
+    )
     if best == blueprint or best_score < blueprint_score + 5:
         return None
     action, amount = best
