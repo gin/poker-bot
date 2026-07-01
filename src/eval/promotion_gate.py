@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -139,6 +141,7 @@ class PromotionGateReport:
     output_json: str | None = None
     output_markdown: str | None = None
     history_index: str | None = None
+    model_checkpoint: str | None = None
 
     @property
     def passed(self):
@@ -476,7 +479,27 @@ def run_git_command(args):
     }
 
 
-def build_reproducibility_snapshot(candidate, champion):
+@contextlib.contextmanager
+def _env_override(key: str, value: str):
+    """Temporarily override an os.environ key inside a with block."""
+    prev = os.environ.get(key)
+    os.environ[key] = value
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = prev
+
+
+def build_reproducibility_snapshot(
+    candidate,
+    champion,
+    *,
+    candidate_checkpoint=None,
+    champion_checkpoint=None,
+):
     status = run_git_command(("status", "--short"))
     head = run_git_command(("rev-parse", "HEAD"))
     branch = run_git_command(("rev-parse", "--abbrev-ref", "HEAD"))
@@ -541,6 +564,10 @@ def run_promotion_gate(
     output_markdown=None,
     history_index=None,
     generated_at=None,
+    nn_mode=None,
+    candidate_checkpoint=None,
+    champion_checkpoint=None,
+    workers=0,
 ):
     started = time.perf_counter()
     config = load_promotion_config(config_path)
@@ -551,7 +578,12 @@ def run_promotion_gate(
     if generated_at is None:
         generated_at = datetime.now(UTC).isoformat(timespec="seconds")
     attempt_id = format_attempt_id(generated_at)
-    reproducibility = build_reproducibility_snapshot(candidate, champion)
+    reproducibility = build_reproducibility_snapshot(
+        candidate,
+        champion,
+        candidate_checkpoint=candidate_checkpoint,
+        champion_checkpoint=champion_checkpoint,
+    )
 
     scenario_tests = run_scenario_tests(
         config.scenario_tests,
@@ -577,25 +609,106 @@ def run_promotion_gate(
             output_json=str(output_json) if output_json else None,
             output_markdown=str(output_markdown) if output_markdown else None,
             history_index=str(history_index) if history_index else None,
+            model_checkpoint=candidate_checkpoint,
         )
         write_outputs(report, output_json, output_markdown, history_index)
         return report
 
+    # For NN strategies, set NN_MODE so the arbiter activates the model.
+    nn_mode_ctx = contextlib.nullcontext()
+    if nn_mode:
+        nn_mode_ctx = _env_override("NN_MODE", nn_mode)
+
+    # For NN strategies, also set policy/value checkpoint paths
+    # for candidate and baseline
+    candidate_policy_ctx = contextlib.nullcontext()
+    candidate_value_ctx = contextlib.nullcontext()
+    baseline_policy_ctx = contextlib.nullcontext()
+    baseline_value_ctx = contextlib.nullcontext()
+
+    if candidate_checkpoint:
+        candidate_policy_ctx = _env_override(
+            "NN_POLICY_PATH", str(candidate_checkpoint)
+        )
+        # Also set value path if there's a matching value file
+        value_candidate = str(
+            Path(candidate_checkpoint).with_name(
+                Path(candidate_checkpoint).stem.replace("policy_", "value_")
+                + Path(candidate_checkpoint).suffix
+            )
+        )
+        if Path(value_candidate).exists():
+            candidate_value_ctx = _env_override("NN_VALUE_PATH", value_candidate)
+
+    if champion_checkpoint:
+        baseline_policy_ctx = _env_override("NN_POLICY_PATH", str(champion_checkpoint))
+        value_champion = str(
+            Path(champion_checkpoint).with_name(
+                Path(champion_checkpoint).stem.replace("policy_", "value_")
+                + Path(champion_checkpoint).suffix
+            )
+        )
+        if Path(value_champion).exists():
+            baseline_value_ctx = _env_override("NN_VALUE_PATH", value_champion)
+
     opponents = build_opponent_pool(config, champion)
-    benchmark_report = benchmark.run_benchmark(
-        candidate,
-        opponents=opponents,
-        players=config.players,
-        seeds=config.seeds,
-        hands=config.hands,
-        track_opponents=config.track_opponents,
-        baseline_strat=champion,
-        min_delta_bb_per_100=config.min_delta_bb_per_100,
-        runner=benchmark_runner,
-        workers=config.workers,
-    )
+
+    # We need to run candidate and baseline with different model checkpoints.
+    # Since the arbiter caches loaded models, we run them sequentially with
+    # appropriate env vars and clear the arbiter cache between runs.
+    with nn_mode_ctx:
+        # Run candidate
+        with candidate_policy_ctx, candidate_value_ctx:
+            from poker_bot.strategies.nnbase import _clear_arbiter_cache
+
+            _clear_arbiter_cache()
+            candidate_report = benchmark.run_benchmark(
+                candidate,
+                opponents=opponents,
+                players=config.players,
+                seeds=config.seeds,
+                hands=config.hands,
+                track_opponents=config.track_opponents,
+                baseline_strat=None,  # no baseline for candidate-only run
+                min_delta_bb_per_100=config.min_delta_bb_per_100,
+                runner=benchmark_runner,
+                workers=workers,
+            )
+
+        # Run baseline with champion's checkpoint
+        with baseline_policy_ctx, baseline_value_ctx:
+            from poker_bot.strategies.nnbase import _clear_arbiter_cache
+
+            _clear_arbiter_cache()
+            baseline_report = benchmark.run_benchmark(
+                champion,
+                opponents=opponents,
+                players=config.players,
+                seeds=config.seeds,
+                hands=config.hands,
+                track_opponents=config.track_opponents,
+                baseline_strat=None,
+                min_delta_bb_per_100=config.min_delta_bb_per_100,
+                runner=benchmark_runner,
+                workers=workers,
+            )
+
+    # Combine candidate and baseline reports for gate evaluation
     seed_variance = calculate_seed_variance(
-        benchmark_report, config.min_delta_bb_per_100
+        replace(candidate_report, baseline_results=baseline_report.results),
+        config.min_delta_bb_per_100,
+    )
+    # Both reports have the SAME cases (same opponents × seeds), run twice.
+    # We use candidate's cases/results, baseline's baseline_results, and
+    # combine aggregates/comparisons.
+    benchmark_report = replace(
+        candidate_report,
+        baseline_results=baseline_report.results,
+        aggregates=candidate_report.aggregates + baseline_report.aggregates,
+        baseline_aggregates=baseline_report.aggregates,
+        comparisons=candidate_report.comparisons + baseline_report.comparisons,
+        elapsed=candidate_report.elapsed + baseline_report.elapsed,
+        baseline_strat=champion,
     )
     population_report = None
     population_check = ()
@@ -1005,6 +1118,23 @@ def build_parser():
         action="store_true",
         help="Run all gates and write reports without updating champion.json.",
     )
+    parser.add_argument(
+        "--nn-mode",
+        default=None,
+        help="NN_MODE env var to set during benchmark (e.g. '6max_active'). "
+        "Required when evaluating an nnbase-like strategy.",
+    )
+    parser.add_argument(
+        "--model-checkpoint",
+        default=None,
+        help="Path to candidate .pt checkpoint. Stored in reproducibility snapshot.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Number of workers for self-play (0 = auto, default: %(default)s)",
+    )
     return parser
 
 
@@ -1039,6 +1169,9 @@ def main(argv=None):
             output_markdown=output_markdown,
             history_index=history_index,
             generated_at=generated_at,
+            nn_mode=args.nn_mode,
+            candidate_checkpoint=args.model_checkpoint,
+            workers=args.workers,
         )
     except ValueError as exc:
         print(f"promotion-gate: {exc}", file=sys.stderr)

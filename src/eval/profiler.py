@@ -20,9 +20,8 @@ Metrics:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Callable
-
+from collections.abc import Callable
+from dataclasses import dataclass
 
 # ------------------------------------------------------------------
 # Per-hand raw data  (collected by PlayProfiler._observe)
