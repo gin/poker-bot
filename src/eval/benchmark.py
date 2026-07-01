@@ -3,12 +3,16 @@
 import argparse
 import concurrent.futures
 import json
+import multiprocessing
 import os
 import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+
+# Use 'spawn' to avoid fork() deadlock issues with threaded parents
+multiprocessing.set_start_method('spawn', force=True)
 
 from eval.profiler import (
     PlayProfiler,

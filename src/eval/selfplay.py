@@ -2,6 +2,7 @@
 
 import argparse
 import concurrent.futures
+import multiprocessing
 import os
 import random
 import sys
@@ -10,6 +11,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
+
+# Use 'spawn' to avoid fork() deadlock issues with threaded parents
+multiprocessing.set_start_method('spawn', force=True)
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
