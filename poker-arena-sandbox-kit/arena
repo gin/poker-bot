@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Arena SDK CLI wrapper.
+#   ./arena register|claim|access|comps|selfplay|pack|submit|version ...
+# Uses the repo .venv if present, else the system python3.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PY="${HERE}/.venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3)"
+exec "$PY" -m arena_sdk "$@"

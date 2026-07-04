@@ -1,0 +1,29 @@
+# credentials / local state — never commit
+.arena-credentials
+.arena-poker-state
+.env
+
+# internal dev scaffolding — never ship to users
+OPTIMIZATION_LOG.md
+edge_runner.py
+s44_bots/
+
+# build / venv / caches
+.DS_Store
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+bundle.zip
+
+# caches / build artifacts
+.omc/
+.pytest_cache/
+# user working files (created by following the README)
+/strategy.py
+
+# internal test scaffolding — never ship
+e2e_*.py
+*.log

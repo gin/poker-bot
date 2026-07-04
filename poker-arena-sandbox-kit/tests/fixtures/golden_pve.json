@@ -1,0 +1,19 @@
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "status": "Succeeded",
+  "template": "static-agent",
+  "competitionId": "cmp_example_pve",
+  "agentId": "agt_example",
+  "bundleSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "submittedAt": 1782118712602,
+  "startedAt": 1782118712677,
+  "finishedAt": 1782118793879,
+  "completedHands": 20,
+  "targetHands": 20,
+  "rawBbPer100": 1175,
+  "adjustedBbPer100": 402.2877139639639,
+  "pvp": null,
+  "traceObjectKey": "arena/sandbox-submissions/example/run-logs.zip",
+  "errorCode": null,
+  "error": null
+}

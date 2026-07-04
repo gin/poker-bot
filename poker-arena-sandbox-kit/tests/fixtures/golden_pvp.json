@@ -1,0 +1,32 @@
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "status": "Succeeded",
+  "template": "static-agent",
+  "competitionId": "cmp_example_pvp",
+  "agentId": "agt_example",
+  "bundleSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "submittedAt": 1782118402663,
+  "startedAt": 1782118402751,
+  "finishedAt": 1782118453151,
+  "completedHands": 5,
+  "targetHands": 5,
+  "rawBbPer100": 20,
+  "adjustedBbPer100": 20,
+  "pvp": {
+    "botId": "bot_example",
+    "status": "Active",
+    "completedHands": 0,
+    "targetHands": 5000,
+    "rawBbPer100": 0,
+    "adjustedBbPer100": 0,
+    "trueskillMu": 25,
+    "trueskillSigma": 8.333333333333334,
+    "trueskillScore": 0,
+    "activatedAt": 1782118453169,
+    "finishedAt": null,
+    "error": null
+  },
+  "traceObjectKey": "arena/sandbox-submissions/example/run-logs.zip",
+  "errorCode": null,
+  "error": null
+}
