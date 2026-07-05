@@ -69,7 +69,7 @@ RAW_DUMP_DIR = Path(
         str(Path(__file__).resolve().parent / "raw-data"),
     )
 )
-RAW_DUMP_MAX_FILES = int(os.environ.get("POKER_BOT_RAW_DUMP_MAX", "200"))
+RAW_DUMP_MAX_FILES = int(os.environ.get("POKER_BOT_RAW_DUMP_MAX", "0"))
 
 PUBLIC_MESSAGE_ALPHABET = string.ascii_letters + string.digits
 POLL_INTERVAL_SECONDS = 2

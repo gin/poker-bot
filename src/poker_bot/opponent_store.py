@@ -256,6 +256,35 @@ def init_db(conn):
     conn.commit()
 
 
+def ensure_guard_overrides_table(conn) -> None:
+    """Create the guard_overrides table if it does not exist."""
+    conn.executescript(
+        """
+        create table if not exists guard_overrides (
+            id integer primary key,
+            run_id text not null references telemetry_runs(run_id),
+            hand_id text not null,
+            decision_index integer not null,
+            guard_id text not null,
+            pre_decision integer not null default 0,
+            original_action text not null,
+            final_action text not null,
+            reason text not null,
+            street text,
+            pot_chips integer,
+            call_amount integer,
+            available_actions text,
+            created_at text not null default current_timestamp
+        );
+        create index if not exists idx_guard_overrides_run
+            on guard_overrides(run_id);
+        create index if not exists idx_guard_overrides_guard
+            on guard_overrides(guard_id);
+        """
+    )
+    conn.commit()
+
+
 def _ensure_columns(conn, table, columns):
     existing = {
         row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()
