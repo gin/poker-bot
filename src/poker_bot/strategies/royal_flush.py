@@ -11,6 +11,10 @@ allowed, and call only when facing action without a legal raise.
 
 from __future__ import annotations
 
+from poker_bot.neural.guardrails import (
+    royal_flush_possible,
+    royal_flush_predecision_guard,
+)
 from poker_bot.strategies import survival_lookahead, survival_lookup
 from poker_bot.strategies.adaptive import (
     BIG_BLIND,
