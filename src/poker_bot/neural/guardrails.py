@@ -1,4 +1,4 @@
-'''
+"""
 Unified guardrails system for poker bot.
 
 Provides pre-decision and post-decision guards that can be imported
@@ -7,7 +7,7 @@ into any strategy. All guard overrides are logged to the database.
 Guard Types:
 - Pre-decision: run BEFORE the NN/strategy proposes an action; can short-circuit.
 - Post-decision: run AFTER the NN/strategy proposes; can override to a safer action.
-'''
+"""
 
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 GuardId = str
-GuardFunc = Callable[[dict[str, Any], dict[str, Any]], Optional['GuardResult']]
-PostGuardFunc = Callable[[dict[str, Any], dict[str, Any], str], Optional['GuardResult']]
+GuardFunc = Callable[[dict[str, Any], dict[str, Any]], Optional["GuardResult"]]
+PostGuardFunc = Callable[[dict[str, Any], dict[str, Any], str], Optional["GuardResult"]]
+
 
 @dataclass(frozen=True)
 class GuardResult:
@@ -113,9 +114,7 @@ class GuardRail:
         return _action_from_guard(guard_result, table)
 
 
-RANK_VALUES = {
-    rank: index for index, rank in enumerate("23456789TJQKA", start=2)
-}
+RANK_VALUES = {rank: index for index, rank in enumerate("23456789TJQKA", start=2)}
 
 ROYAL_RANKS = {"T", "J", "Q", "K", "A"}
 ROYAL_SUITS = {"S", "H", "D", "C"}
@@ -343,7 +342,7 @@ def trips_on_paired_board_cap(
     table: dict[str, Any], my_seat: dict[str, Any], proposed_action: str
 ) -> Optional[GuardResult]:
     """Prevent massive overbets with trips on paired board.
-    
+
     If we have trips (made_rank == 3) on a paired board and the raise
     would be > 1.5x pot, cap to call instead.
     """

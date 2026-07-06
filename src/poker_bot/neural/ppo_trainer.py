@@ -8,6 +8,7 @@ Self-play reinforcement learning with experience replay:
   5. PPO update on the policy network
   6. Repeat
 """
+
 import contextlib
 import json
 import os
@@ -242,7 +243,7 @@ def train_ppo(
     )
 
     best_bb100 = -float("inf")
-    
+
     # Resolve workers: 0 = auto (cpu_count // 2, capped at 12)
     if workers <= 0:
         num_workers = min((os.cpu_count() or 4) // 2, 12)
@@ -275,12 +276,16 @@ def train_ppo(
 
         # Build opponent string: need exactly num_players-1 opponents
         # Rebuild pool each iteration if rotating for diversity
-        cycle_pool = _build_opponent_pool(
-            opponent_strategies=opponent_strategies,
-            num_players=num_players,
-            pool_size=pool_size,
-            rotate=rotate_opponents,
-        ) if rotate_opponents else opponent_pool
+        cycle_pool = (
+            _build_opponent_pool(
+                opponent_strategies=opponent_strategies,
+                num_players=num_players,
+                pool_size=pool_size,
+                rotate=rotate_opponents,
+            )
+            if rotate_opponents
+            else opponent_pool
+        )
         opponent_sequences = []
         for i in range(num_players - 1):
             opponent_sequences.append(cycle_pool[i % len(cycle_pool)])
@@ -313,8 +318,12 @@ def train_ppo(
 
         try:
             result = subprocess.run(
-                cmd, cwd=project_root, env=env,
-                capture_output=True, text=True, timeout=600,
+                cmd,
+                cwd=project_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=600,
             )
         except subprocess.TimeoutExpired:
             print(f"Iter {it + 1}: self-play timed out")
@@ -332,8 +341,8 @@ def train_ppo(
 
         # Collect new data (log_probs recomputed below to match
         # current policy — eliminates off-policy drift)
-        new_states, new_actions, _, new_rewards, new_dones = (
-            collect_from_telemetry(model, str(telemetry_db), device)
+        new_states, new_actions, _, new_rewards, new_dones = collect_from_telemetry(
+            model, str(telemetry_db), device
         )
         buffer.add(new_states, new_actions, _, new_rewards, new_dones)
 
@@ -349,7 +358,9 @@ def train_ppo(
         # PPO update
         states = torch.tensor(buffer.states, dtype=torch.float32, device=device)
         actions = torch.tensor(buffer.actions, dtype=torch.long, device=device)
-        old_log_probs = torch.tensor(buffer.log_probs, dtype=torch.float32, device=device)
+        old_log_probs = torch.tensor(
+            buffer.log_probs, dtype=torch.float32, device=device
+        )
         rewards = torch.tensor(buffer.rewards, dtype=torch.float32, device=device)
         dones = torch.tensor(buffer.dones, dtype=torch.float32, device=device)
 

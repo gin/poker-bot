@@ -1,4 +1,5 @@
 """Neural arbiter for NN vs heuristic action selection."""
+
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -6,7 +7,12 @@ from typing import Any, Optional
 import torch
 
 from poker_bot.neural.encoder import encode_state
-from poker_bot.neural.guardrails import GuardRail, GuardResult, get_guardrail, _action_from_guard
+from poker_bot.neural.guardrails import (
+    GuardRail,
+    GuardResult,
+    get_guardrail,
+    _action_from_guard,
+)
 from poker_bot.neural.models import ACTION_MAP, PolicyNetwork
 
 INPUT_DIM = 31
@@ -50,7 +56,9 @@ class NeuralArbiter:
             self.policy_net = PolicyNetwork(input_dim=INPUT_DIM)
             if Path(self.policy_path).exists():
                 self.policy_net.load_state_dict(
-                    torch.load(self.policy_path, map_location=self.device, weights_only=True)
+                    torch.load(
+                        self.policy_path, map_location=self.device, weights_only=True
+                    )
                 )
             self.policy_net.to(self.device)
             self.policy_net.eval()
@@ -98,7 +106,9 @@ class NeuralArbiter:
                     heuristic_action,
                     f"shadow pre_guard={pre_guard.guard_id} reason={pre_guard.reason}",
                 )
-            action, reason = self._apply_and_log(pre_guard, table, hero_seat, heuristic_action)
+            action, reason = self._apply_and_log(
+                pre_guard, table, hero_seat, heuristic_action
+            )
             return action, reason
 
         # 2. NN Proposal
@@ -146,7 +156,9 @@ class NeuralArbiter:
 
         # 5. Apply post-decision guard if it fired
         if post_guard.fired:
-            action, reason = self._apply_and_log(post_guard, table, hero_seat, heuristic_action)
+            action, reason = self._apply_and_log(
+                post_guard, table, hero_seat, heuristic_action
+            )
             return action, reason
 
         return nn_action, f"nn_active conf={confidence:.2f}"
@@ -155,7 +167,9 @@ class NeuralArbiter:
         """Shadow-Mode decision for A/B logging."""
         orig_mode = self.mode
         self.mode = "shadow"
-        action, reason = self.decide(table, hero_seat, heuristic_action, opponent_profile=opponent_profile)
+        action, reason = self.decide(
+            table, hero_seat, heuristic_action, opponent_profile=opponent_profile
+        )
         self.mode = orig_mode
         return {
             "heuristic_action": heuristic_action,
