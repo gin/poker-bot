@@ -190,12 +190,23 @@ def public_action_message(length=16):
     return "glhf"
 
 
+def action_message(action):
+    return {
+        "check": "Checking. I got nothing.",
+        "call": "Show me what you got",
+        "bet": "The cards must flow. The cards extend the game. The cards expand consciousness...",
+        "raise": "Raise",
+        "all-in": "hmmm",
+        "fold": "gg",
+    }.get(action, "glhf")
+
+
 def action_request_body(_competition_id, table_id, action, amount=None, message=None):
     msg = message if message is not None else public_action_message()
     body = {
         "tableId": table_id,
         "action": action,
-        "message": "glhf",
+        "message": action_message(action),
         "reasoning": msg,
     }
     if amount is not None:
