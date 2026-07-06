@@ -1,2 +1,1 @@
 """Profiler bot package."""
-

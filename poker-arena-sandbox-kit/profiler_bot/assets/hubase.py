@@ -788,6 +788,14 @@ def profile_from_mapping(agent_id, data):
                     )
                 except (ValueError, TypeError):
                     profile.api_fetched_at = None
+    profile.api_source_used = bool(data.get("api_source_used", False))
+    profile.api_sample_size = int(data.get("api_sample_size") or 0)
+    api_aggr_freq = data.get("api_aggr_freq")
+    if api_aggr_freq is not None:
+        try:
+            profile.api_aggr_freq = float(api_aggr_freq)
+        except (TypeError, ValueError):
+            profile.api_aggr_freq = None
     for action in data.get("recent_actions", []):
         profile.recent_actions.append(action)
     return profile
@@ -4940,15 +4948,17 @@ def _profile_vpip_frequency(profile):
 
 
 # ── Turn two-pair value-bet suppression thresholds (metric-driven) ──────────
-_TURN_TWO_PAIR_SUPPRESS_VPIP = 0.30         # tight preflop -> polarized continuing range
+_TURN_TWO_PAIR_SUPPRESS_VPIP = 0.30  # tight preflop -> polarized continuing range
 _TURN_TWO_PAIR_SUPPRESS_FOLD_TO_BET = 0.55  # folds to bets -> only calls with better
-_TURN_TWO_PAIR_SUPPRESS_AGGR = 0.35         # passive -> raises weighted toward strong
-_TURN_TWO_PAIR_STATION_CALL = 0.50          # calling station -> keep value betting
-_TURN_TWO_PAIR_LOOSE_VPIP = 0.45            # loose -> calls with worse -> keep value betting
-_TURN_TWO_PAIR_MIN_SPR = 3.0                # below this two pair is pot-committed -> commit
+_TURN_TWO_PAIR_SUPPRESS_AGGR = 0.35  # passive -> raises weighted toward strong
+_TURN_TWO_PAIR_STATION_CALL = 0.50  # calling station -> keep value betting
+_TURN_TWO_PAIR_LOOSE_VPIP = 0.45  # loose -> calls with worse -> keep value betting
+_TURN_TWO_PAIR_MIN_SPR = 3.0  # below this two pair is pot-committed -> commit
 
 # ── Turn weak-hand fold vs tight raise thresholds (metric-driven) ────────────
-_TURN_WEAK_FOLD_MIN_POT_ODDS = 0.25         # only fold if paying >= 25% pot odds (skip min-raises)
+_TURN_WEAK_FOLD_MIN_POT_ODDS = (
+    0.25  # only fold if paying >= 25% pot odds (skip min-raises)
+)
 
 
 def turn_two_pair_bet_suppression(table, my_seat, blueprint) -> ActionDecision | None:
@@ -5086,7 +5096,9 @@ def rank_two_facing_bet_guard(table, my_seat, blueprint) -> ActionDecision | Non
     return None
 
 
-def turn_weak_hand_fold_vs_tight_raise(table, my_seat, blueprint) -> ActionDecision | None:
+def turn_weak_hand_fold_vs_tight_raise(
+    table, my_seat, blueprint
+) -> ActionDecision | None:
     """Fold weak made hands vs a tight opponent's turn raise.
 
     Fires when hero does NOT have a high-probability win given the flop+turn
@@ -5170,7 +5182,11 @@ def turn_weak_hand_fold_vs_tight_raise(table, my_seat, blueprint) -> ActionDecis
     if not value_owned:
         return None
 
-    return "fold", None, "turn weak hand (non-top pair / high card) vs tight raise: fold"
+    return (
+        "fold",
+        None,
+        "turn weak hand (non-top pair / high card) vs tight raise: fold",
+    )
 
 
 def board_dominated_trips_guard(table, my_seat, blueprint) -> ActionDecision | None:
@@ -6087,8 +6103,8 @@ def _opponent_is_bluffy(profile, min_wasd=0.30):
 
 
 # ── Flop HU bluff-catch extension thresholds ────────────────────────────────
-_FLOP_BLUFFCATCH_MAX_POT_ODDS = 0.25    # need ~25% equity to justify the call
-_FLOP_BLUFFCATCH_MIN_WASD = 0.30       # opponent shows down weak hands >= 30%
+_FLOP_BLUFFCATCH_MAX_POT_ODDS = 0.25  # need ~25% equity to justify the call
+_FLOP_BLUFFCATCH_MIN_WASD = 0.30  # opponent shows down weak hands >= 30%
 
 
 def flop_hu_bluffcatch_guard(table, my_seat, base) -> ActionDecision | None:
@@ -6190,7 +6206,11 @@ def flop_hu_bluffcatch_guard(table, my_seat, base) -> ActionDecision | None:
     if not _opponent_is_bluffy(profile, min_wasd=_FLOP_BLUFFCATCH_MIN_WASD):
         return None
 
-    return "call", price, f"{street.lower()} HU bluff-catch rank {rank} vs bluffy opponent (dry board)"
+    return (
+        "call",
+        price,
+        f"{street.lower()} HU bluff-catch rank {rank} vs bluffy opponent (dry board)",
+    )
 
 
 def river_two_pair_facing_bet_call_guard(table, my_seat, base) -> ActionDecision | None:
@@ -8262,7 +8282,6 @@ def sixmax_adjustment(table, my_seat, base) -> ActionDecision | None:
         board_assisted_two_pair_guard,  # over-value leak: board-assisted two pair on paired board
         turn_two_pair_bet_suppression,  # turn two-pair value-bet leak vs tight/passive (metric-driven)
         turn_weak_hand_fold_vs_tight_raise,  # fold high-card/non-top-pair vs tight raise (metric-driven)
-
         preflop_premium_3bet_shove,  # shove AA/KK/QQ/AKs/KQs after 3+ raise-backs
         preflop_min_raise_war_cap,  # cap preflop min-raise wars after 3 raise-backs
         postflop_marginal_hand_war_cap,  # cap postflop raises with marginal hands (rank < 3)

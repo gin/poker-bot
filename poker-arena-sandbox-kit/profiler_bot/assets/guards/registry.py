@@ -30,22 +30,30 @@ class GuardRail:
     def __init__(self) -> None:
         self._guards: list[GuardMeta] = []
 
-
-    def register(self, guard_id: str, phase: str, precedence: int,
-                table_sizes: list[str] | None = None, description: str = ""):
+    def register(
+        self,
+        guard_id: str,
+        phase: str,
+        precedence: int,
+        table_sizes: list[str] | None = None,
+        description: str = "",
+    ):
         """Register a guard."""
-        def decorator(func: Callable) -> Callable:
-            self._guards.append(GuardMeta(
-                guard_id=guard_id,
-                phase=phase,
-                precedence=precedence,
-                table_sizes=table_sizes or ["hu", "6max"],
-                description=description,
-                func=func,
-            ))
-            return func
-        return decorator
 
+        def decorator(func: Callable) -> Callable:
+            self._guards.append(
+                GuardMeta(
+                    guard_id=guard_id,
+                    phase=phase,
+                    precedence=precedence,
+                    table_sizes=table_sizes or ["hu", "6max"],
+                    description=description,
+                    func=func,
+                )
+            )
+            return func
+
+        return decorator
 
     def run_pre(self, ctx: GuardContext) -> Optional[tuple[ActionDecision, str]]:
         """Run pre-decision guards."""
@@ -55,4 +63,17 @@ class GuardRail:
             result = meta.func(ctx)
             if result is not None:
                 return result, meta.guard_id
+        return None
+
+    def run_post(
+        self, ctx: GuardContext, proposed: ActionDecision
+    ) -> Optional[tuple[ActionDecision, str]]:
+        """Run post-decision guards."""
+        for meta in sorted(self._guards, key=lambda m: m.precedence):
+            if meta.phase != "post":
+                continue
+            result = meta.func(ctx, proposed)
+            if result is not None and result != proposed:
+                return result, meta.guard_id
+            proposed = result or proposed
         return None

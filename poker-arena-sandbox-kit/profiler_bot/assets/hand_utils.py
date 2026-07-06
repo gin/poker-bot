@@ -36,19 +36,25 @@ def _rank_five(cards):
     flush_suit = next((s for s, c in suits.items() if c >= 5), None)
     flush_ranks = []
     if flush_suit:
-        flush_ranks = sorted([values[c[0]] for c in cards if c[1] == flush_suit], reverse=True)
+        flush_ranks = sorted(
+            [values[c[0]] for c in cards if c[1] == flush_suit], reverse=True
+        )
     unique_ranks = sorted(set(ranks), reverse=True)
     wheel_ranks = [5, 4, 3, 2, 1] if 14 in unique_ranks else []
 
     def _st(rank_list):
         for i in range(len(rank_list) - 4):
-            w = rank_list[i:i + 5]
+            w = rank_list[i : i + 5]
             if w[0] - w[4] == 4 and len(set(w)) == 5:
                 return w[0]
         return None
 
     straight_top = _st(unique_ranks)
-    if straight_top is None and wheel_ranks and all(r in unique_ranks for r in [5, 4, 3, 2, 14]):
+    if (
+        straight_top is None
+        and wheel_ranks
+        and all(r in unique_ranks for r in [5, 4, 3, 2, 14])
+    ):
         straight_top = 5
     sf_top = None
     if flush_suit:
@@ -81,6 +87,7 @@ def _rank_five(cards):
         return (1, pr, *k)
     return (0, *unique_ranks[:5])
 
+
 def evaluate_hand(cards):
     """Evaluate the best 5-card hand from a list of cards (>=5 cards)."""
     return max(_rank_five(combo) for combo in _itertools.combinations(cards, 5))
@@ -112,6 +119,7 @@ def _best_hand_without(cards, drop_cards):
 
 # ── Card / Rank Utilities ──────────────────────────────────────────────────
 
+
 def card_values(cards):
     return [RANK_VALUES.get(card[0], 0) for card in cards]
 
@@ -140,7 +148,9 @@ def made_hand_rank(hole_cards, board_cards):
         return 0
     return category
 
+
 # ── Pot / Odds ─────────────────────────────────────────────────────────────
+
 
 def pot_odds(call_amount, pot):
     if call_amount <= 0:
@@ -150,19 +160,20 @@ def pot_odds(call_amount, pot):
 
 def effective_pot(table):
     pot = int(table.get("potChips") or 0)
-    live_bets = sum(int(seat.get("currentBetChips") or 0) for seat in table.get("seats", []))
+    live_bets = sum(
+        int(seat.get("currentBetChips") or 0) for seat in table.get("seats", [])
+    )
     return pot + live_bets
 
 
 # ── Board Texture ──────────────────────────────────────────────────────────
 
+
 def board_texture(board_cards):
     suits = [card[1] for card in board_cards]
     values = sorted(set(card_values(board_cards)))
     max_suit_count = max((suits.count(s) for s in set(suits)), default=0)
-    connected = any(
-        values[i + 2] - values[i] <= 4 for i in range(len(values) - 2)
-    )
+    connected = any(values[i + 2] - values[i] <= 4 for i in range(len(values) - 2))
     paired = len(values) < len(board_cards)
     return {
         "wet": max_suit_count >= 3 or connected,
@@ -192,7 +203,9 @@ def top_pair_kicker_value(hole_cards, board_cards):
         return None
     return max(v for v in hole_values if v != board_high)
 
+
 # ── Paired Board / Two Pair Fragility ──────────────────────────────────────
+
 
 def paired_board_ranks(board_cards):
     return {v for v, c in rank_counts(board_cards).items() if c >= 2}
@@ -251,7 +264,9 @@ def non_nut_trips_board_full_house(hole_cards, board_cards):
         return False
     return pair_rank < RANK_VALUES["A"]
 
+
 # ── Draw Detection ─────────────────────────────────────────────────────────
+
 
 def has_flush_draw(hole_cards, board_cards):
     if len(board_cards) not in {3, 4}:
@@ -280,6 +295,7 @@ def has_good_draw(hole_cards, board_cards):
 
 
 # ── Table / Seat Utilities ─────────────────────────────────────────────────
+
 
 def active_seat_numbers(table):
     return [
@@ -314,14 +330,17 @@ def live_opponent_seats(table, my_seat):
     hero_id = (my_seat or {}).get("agentId")
     hero_seat = (my_seat or {}).get("seatNumber")
     return [
-        s for s in table.get("seats", [])
+        s
+        for s in table.get("seats", [])
         if s.get("agentId") != hero_id
         and s.get("seatNumber") != hero_seat
         and not s.get("folded", False)
         and not s.get("hasFolded", False)
     ]
 
+
 # ── Action Helpers ─────────────────────────────────────────────────────────
+
 
 def call_amount(allowed):
     return int(allowed.get("callAmount") or allowed.get("callChips") or 0)
@@ -372,12 +391,15 @@ def no_large_preflop_raise(table, allowed):
     blind = blind_size(allowed, table)
     return int(table.get("currentBet") or 0) <= blind and call_amount(allowed) <= blind
 
+
 # ── OpponentProfile ────────────────────────────────────────────────────────
+
 
 @_dataclass
 class OpponentProfile:
     """Opponent profiling data. Mirrors poker_bot.opponents.OpponentProfile
     so guards can work with either version."""
+
     agent_id: str
     name: str | None = None
     hands_seen: int = 0
@@ -424,7 +446,9 @@ class OpponentProfile:
 
     @property
     def weak_aggressive_showdown_frequency(self):
-        return self.weak_aggressive_showdowns / self.showdowns if self.showdowns else 0.0
+        return (
+            self.weak_aggressive_showdowns / self.showdowns if self.showdowns else 0.0
+        )
 
     @property
     def api_label(self):
@@ -439,7 +463,9 @@ class OpponentProfile:
 
     @property
     def api_bluff_pct(self):
-        return self.api_stats.get("bluffPct") if isinstance(self.api_stats, dict) else None
+        return (
+            self.api_stats.get("bluffPct") if isinstance(self.api_stats, dict) else None
+        )
 
     def _local_label(self):
         if self.hands_seen < 5 and len(self.recent_actions) < 8:
@@ -470,7 +496,9 @@ class OpponentProfile:
             return True
         return self.label() in {"bluffer", "loose_aggressive"}
 
+
 # ── Profile Helpers ────────────────────────────────────────────────────────
+
 
 def profile_value(profile, name):
     """Get a value from a profile (OpponentProfile object or dict)."""
@@ -577,7 +605,10 @@ def is_tight_opponent(
         if use_frequency_signal:
             fold_to_bet = profile_fold_to_bet_frequency(profile)
             aggression = float(profile_aggression_frequency_merged(profile))
-            if fold_to_bet >= fold_to_bet_threshold and aggression <= aggression_threshold:
+            if (
+                fold_to_bet >= fold_to_bet_threshold
+                and aggression <= aggression_threshold
+            ):
                 return True
     return False
 
@@ -594,10 +625,13 @@ def observed_profiles(table, minimum_hands=25, active_only=False):
         active_profiles = [raw[a_id] for a_id in active_ids if a_id in raw]
         if active_profiles:
             profiles = active_profiles
-    return [p for p in profiles if int(profile_value(p, "hands_seen") or 0) >= minimum_hands]
+    return [
+        p for p in profiles if int(profile_value(p, "hands_seen") or 0) >= minimum_hands
+    ]
 
 
 # ── Overpair Detection ─────────────────────────────────────────────────────
+
 
 def has_overpair_to_board(hole_cards, board_cards):
     """True when hero has a pocket pair higher than any board card."""
@@ -609,12 +643,15 @@ def has_overpair_to_board(hole_cards, board_cards):
 
 # ── Board-Made / Kicker-Vulnerable Detection ───────────────────────────────
 
+
 def board_trips_with_kicker_only(hole_cards, board_cards) -> bool:
     """True when the board has trips and hero's hole cards are just a kicker
     (hero doesn't hold the trips rank). E.g. Qh Kd on 33385."""
     if len(board_cards) != 5:
         return False
-    trip_ranks = [rank for rank, count in rank_counts(board_cards).items() if count == 3]
+    trip_ranks = [
+        rank for rank, count in rank_counts(board_cards).items() if count == 3
+    ]
     if len(trip_ranks) != 1:
         return False
     trip_rank = trip_ranks[0]
@@ -629,12 +666,15 @@ def is_board_made_or_kicker_vulnerable(hole_cards, board_cards) -> bool:
     board-trips-with-kicker-only (no real private edge)."""
     if len(board_cards) != 5:
         return False
-    if evaluate_hand(list(hole_cards) + list(board_cards)) == evaluate_hand(board_cards):
+    if evaluate_hand(list(hole_cards) + list(board_cards)) == evaluate_hand(
+        board_cards
+    ):
         return True
     return board_trips_with_kicker_only(hole_cards, board_cards)
 
 
 # ── Flush Utilities ────────────────────────────────────────────────────────
+
 
 def flush_ranks(hole_cards, board_cards):
     """Return the ranks of the best flush (5+ same suit), or None."""
@@ -675,13 +715,15 @@ def royal_flush_possible(hole_cards, board_cards) -> bool:
     remaining_board_slots = max(0, 5 - len(board_cards))
     for suit in _ROYAL_SUITS:
         hole_royals = {
-            card[0] for card in hole_cards
+            card[0]
+            for card in hole_cards
             if len(card) >= 2 and card[0] in _ROYAL_RANKS and card[1] == suit
         }
         if not hole_royals:
             continue
         known_royals = {
-            card[0] for card in known_cards
+            card[0]
+            for card in known_cards
             if len(card) >= 2 and card[0] in _ROYAL_RANKS and card[1] == suit
         }
         if len(known_royals) < 2:

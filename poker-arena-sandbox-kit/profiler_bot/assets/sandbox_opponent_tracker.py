@@ -55,7 +55,11 @@ class OpponentProfile:
 
     @property
     def weak_aggressive_showdown_frequency(self) -> float:
-        return 0.0 if self.showdowns == 0 else self.weak_aggressive_showdowns / self.showdowns
+        return (
+            0.0
+            if self.showdowns == 0
+            else self.weak_aggressive_showdowns / self.showdowns
+        )
 
     def label(self) -> str:
         if self.hands_seen < 5 and len(self.recent_actions) < 8:
@@ -178,13 +182,22 @@ def _record_event(
         return
     _SEEN_EVENT_KEYS.add(event_key)
 
-    profile = _profile_for(agent_id, _first(summary, event, "agentName", "agentHandle", "name"))
-    street = str(_first(summary, event, "street") or event.get("street") or table.get("street") or "")
+    profile = _profile_for(
+        agent_id, _first(summary, event, "agentName", "agentHandle", "name")
+    )
+    street = str(
+        _first(summary, event, "street")
+        or event.get("street")
+        or table.get("street")
+        or ""
+    )
     facing_bet = bool(_first(summary, event, "facingBet", "facing_bet"))
     if not facing_bet:
         facing_bet = action == "fold" and int(table.get("currentBet") or 0) > 0
     voluntary = street == "Preflop" and action in {"call", "bet", "raise", "all-in"}
-    _record_action(profile, action, street=street, facing_bet=facing_bet, voluntary=voluntary)
+    _record_action(
+        profile, action, street=street, facing_bet=facing_bet, voluntary=voluntary
+    )
 
 
 def _record_action(
@@ -241,13 +254,17 @@ def _hand_key(table: dict) -> str:
     return str(table.get("tableId") or table.get("id") or "unknown-table")
 
 
-def _event_key(table: dict, event: dict, summary: dict, agent_id: str, action: str) -> str:
+def _event_key(
+    table: dict, event: dict, summary: dict, agent_id: str, action: str
+) -> str:
     hand = _hand_key(table)
     event_id = event.get("id") or event.get("eventId")
     if event_id:
         return f"{hand}:{event_id}"
     sequence = event.get("sequence")
-    street = _first(summary, event, "street") or event.get("street") or table.get("street")
+    street = (
+        _first(summary, event, "street") or event.get("street") or table.get("street")
+    )
     amount = _first(summary, event, "toAmount", "amount")
     seat_number = _first(summary, event, "seatNumber", "seat")
     return f"{hand}:seq:{sequence}:{seat_number}:{agent_id}:{street}:{action}:{amount}"
@@ -265,7 +282,11 @@ def _event_agent_id(event: dict, summary: dict, seats: list) -> str | None:
     name = _first(summary, event, "agentName", "agentHandle", "name")
     if name:
         for seat in seats:
-            if name in {_seat_name(seat), seat.get("agentName"), seat.get("agentHandle")}:
+            if name in {
+                _seat_name(seat),
+                seat.get("agentName"),
+                seat.get("agentHandle"),
+            }:
                 return _seat_agent_id(seat)
     return None
 
@@ -277,7 +298,11 @@ def _is_hero_seat(seat: dict, hero_seat_number, hero_id: str | None) -> bool:
 
 
 def _seat_by_number(seats: list) -> dict:
-    return {seat.get("seatNumber"): seat for seat in seats if seat.get("seatNumber") is not None}
+    return {
+        seat.get("seatNumber"): seat
+        for seat in seats
+        if seat.get("seatNumber") is not None
+    }
 
 
 def _seat_by_agent_id(seats: list) -> dict:

@@ -2,7 +2,8 @@
 
 The in-memory tracker resets between hands because the sandbox may restart
 Python workers. This module stores opponent profiles in a SQLite database
-at `/tmp/poker-range-state/opponents.db` so stats accumulate across hands.
+beside this asset module so the database travels with the large assets area
+rather than the size-limited harness area.
 """
 
 from __future__ import annotations
@@ -57,7 +58,11 @@ class OpponentProfile:
 
     @property
     def weak_aggressive_showdown_frequency(self) -> float:
-        return 0.0 if self.showdowns == 0 else self.weak_aggressive_showdowns / self.showdowns
+        return (
+            0.0
+            if self.showdowns == 0
+            else self.weak_aggressive_showdowns / self.showdowns
+        )
 
     def label(self) -> str:
         if self.hands_seen < 5 and len(self.recent_actions) < 8:
@@ -102,16 +107,23 @@ class OpponentProfile:
         }
 
 
-_DB_PATH = os.path.join(
-    os.environ.get("POKER_RANGE_STATE_DIR", "/tmp/poker-range-state"),
-    "opponents.db",
+_DB_PATH = os.environ.get(
+    "PROFILER_BOT_DB_PATH",
+    str(Path(__file__).resolve().parent / "opponents.db"),
 )
 Path(_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+_CONN: sqlite3.Connection | None = None
 
 
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(_DB_PATH)
+    global _CONN
+    if _CONN is not None:
+        return _CONN
+
+    conn = sqlite3.connect(_DB_PATH, timeout=30.0, isolation_level=None)
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS opponent_profiles (
@@ -156,7 +168,8 @@ def _conn() -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_seen_events_agent ON seen_events(agent_id)"
     )
-    return conn
+    _CONN = conn
+    return _CONN
 
 
 def _row_from_profile(profile: OpponentProfile) -> tuple:
@@ -217,22 +230,21 @@ def _save_profile(profile: OpponentProfile) -> None:
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(agent_id) DO UPDATE SET
             name = excluded.name,
-            hands_seen = opponent_profiles.hands_seen + excluded.hands_seen,
-            vpip = opponent_profiles.vpip + excluded.vpip,
-            pfr = opponent_profiles.pfr + excluded.pfr,
-            calls = opponent_profiles.calls + excluded.calls,
-            bets = opponent_profiles.bets + excluded.bets,
-            raises = opponent_profiles.raises + excluded.raises,
-            folds = opponent_profiles.folds + excluded.folds,
-            fold_to_bet = opponent_profiles.fold_to_bet + excluded.fold_to_bet,
-            opportunities_to_fold_to_bet = opponent_profiles.opportunities_to_fold_to_bet + excluded.opportunities_to_fold_to_bet,
-            showdowns = opponent_profiles.showdowns + excluded.showdowns,
-            weak_aggressive_showdowns = opponent_profiles.weak_aggressive_showdowns + excluded.weak_aggressive_showdowns,
+            hands_seen = excluded.hands_seen,
+            vpip = excluded.vpip,
+            pfr = excluded.pfr,
+            calls = excluded.calls,
+            bets = excluded.bets,
+            raises = excluded.raises,
+            folds = excluded.folds,
+            fold_to_bet = excluded.fold_to_bet,
+            opportunities_to_fold_to_bet = excluded.opportunities_to_fold_to_bet,
+            showdowns = excluded.showdowns,
+            weak_aggressive_showdowns = excluded.weak_aggressive_showdowns,
             last_updated = excluded.last_updated
         """,
         _row_from_profile(profile),
     )
-    conn.commit()
 
 
 def _profile_for(agent_id: str, name: str | None = None) -> OpponentProfile:
@@ -268,13 +280,17 @@ def _hand_key(table: dict) -> str:
     return str(table.get("tableId") or table.get("id") or "unknown-table")
 
 
-def _event_key(table: dict, event: dict, summary: dict, agent_id: str, action: str) -> str:
+def _event_key(
+    table: dict, event: dict, summary: dict, agent_id: str, action: str
+) -> str:
     hand = _hand_key(table)
     event_id = event.get("id") or event.get("eventId")
     if event_id:
         return f"{hand}:{event_id}"
     sequence = event.get("sequence")
-    street = _first(summary, event, "street") or event.get("street") or table.get("street")
+    street = (
+        _first(summary, event, "street") or event.get("street") or table.get("street")
+    )
     amount = _first(summary, event, "toAmount", "amount")
     seat_number = _first(summary, event, "seatNumber", "seat")
     return f"{hand}:seq:{sequence}:{seat_number}:{agent_id}:{street}:{action}:{amount}"
@@ -292,7 +308,11 @@ def _event_agent_id(event: dict, summary: dict, seats: list) -> str | None:
     name = _first(summary, event, "agentName", "agentHandle", "name")
     if name:
         for seat in seats:
-            if name in {_seat_name(seat), seat.get("agentName"), seat.get("agentHandle")}:
+            if name in {
+                _seat_name(seat),
+                seat.get("agentName"),
+                seat.get("agentHandle"),
+            }:
                 return _seat_agent_id(seat)
     return None
 
@@ -304,7 +324,11 @@ def _is_hero_seat(seat: dict, hero_seat_number, hero_id: str | None) -> bool:
 
 
 def _seat_by_number(seats: list) -> dict:
-    return {seat.get("seatNumber"): seat for seat in seats if seat.get("seatNumber") is not None}
+    return {
+        seat.get("seatNumber"): seat
+        for seat in seats
+        if seat.get("seatNumber") is not None
+    }
 
 
 def _seat_by_agent_id(seats: list) -> dict:
@@ -364,7 +388,9 @@ def _is_event_seen(conn: sqlite3.Connection, agent_id: str, event_key: str) -> b
     return row is not None
 
 
-def _mark_event_seen_db(conn: sqlite3.Connection, agent_id: str, event_key: str) -> None:
+def _mark_event_seen_db(
+    conn: sqlite3.Connection, agent_id: str, event_key: str
+) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO seen_events (agent_id, event_key) VALUES (?, ?)",
         (agent_id, event_key),
@@ -433,13 +459,22 @@ def _process_event(
         return
     _mark_event_seen_db(conn, agent_id, event_key)
 
-    profile = _profile_for(agent_id, _first(summary, event, "agentName", "agentHandle", "name"))
-    street = str(_first(summary, event, "street") or event.get("street") or table.get("street") or "")
+    profile = _profile_for(
+        agent_id, _first(summary, event, "agentName", "agentHandle", "name")
+    )
+    street = str(
+        _first(summary, event, "street")
+        or event.get("street")
+        or table.get("street")
+        or ""
+    )
     facing_bet = bool(_first(summary, event, "facingBet", "facing_bet"))
     if not facing_bet:
         facing_bet = action == "fold" and int(table.get("currentBet") or 0) > 0
     voluntary = street == "Preflop" and action in {"call", "bet", "raise", "all-in"}
-    _record_action(profile, action, street=street, facing_bet=facing_bet, voluntary=voluntary)
+    _record_action(
+        profile, action, street=street, facing_bet=facing_bet, voluntary=voluntary
+    )
     _save_profile(profile)
 
 
