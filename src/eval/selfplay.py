@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 # Use 'spawn' to avoid fork() deadlock issues with threaded parents
-multiprocessing.set_start_method('spawn', force=True)
+multiprocessing.set_start_method("spawn", force=True)
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:

@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 # Use 'spawn' to avoid fork() deadlock issues with threaded parents
-multiprocessing.set_start_method('spawn', force=True)
+multiprocessing.set_start_method("spawn", force=True)
 
 from eval.profiler import (
     PlayProfiler,
