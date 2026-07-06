@@ -3,7 +3,8 @@
 Prevents folding with AKs preflop and when royal flush is possible postflop.
 """
 
-from poker_bot.strategies.s4base import choose_action
+# from poker_bot.strategies.s4base import choose_action
+from poker_bot.strategies.nnnext import choose_action
 
 HERO = "hero"
 
