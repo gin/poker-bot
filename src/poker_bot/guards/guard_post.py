@@ -13,11 +13,22 @@ from __future__ import annotations
 from poker_bot.guards.context import GuardContext
 from poker_bot.guards.registry import GuardRail
 from poker_bot.hand_utils import (
-    card_values, evaluate_hand, board_has_pair, board_dominated_two_pair,
-    paired_board_ranks, pot_odds, profile_value, profile_vpip_frequency,
-    profile_call_frequency, profile_fold_to_bet_frequency,
-    profile_aggression_frequency_merged, single_opponent_profile,
-    opponent_is_bluffy, is_tight_opponent, call_amount, no_one_has_bet,
+    card_values,
+    evaluate_hand,
+    board_has_pair,
+    board_dominated_two_pair,
+    paired_board_ranks,
+    pot_odds,
+    profile_value,
+    profile_vpip_frequency,
+    profile_call_frequency,
+    profile_fold_to_bet_frequency,
+    profile_aggression_frequency_merged,
+    single_opponent_profile,
+    opponent_is_bluffy,
+    is_tight_opponent,
+    call_amount,
+    no_one_has_bet,
 )
 
 ActionDecision = tuple[str, int | None, str]
@@ -46,10 +57,14 @@ guard_post = guard_rail
 
 @guard_rail.register(
     "two_pair_paired_board_overfold",
-    "post", 20, ["hu"],
+    "post",
+    20,
+    ["hu"],
     "Don't fold genuine two pair on paired boards (HU only, excludes fragile)",
 )
-def two_pair_paired_board_overfold(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def two_pair_paired_board_overfold(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if action not in ("raise", "bet"):
         return None
@@ -82,7 +97,11 @@ def two_pair_paired_board_overfold(ctx: GuardContext, proposed: ActionDecision) 
     price = ctx.call_price if ctx.facing_bet else call_amount(ctx.allowed)
     if price <= 0:
         return None
-    return ("call", price, "two pair on paired board: call instead of fold (real pocket pair)")
+    return (
+        "call",
+        price,
+        "two pair on paired board: call instead of fold (real pocket pair)",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -94,10 +113,14 @@ def two_pair_paired_board_overfold(ctx: GuardContext, proposed: ActionDecision) 
 
 @guard_rail.register(
     "board_assisted_two_pair",
-    "post", 25, ["hu", "6max"],
+    "post",
+    25,
+    ["hu", "6max"],
     "Board-assisted two pair: suppress raises vs tight opponents",
 )
-def board_assisted_two_pair(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def board_assisted_two_pair(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street == "Preflop":
         return None
@@ -148,10 +171,14 @@ def board_assisted_two_pair(ctx: GuardContext, proposed: ActionDecision) -> Acti
 
 @guard_rail.register(
     "turn_two_pair_bet_suppression",
-    "post", 30, ["hu"],
+    "post",
+    30,
+    ["hu"],
     "Turn two-pair: check back vs tight/passive (metric-driven)",
 )
-def turn_two_pair_bet_suppression(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def turn_two_pair_bet_suppression(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street != "Turn":
         return None
@@ -199,10 +226,14 @@ def turn_two_pair_bet_suppression(ctx: GuardContext, proposed: ActionDecision) -
 
 @guard_rail.register(
     "turn_weak_hand_fold_vs_tight_raise",
-    "post", 30, ["hu"],
+    "post",
+    30,
+    ["hu"],
     "Fold weak hand (non-top-pair / high card) vs tight turn raise",
 )
-def turn_weak_hand_fold_vs_tight_raise(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def turn_weak_hand_fold_vs_tight_raise(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street != "Turn":
         return None
@@ -223,7 +254,10 @@ def turn_weak_hand_fold_vs_tight_raise(ctx: GuardContext, proposed: ActionDecisi
         if pair_rank >= ctx.max_board_rank:
             return None
 
-    if ctx.pot > 0 and ctx.call_price / (ctx.pot + ctx.call_price) < _TURN_WEAK_FOLD_MIN_POT_ODDS:
+    if (
+        ctx.pot > 0
+        and ctx.call_price / (ctx.pot + ctx.call_price) < _TURN_WEAK_FOLD_MIN_POT_ODDS
+    ):
         return None
 
     if ctx.stack > 0 and ctx.call_price >= ctx.stack:
@@ -246,7 +280,11 @@ def turn_weak_hand_fold_vs_tight_raise(ctx: GuardContext, proposed: ActionDecisi
     if not value_owned:
         return None
 
-    return ("fold", None, "turn weak hand (non-top pair / high card) vs tight raise: fold")
+    return (
+        "fold",
+        None,
+        "turn weak hand (non-top pair / high card) vs tight raise: fold",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -258,10 +296,14 @@ def turn_weak_hand_fold_vs_tight_raise(ctx: GuardContext, proposed: ActionDecisi
 
 @guard_rail.register(
     "flop_hu_bluffcatch",
-    "post", 35, ["hu"],
+    "post",
+    35,
+    ["hu"],
     "Flop/Turn HU bluff-catch vs bluffy opponents on dry boards",
 )
-def flop_hu_bluffcatch(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def flop_hu_bluffcatch(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street not in ("Flop", "Turn"):
         return None
@@ -300,7 +342,11 @@ def flop_hu_bluffcatch(ctx: GuardContext, proposed: ActionDecision) -> ActionDec
     if not ctx.opponent_is_bluffy:
         return None
 
-    return ("call", ctx.call_price, f"{ctx.street.lower()} HU bluff-catch rank {rank} vs bluffy opponent (dry board)")
+    return (
+        "call",
+        ctx.call_price,
+        f"{ctx.street.lower()} HU bluff-catch rank {rank} vs bluffy opponent (dry board)",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -312,10 +358,14 @@ def flop_hu_bluffcatch(ctx: GuardContext, proposed: ActionDecision) -> ActionDec
 
 @guard_rail.register(
     "river_two_pair_facing_bet_call",
-    "post", 35, ["hu"],
+    "post",
+    35,
+    ["hu"],
     "River two-pair: call instead of fold on paired boards (non-fragile)",
 )
-def river_two_pair_facing_bet_call(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def river_two_pair_facing_bet_call(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street != "River":
         return None
@@ -338,7 +388,11 @@ def river_two_pair_facing_bet_call(ctx: GuardContext, proposed: ActionDecision) 
     if ctx.pot_odds is None or ctx.pot_odds > 0.40:
         return None
 
-    return ("call", ctx.call_price, "river two pair: call instead of fold on paired board")
+    return (
+        "call",
+        ctx.call_price,
+        "river two pair: call instead of fold on paired board",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -349,10 +403,14 @@ def river_two_pair_facing_bet_call(ctx: GuardContext, proposed: ActionDecision) 
 
 @guard_rail.register(
     "rank_two_facing_bet",
-    "post", 22, ["hu", "6max"],
+    "post",
+    22,
+    ["hu", "6max"],
     "Two pair facing bet: call instead of raise (flop/turn)",
 )
-def rank_two_facing_bet(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def rank_two_facing_bet(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street not in ("Flop", "Turn"):
         return None
@@ -367,7 +425,8 @@ def rank_two_facing_bet(ctx: GuardContext, proposed: ActionDecision) -> ActionDe
     history = ctx.table.get("actionHistory") or ctx.table.get("action_history") or []
     my_id = (ctx.my_seat or {}).get("agentId")
     raise_count = sum(
-        1 for h in history
+        1
+        for h in history
         if h.get("agentId") == my_id
         and h.get("action") in ("raise", "bet")
         and h.get("street") == ctx.street
@@ -376,7 +435,11 @@ def rank_two_facing_bet(ctx: GuardContext, proposed: ActionDecision) -> ActionDe
         return None
 
     if "call" in ctx.available_actions:
-        return ("call", ctx.call_price, f"{ctx.street.lower()} rank-2 facing bet: call instead of raise")
+        return (
+            "call",
+            ctx.call_price,
+            f"{ctx.street.lower()} rank-2 facing bet: call instead of raise",
+        )
     return None
 
 
@@ -388,10 +451,14 @@ def rank_two_facing_bet(ctx: GuardContext, proposed: ActionDecision) -> ActionDe
 
 @guard_rail.register(
     "board_dominated_trips",
-    "post", 23, ["hu", "6max"],
+    "post",
+    23,
+    ["hu", "6max"],
     "Board-dominated trips: suppress value raise, check back (flop)",
 )
-def board_dominated_trips(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def board_dominated_trips(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if action != "raise":
         return None
@@ -410,7 +477,11 @@ def board_dominated_trips(ctx: GuardContext, proposed: ActionDecision) -> Action
         return None  # real trips, allow raise
 
     if "check" in ctx.available_actions and ctx.no_one_bet:
-        return ("check", None, "board-dominated trips: suppress value raise, check back")
+        return (
+            "check",
+            None,
+            "board-dominated trips: suppress value raise, check back",
+        )
     return None
 
 
@@ -422,10 +493,14 @@ def board_dominated_trips(ctx: GuardContext, proposed: ActionDecision) -> Action
 
 @guard_rail.register(
     "river_one_pair_over_call",
-    "post", 28, ["hu", "6max"],
+    "post",
+    28,
+    ["hu", "6max"],
     "One pair on river/turn: fold vs >30% pot bet",
 )
-def river_one_pair_over_call(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def river_one_pair_over_call(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street not in ("River", "Turn"):
         return None
@@ -437,7 +512,11 @@ def river_one_pair_over_call(ctx: GuardContext, proposed: ActionDecision) -> Act
         return None
 
     if ctx.call_price / ctx.pot > 0.30:
-        return ("fold", None, f"{ctx.street.lower()} one pair: fold vs {ctx.call_price / ctx.pot:.0%} pot bet")
+        return (
+            "fold",
+            None,
+            f"{ctx.street.lower()} one pair: fold vs {ctx.call_price / ctx.pot:.0%} pot bet",
+        )
     return None
 
 
@@ -449,11 +528,16 @@ def river_one_pair_over_call(ctx: GuardContext, proposed: ActionDecision) -> Act
 
 @guard_rail.register(
     "vulnerable_flush",
-    "post", 27, ["hu", "6max"],
+    "post",
+    27,
+    ["hu", "6max"],
     "Non-nut flush on paired board: suppress raises (reverse implied odds)",
 )
-def vulnerable_flush(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def vulnerable_flush(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     from poker_bot.hand_utils import vulnerable_non_nut_flush_on_paired_board
+
     action, _amount, _message = proposed
     if ctx.street == "Preflop":
         return None
@@ -466,7 +550,11 @@ def vulnerable_flush(ctx: GuardContext, proposed: ActionDecision) -> ActionDecis
     if action == "raise":
         if int(ctx.table.get("facing_bet") or 0) == 1:
             if "call" in available:
-                return ("call", ctx.call_price, "non-nut flush on paired board: bluff catch")
+                return (
+                    "call",
+                    ctx.call_price,
+                    "non-nut flush on paired board: bluff catch",
+                )
         if "fold" in available:
             return ("fold", None, "non-nut flush on paired board: folded value-raise")
     if action == "bet" and "check" in available:
@@ -474,7 +562,11 @@ def vulnerable_flush(ctx: GuardContext, proposed: ActionDecision) -> ActionDecis
     if action == "call" and ctx.call_price > 0:
         required = pot_odds(ctx.call_price, max(ctx.pot, 1))
         if required >= 0.33 and "fold" in available:
-            return ("fold", None, f"non-nut flush on paired board: folded large bet at {required:.0%} price")
+            return (
+                "fold",
+                None,
+                f"non-nut flush on paired board: folded large bet at {required:.0%} price",
+            )
     return None
 
 
@@ -486,11 +578,19 @@ def vulnerable_flush(ctx: GuardContext, proposed: ActionDecision) -> ActionDecis
 
 @guard_rail.register(
     "paired_board_pot_control",
-    "post", 26, ["hu", "6max"],
+    "post",
+    26,
+    ["hu", "6max"],
     "Fragile two pair / non-nut full house on paired board: pot control",
 )
-def paired_board_pot_control(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
-    from poker_bot.hand_utils import fragile_rank_two_on_paired_board, non_nut_trips_board_full_house
+def paired_board_pot_control(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
+    from poker_bot.hand_utils import (
+        fragile_rank_two_on_paired_board,
+        non_nut_trips_board_full_house,
+    )
+
     action, _amount, _message = proposed
     if ctx.street == "Preflop":
         return None
@@ -516,15 +616,32 @@ def paired_board_pot_control(ctx: GuardContext, proposed: ActionDecision) -> Act
             return None
         if frag2 and (required > 0.35 or ctx.call_price > max(stack, 1)):
             if "fold" in available:
-                return ("fold", None, f"folded fragile paired-board hand at {required:.0%} price")
+                return (
+                    "fold",
+                    None,
+                    f"folded fragile paired-board hand at {required:.0%} price",
+                )
             return None
-        if frag2 and ctx.board_texture.get("high") and ctx.board_texture.get("paired") and required > 0.25:
+        if (
+            frag2
+            and ctx.board_texture.get("high")
+            and ctx.board_texture.get("paired")
+            and required > 0.25
+        ):
             if "fold" in available:
-                return ("fold", None, f"folded vulnerable two pair on A-high paired board at {required:.0%}")
+                return (
+                    "fold",
+                    None,
+                    f"folded vulnerable two pair on A-high paired board at {required:.0%}",
+                )
             return None
         descriptor = "non-nut full house" if non_nut_fh else "fragile two pair"
         wet_suffix = " wet" if ctx.board_texture.get("wet", False) else ""
-        return ("call", ctx.call_price, f"capped paired-board aggression with {descriptor}{wet_suffix}")
+        return (
+            "call",
+            ctx.call_price,
+            f"capped paired-board aggression with {descriptor}{wet_suffix}",
+        )
 
     return None
 
@@ -537,10 +654,14 @@ def paired_board_pot_control(ctx: GuardContext, proposed: ActionDecision) -> Act
 
 @guard_rail.register(
     "preflop_min_raise_war_cap",
-    "post", 40, ["hu", "6max"],
+    "post",
+    40,
+    ["hu", "6max"],
     "Preflop war cap: call/check after 3 raise-backs",
 )
-def preflop_min_raise_war_cap(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def preflop_min_raise_war_cap(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street != "Preflop":
         return None
@@ -550,7 +671,8 @@ def preflop_min_raise_war_cap(ctx: GuardContext, proposed: ActionDecision) -> Ac
     history = ctx.table.get("actionHistory") or ctx.table.get("action_history") or []
     my_id = (ctx.my_seat or {}).get("agentId")
     raise_count = sum(
-        1 for h in history
+        1
+        for h in history
         if h.get("agentId") == my_id
         and h.get("action") in ("raise", "bet")
         and h.get("street") == "Preflop"
@@ -574,10 +696,14 @@ def preflop_min_raise_war_cap(ctx: GuardContext, proposed: ActionDecision) -> Ac
 
 @guard_rail.register(
     "postflop_marginal_hand_war_cap",
-    "post", 40, ["hu", "6max"],
+    "post",
+    40,
+    ["hu", "6max"],
     "Postflop war cap: call/check marginal hands after 3 raises",
 )
-def postflop_marginal_hand_war_cap(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def postflop_marginal_hand_war_cap(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street == "Preflop":
         return None
@@ -587,7 +713,8 @@ def postflop_marginal_hand_war_cap(ctx: GuardContext, proposed: ActionDecision) 
     history = ctx.table.get("actionHistory") or ctx.table.get("action_history") or []
     my_id = (ctx.my_seat or {}).get("agentId")
     raise_count = sum(
-        1 for h in history
+        1
+        for h in history
         if h.get("agentId") == my_id
         and h.get("action") in ("raise", "bet")
         and h.get("street") == ctx.street
@@ -605,10 +732,22 @@ def postflop_marginal_hand_war_cap(ctx: GuardContext, proposed: ActionDecision) 
             if ctx.made_rank == 2:
                 required = pot_odds(ctx.call_price, ctx.pot)
                 if required > 0.33:
-                    return ("fold", None, f"{ctx.street.lower()} marginal war cap: fold rank 2 after {raise_count} raises (price {required:.0%})")
-            return ("call", ctx.call_price, f"{ctx.street.lower()} marginal war cap: call after {raise_count} raises (rank {ctx.made_rank})")
+                    return (
+                        "fold",
+                        None,
+                        f"{ctx.street.lower()} marginal war cap: fold rank 2 after {raise_count} raises (price {required:.0%})",
+                    )
+            return (
+                "call",
+                ctx.call_price,
+                f"{ctx.street.lower()} marginal war cap: call after {raise_count} raises (rank {ctx.made_rank})",
+            )
     if action == "bet" and "check" in available:
-        return ("check", None, f"{ctx.street.lower()} marginal war cap: check after {raise_count} bets (rank {ctx.made_rank})")
+        return (
+            "check",
+            None,
+            f"{ctx.street.lower()} marginal war cap: check after {raise_count} bets (rank {ctx.made_rank})",
+        )
     return None
 
 
@@ -620,10 +759,14 @@ def postflop_marginal_hand_war_cap(ctx: GuardContext, proposed: ActionDecision) 
 
 @guard_rail.register(
     "small_pair_multiway_fold",
-    "post", 45, ["hu", "6max"],
+    "post",
+    45,
+    ["hu", "6max"],
     "Small pair multiway: fold below-77 pair at >5% stack in 3+ way pots",
 )
-def small_pair_multiway_fold(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def small_pair_multiway_fold(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street != "Preflop":
         return None
@@ -639,6 +782,7 @@ def small_pair_multiway_fold(ctx: GuardContext, proposed: ActionDecision) -> Act
         return None
 
     from poker_bot.hand_utils import hole_pair_rank, RANK_VALUES
+
     rank = hole_pair_rank(ctx.hole_cards)
     if rank is None or rank > RANK_VALUES["7"]:
         return None
@@ -650,7 +794,11 @@ def small_pair_multiway_fold(ctx: GuardContext, proposed: ActionDecision) -> Act
     if price_to_stack <= 0.05:
         return None
 
-    return ("fold", None, f"small-pair multiway guard: {rank}{ctx.hole_cards[0][1]}{ctx.hole_cards[1][1]} folded at {price_to_stack:.1%} stack in {ctx.num_active}-way pot")
+    return (
+        "fold",
+        None,
+        f"small-pair multiway guard: {rank}{ctx.hole_cards[0][1]}{ctx.hole_cards[1][1]} folded at {price_to_stack:.1%} stack in {ctx.num_active}-way pot",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -661,10 +809,14 @@ def small_pair_multiway_fold(ctx: GuardContext, proposed: ActionDecision) -> Act
 
 @guard_rail.register(
     "medium_pair_paired_board_fold",
-    "post", 45, ["hu", "6max"],
+    "post",
+    45,
+    ["hu", "6max"],
     "77 on paired board: fold (crushed against any reasonable range)",
 )
-def medium_pair_paired_board_fold(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def medium_pair_paired_board_fold(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street == "Preflop":
         return None
@@ -674,6 +826,7 @@ def medium_pair_paired_board_fold(ctx: GuardContext, proposed: ActionDecision) -
         return None
 
     from poker_bot.hand_utils import hole_pair_rank, RANK_VALUES, evaluate_hand
+
     rank = hole_pair_rank(ctx.hole_cards)
     if rank != RANK_VALUES["7"]:
         return None
@@ -698,11 +851,16 @@ def medium_pair_paired_board_fold(ctx: GuardContext, proposed: ActionDecision) -
 
 @guard_rail.register(
     "medium_hand_multiway_fold",
-    "post", 45, ["hu", "6max"],
+    "post",
+    45,
+    ["hu", "6max"],
     "Medium hand multiway: fold one pair in 3+ way pots at >20% price",
 )
-def medium_hand_multiway_fold(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def medium_hand_multiway_fold(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     from poker_bot.hand_utils import has_overpair_to_board
+
     action, _amount, _message = proposed
     if ctx.street == "Preflop":
         return None
@@ -725,7 +883,11 @@ def medium_hand_multiway_fold(ctx: GuardContext, proposed: ActionDecision) -> Ac
     if required <= 0.20:
         return None
 
-    return ("fold", None, f"medium-hand multiway guard: 1-pair folded at {required:.0%} price in {ctx.num_active}-way pot")
+    return (
+        "fold",
+        None,
+        f"medium-hand multiway guard: 1-pair folded at {required:.0%} price in {ctx.num_active}-way pot",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -736,10 +898,14 @@ def medium_hand_multiway_fold(ctx: GuardContext, proposed: ActionDecision) -> Ac
 
 @guard_rail.register(
     "cheap_postflop_continue",
-    "post", 48, ["hu", "6max"],
+    "post",
+    48,
+    ["hu", "6max"],
     "Cheap postflop continue: call cheap bets with equity",
 )
-def cheap_postflop_continue(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def cheap_postflop_continue(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street == "Preflop":
         return None
@@ -774,10 +940,14 @@ def cheap_postflop_continue(ctx: GuardContext, proposed: ActionDecision) -> Acti
 
 @guard_rail.register(
     "postflop_draw_continue",
-    "post", 48, ["hu", "6max"],
+    "post",
+    48,
+    ["hu", "6max"],
     "Draw continue: call flush/OESD draws at favorable odds",
 )
-def postflop_draw_continue(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def postflop_draw_continue(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if ctx.street == "Preflop":
         return None
@@ -805,9 +975,15 @@ def postflop_draw_continue(ctx: GuardContext, proposed: ActionDecision) -> Actio
         return None
 
     draw_label = "+".join(
-        label for label, present in (("FD", ctx.has_flush_draw), ("OESD", ctx.has_oesd)) if present
+        label
+        for label, present in (("FD", ctx.has_flush_draw), ("OESD", ctx.has_oesd))
+        if present
     )
-    return ("call", ctx.call_price, f"draw continue {draw_label} street {ctx.street} opp {ctx.num_active_opponents} required {required:.0%} cap {cap:.0%}")
+    return (
+        "call",
+        ctx.call_price,
+        f"draw continue {draw_label} street {ctx.street} opp {ctx.num_active_opponents} required {required:.0%} cap {cap:.0%}",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -818,10 +994,14 @@ def postflop_draw_continue(ctx: GuardContext, proposed: ActionDecision) -> Actio
 
 @guard_rail.register(
     "excessive_bet_size_cap",
-    "post", 50, ["hu", "6max"],
+    "post",
+    50,
+    ["hu", "6max"],
     "Prevent absurdly large raises (> 3x pot)",
 )
-def excessive_bet_size_cap(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def excessive_bet_size_cap(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if action != "raise":
         return None
@@ -830,7 +1010,11 @@ def excessive_bet_size_cap(ctx: GuardContext, proposed: ActionDecision) -> Actio
     raise_amt = raise_range.get("min", 0) or 0
     if raise_amt > ctx.pot * 3 and ctx.pot > 0:
         if "call" in ctx.available_actions:
-            return ("call", ctx.call_price, f"Min raise {raise_amt} > 3x pot {ctx.pot} — cap to call")
+            return (
+                "call",
+                ctx.call_price,
+                f"Min raise {raise_amt} > 3x pot {ctx.pot} — cap to call",
+            )
     return None
 
 
@@ -842,10 +1026,14 @@ def excessive_bet_size_cap(ctx: GuardContext, proposed: ActionDecision) -> Actio
 
 @guard_rail.register(
     "trips_on_paired_board_cap",
-    "post", 50, ["hu", "6max"],
+    "post",
+    50,
+    ["hu", "6max"],
     "Cap massive overbets (>1.5x pot) with trips on paired board",
 )
-def trips_on_paired_board_cap(ctx: GuardContext, proposed: ActionDecision) -> ActionDecision | None:
+def trips_on_paired_board_cap(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
     action, _amount, _message = proposed
     if action != "raise":
         return None
@@ -860,5 +1048,9 @@ def trips_on_paired_board_cap(ctx: GuardContext, proposed: ActionDecision) -> Ac
     raise_amt = raise_range.get("min", 0) or 0
     if raise_amt > ctx.pot * 1.5 and ctx.pot > 0:
         if "call" in ctx.available_actions:
-            return ("call", ctx.call_price, f"Trips on paired board: raise {raise_amt} > 1.5x pot {ctx.pot} — cap to call")
+            return (
+                "call",
+                ctx.call_price,
+                f"Trips on paired board: raise {raise_amt} > 1.5x pot {ctx.pot} — cap to call",
+            )
     return None

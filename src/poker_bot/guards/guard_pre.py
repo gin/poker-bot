@@ -11,9 +11,18 @@ from __future__ import annotations
 from poker_bot.guards.context import GuardContext
 from poker_bot.guards.registry import GuardRail
 from poker_bot.hand_utils import (
-    pot_odds, effective_pot, call_amount, live_opponent_seats,
-    is_board_made_or_kicker_vulnerable, royal_flush_possible, is_aks,
-    card_values, rank_counts, evaluate_hand, board_texture, RANK_VALUES,
+    pot_odds,
+    effective_pot,
+    call_amount,
+    live_opponent_seats,
+    is_board_made_or_kicker_vulnerable,
+    royal_flush_possible,
+    is_aks,
+    card_values,
+    rank_counts,
+    evaluate_hand,
+    board_texture,
+    RANK_VALUES,
 )
 
 ActionDecision = tuple[str, int | None, str]
@@ -27,7 +36,9 @@ SLIVER_SHOVE_POT_ODDS_FLOOR = 0.10
 
 @guard_rail.register(
     "spr_commitment_lock",
-    "pre", 0, ["hu", "6max"],
+    "pre",
+    0,
+    ["hu", "6max"],
     "Pot-committed: call with strong hand (two pair+) when SPR is low",
 )
 def spr_commitment_lock(ctx: GuardContext) -> ActionDecision | None:
@@ -42,6 +53,10 @@ def spr_commitment_lock(ctx: GuardContext) -> ActionDecision | None:
     if ctx.made_rank < 2:
         return None
 
+    # Cannot call if call exceeds stack.
+    if ctx.call_price > ctx.stack:
+        return None
+
     # SPR threshold: tighter in multi-way pots.
     spr_threshold = 1.5 if ctx.num_active_opponents >= 4 else 3.0
 
@@ -52,14 +67,17 @@ def spr_commitment_lock(ctx: GuardContext) -> ActionDecision | None:
         for s in live_opponent_seats(ctx.table, ctx.my_seat)
     ]
     eff_stack_after = min(
-        [hero_stack_after, *opp_stacks_after] if opp_stacks_after else [hero_stack_after]
+        [hero_stack_after, *opp_stacks_after]
+        if opp_stacks_after
+        else [hero_stack_after]
     )
     pot_after_call = ctx.effective_pot + ctx.call_price
     spr = eff_stack_after / max(1, pot_after_call)
 
     if spr < spr_threshold:
         return (
-            "call", ctx.call_price,
+            "call",
+            ctx.call_price,
             f"spr commitment lock: spr {spr:.2f} < {spr_threshold}, calling with strong hand vs {ctx.num_active_opponents} opps",
         )
     return None
@@ -74,7 +92,9 @@ def spr_commitment_lock(ctx: GuardContext) -> ActionDecision | None:
 
 @guard_rail.register(
     "sliver_shove_guard",
-    "pre", 5, ["hu", "6max"],
+    "pre",
+    5,
+    ["hu", "6max"],
     "River sliver: call when pot odds <= 10% (any two cards have enough equity)",
 )
 def sliver_shove_guard(ctx: GuardContext) -> ActionDecision | None:
@@ -99,7 +119,9 @@ def sliver_shove_guard(ctx: GuardContext) -> ActionDecision | None:
 
 @guard_rail.register(
     "royal_flush_predecision",
-    "pre", 10, ["hu", "6max"],
+    "pre",
+    10,
+    ["hu", "6max"],
     "Royal flush possible: force check/call only (never fold/raise)",
 )
 def royal_flush_predecision(ctx: GuardContext) -> ActionDecision | None:
@@ -122,7 +144,11 @@ def royal_flush_predecision(ctx: GuardContext) -> ActionDecision | None:
     if "check" in ctx.available_actions and ctx.no_one_bet:
         return ("check", None, "royal flush guard: royal flush possible, checking")
     if "call" in ctx.available_actions:
-        return ("call", ctx.call_price, "royal flush guard: royal flush possible, calling")
+        return (
+            "call",
+            ctx.call_price,
+            "royal flush guard: royal flush possible, calling",
+        )
     return None
 
 
@@ -136,7 +162,9 @@ def royal_flush_predecision(ctx: GuardContext) -> ActionDecision | None:
 
 @guard_rail.register(
     "board_made_hand_guard",
-    "pre", 15, ["hu", "6max"],
+    "pre",
+    15,
+    ["hu", "6max"],
     "Board-made hand: no private value to raise/bet (check/fold instead)",
 )
 def board_made_hand_guard(ctx: GuardContext) -> ActionDecision | None:
@@ -153,7 +181,11 @@ def board_made_hand_guard(ctx: GuardContext) -> ActionDecision | None:
         # Facing a bet: fold if the price is expensive (>= 33% pot odds).
         required = pot_odds(ctx.call_price, max(ctx.pot, 1))
         if required >= 0.33 and "fold" in available:
-            return ("fold", None, f"board-made hand: folded large bet at {required:.0%} price")
+            return (
+                "fold",
+                None,
+                f"board-made hand: folded large bet at {required:.0%} price",
+            )
         if "call" in available:
             return ("call", ctx.call_price, "board-made hand: calling cheap bet")
     else:

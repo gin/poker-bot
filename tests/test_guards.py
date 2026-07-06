@@ -5,21 +5,34 @@ from poker_bot.guards.registry import GuardRail
 from poker_bot.hand_utils import OpponentProfile
 
 
-def _make_table(hole, board, *, call=0, pot=100, players=2, profiles=None, street="River"):
+def _make_table(
+    hole, board, *, call=0, pot=100, players=2, profiles=None, street="River"
+):
     seats = [
-        {"seatNumber": i, "agentId": "hero" if i == 1 else f"opp{i}",
-         "holeCards": hole if i == 1 else [],
-         "stackChips": 2000, "currentBetChips": 0,
-         "folded": False, "hasFolded": False}
+        {
+            "seatNumber": i,
+            "agentId": "hero" if i == 1 else f"opp{i}",
+            "holeCards": hole if i == 1 else [],
+            "stackChips": 2000,
+            "currentBetChips": 0,
+            "folded": False,
+            "hasFolded": False,
+        }
         for i in range(1, players + 1)
     ]
     return {
-        "street": street, "boardCards": board, "potChips": pot,
-        "buttonSeatNumber": 1, "seats": seats,
+        "street": street,
+        "boardCards": board,
+        "potChips": pot,
+        "buttonSeatNumber": 1,
+        "seats": seats,
         "opponentProfiles": profiles or {},
         "allowedActions": {
-            "availableActions": ["fold", "call", "raise", "all-in"] if call > 0 else ["fold", "check", "bet", "all-in"],
-            "callAmount": call, "callChips": call,
+            "availableActions": ["fold", "call", "raise", "all-in"]
+            if call > 0
+            else ["fold", "check", "bet", "all-in"],
+            "callAmount": call,
+            "callChips": call,
             "raiseRange": {"min": max(call * 2, 4), "max": 4000},
         },
     }, seats[0]
@@ -61,10 +74,19 @@ class TestGuardContext:
         assert ctx_6m.num_active_opponents == 5
 
     def test_opponent_profile(self):
-        p = OpponentProfile(agent_id="vill", hands_seen=20, vpip=10, calls=3,
-                            bets=4, raises=2, folds=6, fold_to_bet=4,
-                            opportunities_to_fold_to_bet=8, showdowns=5,
-                            weak_aggressive_showdowns=2)
+        p = OpponentProfile(
+            agent_id="vill",
+            hands_seen=20,
+            vpip=10,
+            calls=3,
+            bets=4,
+            raises=2,
+            folds=6,
+            fold_to_bet=4,
+            opportunities_to_fold_to_bet=8,
+            showdowns=5,
+            weak_aggressive_showdowns=2,
+        )
         t, s = _make_table(["AH", "KD"], ["7S", "9D", "KH"], profiles={"vill": p})
         ctx = GuardContext.build(t, s)
         assert ctx.opponent_hands_seen == 20

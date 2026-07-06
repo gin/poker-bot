@@ -12,16 +12,36 @@ def test_guard_pre_alias_matches_registry():
 
 def _ctx(hole, board, *, call=0, pot=400, players=2, street="River", stack=2000):
     seats = [
-        {"seatNumber": i, "agentId": HERO if i == 1 else f"opp{i}",
-         "holeCards": hole if i == 1 else [], "stackChips": stack,
-         "currentBetChips": 0, "folded": False, "hasFolded": False}
+        {
+            "seatNumber": i,
+            "agentId": HERO if i == 1 else f"opp{i}",
+            "holeCards": hole if i == 1 else [],
+            "stackChips": stack,
+            "currentBetChips": 0,
+            "folded": False,
+            "hasFolded": False,
+        }
         for i in range(1, players + 1)
     ]
-    actions = ["fold", "call", "raise", "all-in"] if call > 0 else ["fold", "check", "bet", "all-in"]
-    table = {"street": street, "boardCards": board, "potChips": pot,
-             "buttonSeatNumber": 1, "seats": seats, "opponentProfiles": {},
-             "allowedActions": {"availableActions": actions, "callAmount": call,
-               "callChips": call, "raiseRange": {"min": max(call * 2, 4), "max": 4000}}}
+    actions = (
+        ["fold", "call", "raise", "all-in"]
+        if call > 0
+        else ["fold", "check", "bet", "all-in"]
+    )
+    table = {
+        "street": street,
+        "boardCards": board,
+        "potChips": pot,
+        "buttonSeatNumber": 1,
+        "seats": seats,
+        "opponentProfiles": {},
+        "allowedActions": {
+            "availableActions": actions,
+            "callAmount": call,
+            "callChips": call,
+            "raiseRange": {"min": max(call * 2, 4), "max": 4000},
+        },
+    }
     return GuardContext.build(table, seats[0])
 
 
@@ -40,7 +60,9 @@ class TestSliverShoveGuard:
         assert result is None or result[1] != "sliver_shove_guard"
 
     def test_river_only(self):
-        ctx = _ctx(["4C", "5D"], ["7S", "9D", "KH", "2C"], call=50, pot=1000, street="Turn")
+        ctx = _ctx(
+            ["4C", "5D"], ["7S", "9D", "KH", "2C"], call=50, pot=1000, street="Turn"
+        )
         result = guard_rail.run_pre(ctx)
         assert result is None or result[1] != "sliver_shove_guard"
 
@@ -60,7 +82,9 @@ class TestRoyalFlushPredecision:
 
     def test_royal_flush_possible_postflop(self):
         # AH KH on QH JH TH 2C -> royal flush possible
-        ctx = _ctx(["AH", "KH"], ["QH", "JH", "TH", "2C"], call=50, pot=200, street="Turn")
+        ctx = _ctx(
+            ["AH", "KH"], ["QH", "JH", "TH", "2C"], call=50, pot=200, street="Turn"
+        )
         result = guard_rail.run_pre(ctx)
         assert result is not None
         assert result[0][0] == "call"
@@ -93,7 +117,9 @@ class TestBoardMadeHandGuard:
 class TestSprCommitmentLock:
     def test_calls_pot_committed_two_pair(self):
         # Two pair, very low SPR -> call
-        ctx = _ctx(["3C", "3D"], ["7S", "9D", "3H", "2C", "9H"], call=1900, pot=100, stack=2000)
+        ctx = _ctx(
+            ["3C", "3D"], ["7S", "9D", "3H", "2C", "9H"], call=1900, pot=100, stack=2000
+        )
         result = guard_rail.run_pre(ctx)
         assert result is not None
         assert result[0][0] == "call"

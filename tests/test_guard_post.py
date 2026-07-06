@@ -13,30 +13,84 @@ CHECK_BET = ("fold", "check", "bet", "all-in")
 def test_guard_post_alias_matches_registry():
     assert guard_post is guard_rail
 
-BLUFFY = OpponentProfile(agent_id=VILL, hands_seen=20, vpip=10, calls=3, bets=4,
-    raises=2, folds=6, fold_to_bet=4, opportunities_to_fold_to_bet=8,
-    showdowns=5, weak_aggressive_showdowns=2)
-TIGHT = {"hands_seen": 20, "vpip": 3, "pfr": 2, "calls": 2, "bets": 1,
-    "raises": 0, "folds": 14, "fold_to_bet": 10, "opportunities_to_fold_to_bet": 12}
-VALUE = OpponentProfile(agent_id=VILL, hands_seen=20, vpip=3, calls=5, bets=1,
-    raises=0, folds=12, fold_to_bet=8, opportunities_to_fold_to_bet=10,
-    showdowns=5, weak_aggressive_showdowns=0)
+
+BLUFFY = OpponentProfile(
+    agent_id=VILL,
+    hands_seen=20,
+    vpip=10,
+    calls=3,
+    bets=4,
+    raises=2,
+    folds=6,
+    fold_to_bet=4,
+    opportunities_to_fold_to_bet=8,
+    showdowns=5,
+    weak_aggressive_showdowns=2,
+)
+TIGHT = {
+    "hands_seen": 20,
+    "vpip": 3,
+    "pfr": 2,
+    "calls": 2,
+    "bets": 1,
+    "raises": 0,
+    "folds": 14,
+    "fold_to_bet": 10,
+    "opportunities_to_fold_to_bet": 12,
+}
+VALUE = OpponentProfile(
+    agent_id=VILL,
+    hands_seen=20,
+    vpip=3,
+    calls=5,
+    bets=1,
+    raises=0,
+    folds=12,
+    fold_to_bet=8,
+    opportunities_to_fold_to_bet=10,
+    showdowns=5,
+    weak_aggressive_showdowns=0,
+)
 
 
-def _ctx(hole, board, *, call=0, pot=400, players=2, profiles=None, street="River", stack=2000):
+def _ctx(
+    hole,
+    board,
+    *,
+    call=0,
+    pot=400,
+    players=2,
+    profiles=None,
+    street="River",
+    stack=2000,
+):
     seats = [
-        {"seatNumber": i, "agentId": HERO if i == 1 else f"opp{i}",
-         "holeCards": hole if i == 1 else [], "stackChips": stack,
-         "currentBetChips": 0, "folded": False, "hasFolded": False}
+        {
+            "seatNumber": i,
+            "agentId": HERO if i == 1 else f"opp{i}",
+            "holeCards": hole if i == 1 else [],
+            "stackChips": stack,
+            "currentBetChips": 0,
+            "folded": False,
+            "hasFolded": False,
+        }
         for i in range(1, players + 1)
     ]
     actions = list(FOLD_CALL) if call > 0 else list(CHECK_BET)
-    table = {"street": street, "boardCards": board, "potChips": pot,
-             "buttonSeatNumber": 1, "seats": seats,
-             "opponentProfiles": profiles or {},
-             "allowedActions": {"availableActions": actions,
-               "callAmount": call, "callChips": call,
-               "raiseRange": {"min": max(call * 2, 4), "max": 4000}}}
+    table = {
+        "street": street,
+        "boardCards": board,
+        "potChips": pot,
+        "buttonSeatNumber": 1,
+        "seats": seats,
+        "opponentProfiles": profiles or {},
+        "allowedActions": {
+            "availableActions": actions,
+            "callAmount": call,
+            "callChips": call,
+            "raiseRange": {"min": max(call * 2, 4), "max": 4000},
+        },
+    }
     return GuardContext.build(table, seats[0])
 
 
@@ -76,34 +130,64 @@ class TestTwoPairPairedBoardOverfold:
 
 class TestFlopHuBluffcatch:
     def test_calls_vs_bluffy_dry_flop(self):
-        ctx = _ctx(["TC", "2D"], ["7S", "9D", "KH"], call=100, pot=400,
-                   profiles={VILL: BLUFFY}, street="Flop")
+        ctx = _ctx(
+            ["TC", "2D"],
+            ["7S", "9D", "KH"],
+            call=100,
+            pot=400,
+            profiles={VILL: BLUFFY},
+            street="Flop",
+        )
         result = guard_rail.run_post(ctx, ("fold", None, "core: fold"))
         assert result[0][0] == "call"
         assert result[1] == "flop_hu_bluffcatch"
 
     def test_silent_vs_value_heavy(self):
-        ctx = _ctx(["TC", "2D"], ["7S", "9D", "KH"], call=100, pot=400,
-                   profiles={VILL: VALUE}, street="Flop")
+        ctx = _ctx(
+            ["TC", "2D"],
+            ["7S", "9D", "KH"],
+            call=100,
+            pot=400,
+            profiles={VILL: VALUE},
+            street="Flop",
+        )
         result = guard_rail.run_post(ctx, ("fold", None, "core: fold"))
         assert result[1] == "approved"
 
     def test_turn_rank1_calls_vs_bluffy(self):
-        ctx = _ctx(["3C", "3D"], ["7S", "9D", "KH", "2C"], call=100, pot=400,
-                   profiles={VILL: BLUFFY}, street="Turn")
+        ctx = _ctx(
+            ["3C", "3D"],
+            ["7S", "9D", "KH", "2C"],
+            call=100,
+            pot=400,
+            profiles={VILL: BLUFFY},
+            street="Turn",
+        )
         result = guard_rail.run_post(ctx, ("fold", None, "core: fold"))
         assert result[0][0] == "call"
 
     def test_turn_high_card_excluded(self):
-        ctx = _ctx(["JC", "5D"], ["7S", "9D", "KH", "2C"], call=100, pot=400,
-                   profiles={VILL: BLUFFY}, street="Turn")
+        ctx = _ctx(
+            ["JC", "5D"],
+            ["7S", "9D", "KH", "2C"],
+            call=100,
+            pot=400,
+            profiles={VILL: BLUFFY},
+            street="Turn",
+        )
         result = guard_rail.run_post(ctx, ("fold", None, "core: fold"))
         assert result[1] == "approved"
 
     def test_wet_board_excluded(self):
         # 2C 3D on 7S 8S 9H (wet flop) has no draw -> no bluff-catch
-        ctx = _ctx(["2C", "3D"], ["7S", "8S", "9H"], call=100, pot=400,
-                   profiles={VILL: BLUFFY}, street="Flop")
+        ctx = _ctx(
+            ["2C", "3D"],
+            ["7S", "8S", "9H"],
+            call=100,
+            pot=400,
+            profiles={VILL: BLUFFY},
+            street="Flop",
+        )
         result = guard_rail.run_post(ctx, ("fold", None, "core: fold"))
         assert result[1] == "approved"
 

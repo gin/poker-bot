@@ -28,9 +28,10 @@ PostGuardFunc = Callable[[GuardContext, ActionDecision], Optional[ActionDecision
 @dataclass
 class GuardMeta:
     """Metadata for a registered guard."""
+
     guard_id: str
-    phase: str              # "pre" or "post"
-    precedence: int         # 0=highest (fires first), 4=lowest
+    phase: str  # "pre" or "post"
+    precedence: int  # 0=highest (fires first), 4=lowest
     table_sizes: list[str]  # ["hu"], ["6max"], ["hu", "6max"]
     description: str
     func: Callable
@@ -51,16 +52,20 @@ class GuardRail:
         description: str = "",
     ):
         """Decorator to register a guard with metadata."""
+
         def decorator(func: Callable) -> Callable:
-            self._guards.append(GuardMeta(
-                guard_id=guard_id,
-                phase=phase,
-                precedence=precedence,
-                table_sizes=table_sizes or ["hu", "6max"],
-                description=description,
-                func=func,
-            ))
+            self._guards.append(
+                GuardMeta(
+                    guard_id=guard_id,
+                    phase=phase,
+                    precedence=precedence,
+                    table_sizes=table_sizes or ["hu", "6max"],
+                    description=description,
+                    func=func,
+                )
+            )
             return func
+
         return decorator
 
     def _applicable(self, meta: GuardMeta, ctx: GuardContext) -> bool:

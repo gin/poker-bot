@@ -10,15 +10,35 @@ from dataclasses import dataclass
 from typing import Any
 
 from poker_bot.hand_utils import (
-    evaluate_hand, made_hand_rank, board_texture, pot_odds, effective_pot,
-    seated_players, active_players, active_opponents, call_amount,
-    blind_size, no_one_has_bet, has_top_pair_or_better, fragile_rank_two,
-    board_dominated_two_pair, has_flush_draw, has_open_ended_straight_draw,
-    has_good_draw, profile_value, profile_vpip_frequency,
-    profile_call_frequency, profile_fold_to_bet_frequency,
-    profile_aggression_frequency_merged, single_opponent_profile,
-    opponent_is_bluffy, is_tight_opponent, card_values,
-    is_board_made_or_kicker_vulnerable, royal_flush_possible, is_aks,
+    evaluate_hand,
+    made_hand_rank,
+    board_texture,
+    pot_odds,
+    effective_pot,
+    seated_players,
+    active_players,
+    active_opponents,
+    call_amount,
+    blind_size,
+    no_one_has_bet,
+    has_top_pair_or_better,
+    fragile_rank_two,
+    board_dominated_two_pair,
+    has_flush_draw,
+    has_open_ended_straight_draw,
+    has_good_draw,
+    profile_value,
+    profile_vpip_frequency,
+    profile_call_frequency,
+    profile_fold_to_bet_frequency,
+    profile_aggression_frequency_merged,
+    single_opponent_profile,
+    opponent_is_bluffy,
+    is_tight_opponent,
+    card_values,
+    is_board_made_or_kicker_vulnerable,
+    royal_flush_possible,
+    is_aks,
 )
 
 
@@ -67,13 +87,13 @@ class GuardContext:
     opponent_is_tight: bool = False
     opponent_label: str = "unknown"
     # ── Derived hand/board fields (for guard convenience) ──
-    pair_high_rank: int | None = None    # hand_rank[1] if two pair
-    pair_low_rank: int | None = None     # hand_rank[2] if two pair
-    max_board_rank: int = 0              # highest card value on board
-    min_effective_stack: int = 0         # min(hero_stack, max_opp_stack) for SPR
+    pair_high_rank: int | None = None  # hand_rank[1] if two pair
+    pair_low_rank: int | None = None  # hand_rank[2] if two pair
+    max_board_rank: int = 0  # highest card value on board
+    min_effective_stack: int = 0  # min(hero_stack, max_opp_stack) for SPR
     is_board_made_or_kicker: bool = False  # board-made or kicker-only hand
-    royal_flush_possible: bool = False     # royal flush still possible
-    is_aks: bool = False                   # hero holds suited AK
+    royal_flush_possible: bool = False  # royal flush still possible
+    is_aks: bool = False  # hero holds suited AK
 
     @classmethod
     def build(cls, table: dict, my_seat: dict) -> "GuardContext":
@@ -86,10 +106,22 @@ class GuardContext:
         all_cards = list(hole_cards) + list(board_cards)
         hand_rank = evaluate_hand(all_cards) if len(all_cards) >= 5 else (0,)
         made_rank = made_hand_rank(hole_cards, board_cards)
-        texture = board_texture(board_cards) if board_cards else {"wet": False, "paired": False, "high": False}
+        texture = (
+            board_texture(board_cards)
+            if board_cards
+            else {"wet": False, "paired": False, "high": False}
+        )
         has_top = has_top_pair_or_better(hole_cards, board_cards)
-        frag2 = fragile_rank_two(hole_cards, board_cards, made_rank) if made_rank == 2 else False
-        bdom = board_dominated_two_pair(hole_cards, board_cards, made_rank) if made_rank == 2 else False
+        frag2 = (
+            fragile_rank_two(hole_cards, board_cards, made_rank)
+            if made_rank == 2
+            else False
+        )
+        bdom = (
+            board_dominated_two_pair(hole_cards, board_cards, made_rank)
+            if made_rank == 2
+            else False
+        )
         board_made = made_rank == 0 and len(board_cards) >= 5
         hfd = has_flush_draw(hole_cards, board_cards)
         hoesd = has_open_ended_straight_draw(hole_cards, board_cards)
@@ -148,24 +180,51 @@ class GuardContext:
         aks = is_aks(hole_cards)
 
         return cls(
-            table=table, my_seat=my_seat, hole_cards=hole_cards, board_cards=board_cards,
-            hand_rank=hand_rank, made_rank=made_rank, board_texture=texture,
-            has_top_pair=has_top, is_fragile_two_pair=frag2,
-            is_board_dominated_two_pair=bdom, is_board_made=board_made,
-            has_flush_draw=hfd, has_oesd=hoesd, has_good_draw=hfd or hoesd,
-            pot=pot, effective_pot=eff_pot, stack=stack,
-            call_price=price, facing_bet=facing, pot_odds=odds, blind=blind,
-            street=street, num_seated=num_seated, num_active=num_active,
-            num_active_opponents=num_opp, is_heads_up=(num_seated < 4),
-            no_one_bet=no_bet, available_actions=available, allowed=allowed,
-            opponent_profile=opp_profile, opponent_hands_seen=opp_hands,
-            opponent_vpip=opp_vpip, opponent_call_freq=opp_call,
-            opponent_fold_to_bet=opp_ftb, opponent_aggression=opp_aggr,
-            opponent_wasd=opp_wasd, opponent_bluff_pct=opp_bluff,
+            table=table,
+            my_seat=my_seat,
+            hole_cards=hole_cards,
+            board_cards=board_cards,
+            hand_rank=hand_rank,
+            made_rank=made_rank,
+            board_texture=texture,
+            has_top_pair=has_top,
+            is_fragile_two_pair=frag2,
+            is_board_dominated_two_pair=bdom,
+            is_board_made=board_made,
+            has_flush_draw=hfd,
+            has_oesd=hoesd,
+            has_good_draw=hfd or hoesd,
+            pot=pot,
+            effective_pot=eff_pot,
+            stack=stack,
+            call_price=price,
+            facing_bet=facing,
+            pot_odds=odds,
+            blind=blind,
+            street=street,
+            num_seated=num_seated,
+            num_active=num_active,
+            num_active_opponents=num_opp,
+            is_heads_up=(num_seated < 4),
+            no_one_bet=no_bet,
+            available_actions=available,
+            allowed=allowed,
+            opponent_profile=opp_profile,
+            opponent_hands_seen=opp_hands,
+            opponent_vpip=opp_vpip,
+            opponent_call_freq=opp_call,
+            opponent_fold_to_bet=opp_ftb,
+            opponent_aggression=opp_aggr,
+            opponent_wasd=opp_wasd,
+            opponent_bluff_pct=opp_bluff,
             opponent_is_bluffy=opp_is_bluffy_val,
-            opponent_is_tight=opp_is_tight_val, opponent_label=opp_label,
-            pair_high_rank=pair_high, pair_low_rank=pair_low,
-            max_board_rank=max_board, min_effective_stack=min_eff_stack,
+            opponent_is_tight=opp_is_tight_val,
+            opponent_label=opp_label,
+            pair_high_rank=pair_high,
+            pair_low_rank=pair_low,
+            max_board_rank=max_board,
+            min_effective_stack=min_eff_stack,
             is_board_made_or_kicker=board_made_kicker,
-            royal_flush_possible=rf_possible, is_aks=aks,
+            royal_flush_possible=rf_possible,
+            is_aks=aks,
         )

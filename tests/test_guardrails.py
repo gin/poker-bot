@@ -16,6 +16,7 @@ from poker_bot.neural.guardrails import (
 
 # ── royal_flush_possible ─────────────────────────────────────────────
 
+
 def test_royal_flush_possible_preflop_aks():
     assert royal_flush_possible(["AS", "KS"], [])
 
@@ -35,6 +36,7 @@ def test_royal_flush_not_possible_when_blocked():
 
 # ── GuardResult dataclass ────────────────────────────────────────────
 
+
 def test_guard_result_is_frozen():
     result = GuardResult(
         fired=True,
@@ -48,6 +50,7 @@ def test_guard_result_is_frozen():
 
 
 # ── GuardRail registry ───────────────────────────────────────────────
+
 
 def test_default_guardrail_has_pre_and_post_guards():
     guards = get_guardrail()
@@ -68,6 +71,7 @@ def test_default_guardrail_has_pre_and_post_guards():
 
 
 # ── _action_from_guard helper ────────────────────────────────────────
+
 
 def test_action_from_guard_call_amount():
     result = GuardResult(
@@ -105,6 +109,7 @@ def test_action_from_guard_check_is_none_amount():
 
 # ── Post-decision guards ────────────────────────────────────────────
 
+
 def test_sliver_shove_floor_fires():
     table = {
         "potChips": 300,
@@ -140,6 +145,7 @@ def test_excessive_bet_size_cap_fires():
 
 
 # ── DB logging ──────────────────────────────────────────────────────
+
 
 def test_guardrail_log_override_writes_row(tmp_path):
     conn = sqlite3.connect(tmp_path / "test.db")
