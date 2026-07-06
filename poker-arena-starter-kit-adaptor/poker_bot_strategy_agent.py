@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import importlib
 import os
-from typing import Any, Optional
-
+from typing import Any
 
 DEFAULT_STRATEGY = "auto_research_v008"
 
@@ -130,7 +129,7 @@ def _reasoning(action: str, table: dict, allowed: dict) -> str:
     return f'{{vr: "{STRATEGY_NAME}", ke: "legal", pp: "pot control"}}'
 
 
-def _payload(action: str, amount: Optional[int], table: dict, message: str) -> dict:
+def _payload(action: str, amount: int | None, table: dict, message: str) -> dict:
     allowed = table.get("allowedActions") or {}
     available = allowed.get("availableActions") or []
     if action not in available and available:
@@ -179,7 +178,7 @@ def _deadline_fallback(table: dict) -> dict:
 
 
 def decide(
-    table: dict, deadline_s: float = 10.0, research_context: Optional[dict] = None
+    table: dict, deadline_s: float = 10.0, research_context: dict | None = None
 ) -> dict:
     """Return one Arena-compatible action using the selected poker_bot strategy."""
     if deadline_s < 2.0:

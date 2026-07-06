@@ -1859,10 +1859,24 @@ def sixmax_adjustment(table, my_seat, base) -> ActionDecision | None:
     if decision is not None:
         return decision
 
-    # 0.5. Royal flush guard: never fold with AKs preflop or when royal possible postflop
-    decision = royal_flush_check_call_guard(table, my_seat, base)
-    if decision is not None:
-        return decision
+    # 0.5. Royal flush pre-decision guard: check/call only when royal flush is possible
+    from poker_bot.neural.guardrails import royal_flush_predecision_guard
+
+    pre_guard = royal_flush_predecision_guard(table, my_seat)
+    if pre_guard and pre_guard.fired:
+        action, amount, reason = (
+            pre_guard.final_action,
+            pre_guard.final_action,  # placeholder, refined below
+            pre_guard.reason,
+        )
+        allowed = table.get("allowedActions") or {}
+        if action == "call":
+            amount = allowed.get("callAmount") or allowed.get("callChips") or 0
+        elif action == "check":
+            amount = None
+        else:
+            amount = None
+        return action, amount, reason
 
     # 0.6. Preflop premium shove: AA/KK/QQ/AKs/KQs go all-in after 3+ raise-backs
     decision = preflop_premium_3bet_shove(table, my_seat, base)
