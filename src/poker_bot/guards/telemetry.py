@@ -8,8 +8,14 @@ of choose_action, and the observer drains it after every action.
 
 Env-var mode overrides let you A/B a guard without editing code:
 
-    POKER_GUARD_SHADOW=id1,id2    force listed guards to shadow mode
-    POKER_GUARD_DISABLE=id1,id2   disable listed guards entirely
+    POKER_GUARD_DISABLE=id1,id2    disable listed guards entirely
+    POKER_GUARD_SHADOW=id1,id2     force listed guards to shadow mode
+    POKER_GUARD_ACTIVATE=id1,id2   force listed guards active (overrides
+                                   a default-shadow registration)
+
+Each accepts "*" to mean all guards. Precedence: DISABLE > SHADOW >
+ACTIVATE > registration default (conservative: on conflict a guard
+shadows rather than activates).
 """
 
 from __future__ import annotations
@@ -56,18 +62,22 @@ def clear_events() -> None:
     _pending.clear()
 
 
-def _env_id_set(name: str) -> set[str]:
+def _env_matches(name: str, guard_id: str) -> bool:
     raw = os.environ.get(name, "")
-    return {part.strip() for part in raw.split(",") if part.strip()}
+    ids = {part.strip() for part in raw.split(",") if part.strip()}
+    return "*" in ids or guard_id in ids
 
 
 def guard_mode(guard_id: str, *, shadow_default: bool) -> str:
     """Effective mode for a guard: "active", "shadow", or "off".
 
     Env overrides win over the registration-time shadow flag.
+    Precedence: DISABLE > SHADOW > ACTIVATE > registration default.
     """
-    if guard_id in _env_id_set("POKER_GUARD_DISABLE"):
+    if _env_matches("POKER_GUARD_DISABLE", guard_id):
         return "off"
-    if guard_id in _env_id_set("POKER_GUARD_SHADOW"):
+    if _env_matches("POKER_GUARD_SHADOW", guard_id):
         return "shadow"
+    if _env_matches("POKER_GUARD_ACTIVATE", guard_id):
+        return "active"
     return "shadow" if shadow_default else "active"

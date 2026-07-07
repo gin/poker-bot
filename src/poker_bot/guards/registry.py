@@ -40,10 +40,19 @@ class GuardMeta:
 
 
 class GuardRail:
-    """Central registry and runner for guard rules."""
+    """Central registry and runner for guard rules.
 
-    def __init__(self) -> None:
+    default_shadow=True makes every guard registered on this rail run in
+    shadow mode (log fires, never override) unless the registration passes
+    an explicit shadow=False. Pruning sweep 2026-07-06: no guard showed a
+    positive counterfactual on the benchmark pools, so both rails default
+    to shadow; activate individual guards only after they pass a pool-wide
+    on/off gate (or force with POKER_GUARD_ACTIVATE for experiments).
+    """
+
+    def __init__(self, default_shadow: bool = False) -> None:
         self._guards: list[GuardMeta] = []
+        self._default_shadow = default_shadow
 
     def register(
         self,
@@ -52,7 +61,7 @@ class GuardRail:
         precedence: int,
         table_sizes: list[str] | None = None,
         description: str = "",
-        shadow: bool = False,
+        shadow: bool | None = None,
     ):
         """Decorator to register a guard with metadata."""
 
@@ -65,7 +74,7 @@ class GuardRail:
                     table_sizes=table_sizes or ["hu", "6max"],
                     description=description,
                     func=func,
-                    shadow=shadow,
+                    shadow=self._default_shadow if shadow is None else shadow,
                 )
             )
             return func

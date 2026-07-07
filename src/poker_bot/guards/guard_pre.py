@@ -27,7 +27,11 @@ from poker_bot.hand_utils import (
 from poker_bot.strategies.adaptive import preflop_score
 
 ActionDecision = tuple[str, int | None, str]
-guard_rail = GuardRail()
+# Default-shadow: pruning sweep 2026-07-06 found every firing guard was a
+# net tax on the healthy cores (see artifacts/GUARD_AUDIT_2026-07-06.md).
+# Guards log what they would do; activation requires passing a pool-wide
+# counterfactual gate.
+guard_rail = GuardRail(default_shadow=True)
 guard_pre = guard_rail
 # ── Thresholds ──────────────────────────────────────────────────────────────
 SLIVER_SHOVE_POT_ODDS_FLOOR = 0.10

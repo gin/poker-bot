@@ -1,9 +1,20 @@
-"""Tests for guard_pre.py — the 4 pre-decision guards."""
+"""Tests for guard_pre.py — the 4 pre-decision guards.
+
+The rails are default-shadow; these tests exercise guard decision logic,
+so they force every guard active via POKER_GUARD_ACTIVATE.
+"""
+
+import pytest
 
 from poker_bot.guards.context import GuardContext
 from poker_bot.guards.guard_pre import guard_pre, guard_rail
 
 HERO = "hero"
+
+
+@pytest.fixture(autouse=True)
+def _activate_all_guards(monkeypatch):
+    monkeypatch.setenv("POKER_GUARD_ACTIVATE", "*")
 
 
 def test_guard_pre_alias_matches_registry():

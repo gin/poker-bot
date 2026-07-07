@@ -1,10 +1,21 @@
-"""Tests for guard_post.py — the 6 ported hu009-hu012 guards."""
+"""Tests for guard_post.py — the 6 ported hu009-hu012 guards.
+
+The rails are default-shadow; these tests exercise guard decision logic,
+so they force every guard active via POKER_GUARD_ACTIVATE.
+"""
+
+import pytest
 
 from poker_bot.guards.context import GuardContext
 from poker_bot.guards.guard_post import guard_post, guard_rail
 from poker_bot.hand_utils import OpponentProfile
 
 HERO = "hero"
+
+
+@pytest.fixture(autouse=True)
+def _activate_all_guards(monkeypatch):
+    monkeypatch.setenv("POKER_GUARD_ACTIVATE", "*")
 VILL = "vill"
 FOLD_CALL = ("fold", "call", "raise", "all-in")
 CHECK_BET = ("fold", "check", "bet", "all-in")

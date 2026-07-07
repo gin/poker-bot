@@ -20,6 +20,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from eval.profiler import StrategyProfile, format_profile  # noqa: E402
+from poker_bot.guards.telemetry import drain_events as drain_guard_events  # noqa: E402
 from poker_bot.opponent_store import (  # noqa: E402
     connect,
     create_telemetry_run,
@@ -28,6 +29,7 @@ from poker_bot.opponent_store import (  # noqa: E402
     load_profiles_for_agents,
     merge_worker_db,
     record_decision_telemetry,
+    record_guard_event,
     record_observed_action,
     update_hand_telemetry_outcome,
 )
@@ -149,6 +151,10 @@ def run_selfplay(
     def combined_observer(**event):
         """Action observer used in ALL modes (heads-up and multiway).
         Forwards to the profiler and the DB-backed observer_action."""
+        # Drain the guard event buffer on EVERY action so opponents' guard
+        # fires (mirror matches) are discarded rather than misattributed to
+        # the hero's next decision. Hero events are persisted below.
+        guard_events = drain_guard_events()
         if use_profiler:
             profiler._observe(**event)
         if db_conn is not None and "seat" in event and "table" in event:
@@ -198,6 +204,15 @@ def run_selfplay(
                     voluntary=event.get("voluntary", False),
                     commit=False,
                 )
+                for guard_event in guard_events:
+                    record_guard_event(
+                        db_conn,
+                        run_id=run_id,
+                        hand_id=h_id,
+                        decision_index=decision_index,
+                        event=guard_event,
+                        commit=False,
+                    )
 
     wins = 0
     losses = 0

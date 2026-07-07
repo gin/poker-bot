@@ -44,7 +44,9 @@ _TURN_WEAK_FOLD_MIN_POT_ODDS = 0.25
 _FLOP_BLUFFCATCH_MAX_POT_ODDS = 0.25
 _FLOP_BLUFFCATCH_MIN_WASD = 0.30
 
-guard_rail = GuardRail()
+# Default-shadow: pruning sweep 2026-07-06 found every firing guard was a
+# net tax on the healthy cores (see artifacts/GUARD_AUDIT_2026-07-06.md).
+guard_rail = GuardRail(default_shadow=True)
 guard_post = guard_rail
 
 
