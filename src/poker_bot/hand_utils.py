@@ -296,14 +296,30 @@ def has_good_draw(hole_cards, board_cards):
 
 # ── Table / Seat Utilities ─────────────────────────────────────────────────
 
+# Seat statuses that mean the player is NOT contesting the hand. The arena
+# sends `status` and no `folded` flags; the local simulator sends `folded`
+# flags and no `status`. Liveness checks must handle both, or half the
+# codebase is wrong in exactly one environment (live telemetry showed
+# active_players == seated_players on every arena turn/river decision).
+# Blocklist rather than status == "Active" so unknown statuses (e.g. AllIn)
+# stay counted as live.
+_DEAD_SEAT_STATUSES = frozenset(
+    {"Folded", "SittingOut", "Waiting", "Out", "Busted", "Eliminated"}
+)
+
+
+def seat_is_live(seat):
+    """True if the seat is still contesting the hand (arena or simulator)."""
+    if seat.get("folded", False) or seat.get("hasFolded", False):
+        return False
+    return seat.get("status") not in _DEAD_SEAT_STATUSES
+
 
 def active_seat_numbers(table):
     return [
         int(s.get("seatNumber"))
         for s in table.get("seats", [])
-        if not s.get("folded", False)
-        and not s.get("hasFolded", False)
-        and s.get("seatNumber") is not None
+        if seat_is_live(s) and s.get("seatNumber") is not None
     ]
 
 
@@ -320,9 +336,7 @@ def active_opponents(table, my_seat):
     return sum(
         1
         for s in table.get("seats", [])
-        if s.get("agentId") != my_id
-        and not s.get("folded", False)
-        and not s.get("hasFolded", False)
+        if s.get("agentId") != my_id and seat_is_live(s)
     )
 
 
@@ -334,8 +348,7 @@ def live_opponent_seats(table, my_seat):
         for s in table.get("seats", [])
         if s.get("agentId") != hero_id
         and s.get("seatNumber") != hero_seat
-        and not s.get("folded", False)
-        and not s.get("hasFolded", False)
+        and seat_is_live(s)
     ]
 
 

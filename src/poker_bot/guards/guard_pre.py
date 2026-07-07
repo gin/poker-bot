@@ -24,12 +24,65 @@ from poker_bot.hand_utils import (
     board_texture,
     RANK_VALUES,
 )
+from poker_bot.strategies.adaptive import preflop_score
 
 ActionDecision = tuple[str, int | None, str]
 guard_rail = GuardRail()
 guard_pre = guard_rail
 # ── Thresholds ──────────────────────────────────────────────────────────────
 SLIVER_SHOVE_POT_ODDS_FLOOR = 0.10
+# preflop_commit_cap: max total preflop commitment (in big blinds) by hand
+# tier before we stop feeding a raise war. Premium (score >= 80) is uncapped.
+PREFLOP_COMMIT_CAP_MEDIUM_BB = 6
+PREFLOP_COMMIT_CAP_AIR_BB = 2
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pre-Guard 0: preflop_commit_cap (Layer 0, multiway only) — SHADOW
+# History (guard_audit 2026-07-06): written against 6-max preflop call-wars,
+# which turned out to be an artifact of the router bug that sent every local
+# decision through the heads-up core (count_active_players saw no 'status'
+# field in simulator seats and returned 0). With routing fixed, s4v002 does
+# not call-feed wars and leave-one-out benchmarking measured this guard as
+# neutral (-0.4 bb/100, within noise). Kept in SHADOW to collect evidence;
+# activate only if a pool-wide counterfactual gate shows >= 0 delta.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@guard_rail.register(
+    "preflop_commit_cap",
+    "pre",
+    2,
+    ["6max"],
+    "Preflop commit cap: fold non-premium hands once total commitment "
+    "exceeds tier cap (stops call-feeding raise wars)",
+    shadow=True,
+)
+def preflop_commit_cap(ctx: GuardContext) -> ActionDecision | None:
+    if ctx.street != "Preflop":
+        return None
+    if not ctx.facing_bet or ctx.call_price <= 0:
+        return None
+    if "fold" not in ctx.available_actions:
+        return None
+
+    score = preflop_score(ctx.hole_cards)
+    if score >= 80:
+        return None  # premium: let the core play the war
+
+    blind = max(1, ctx.blind)
+    cap_bb = (
+        PREFLOP_COMMIT_CAP_MEDIUM_BB if score >= 50 else PREFLOP_COMMIT_CAP_AIR_BB
+    )
+    committed = int(ctx.my_seat.get("currentBetChips") or 0)
+    if committed < cap_bb * blind:
+        return None
+
+    return (
+        "fold",
+        None,
+        f"preflop commit cap: {committed} committed >= {cap_bb}bb cap "
+        f"(score {score}), folding out of raise war",
+    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 

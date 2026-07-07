@@ -253,6 +253,7 @@ def init_db(conn):
             "set table_id = substr(hand_id, 1, instr(hand_id, ':') - 1) "
             "where table_id is null and hand_id like '%:%'"
         )
+    ensure_guard_overrides_table(conn)
     conn.commit()
 
 
@@ -274,6 +275,12 @@ def ensure_guard_overrides_table(conn) -> None:
             pot_chips integer,
             call_amount integer,
             available_actions text,
+            shadow integer not null default 0,
+            applied integer not null default 1,
+            original_amount integer,
+            final_amount integer,
+            phase text,
+            precedence integer,
             created_at text not null default current_timestamp
         );
         create index if not exists idx_guard_overrides_run
@@ -282,7 +289,104 @@ def ensure_guard_overrides_table(conn) -> None:
             on guard_overrides(guard_id);
         """
     )
+    # Legacy DBs created before the shadow-mode columns existed.
+    _ensure_columns(
+        conn,
+        "guard_overrides",
+        {
+            "shadow": "integer not null default 0",
+            "applied": "integer not null default 1",
+            "original_amount": "integer",
+            "final_amount": "integer",
+            "phase": "text",
+            "precedence": "integer",
+        },
+    )
     conn.commit()
+
+
+def record_guard_event(
+    conn,
+    *,
+    run_id,
+    hand_id,
+    decision_index,
+    event,
+    commit=False,
+):
+    """Persist one GuardEvent (poker_bot.guards.telemetry) for a hero decision.
+
+    Keyed by (run_id, hand_id, decision_index) so rows join straight to
+    decision_telemetry for hand context and outcome (hero_net_chips, won_hand).
+    """
+    conn.execute(
+        """
+        insert into guard_overrides(
+            run_id, hand_id, decision_index, guard_id, pre_decision,
+            original_action, final_action, reason,
+            street, pot_chips, call_amount, available_actions,
+            shadow, applied, original_amount, final_amount, phase, precedence
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            hand_id,
+            decision_index,
+            event.guard_id,
+            1 if event.phase == "pre" else 0,
+            event.original_action,
+            event.final_action,
+            event.reason,
+            event.street,
+            event.pot,
+            event.call_price,
+            event.available_actions,
+            1 if event.shadow else 0,
+            1 if event.applied else 0,
+            event.original_amount,
+            event.final_amount,
+            event.phase,
+            event.precedence,
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def summarize_guard_overrides(conn, run_id=None, min_fires=1):
+    """Per-guard summary: fire counts and outcome of the decisions touched.
+
+    avg_net_chips comes from joining decision_telemetry on
+    (run_id, hand_id, decision_index) — i.e. the outcome of hands where the
+    guard fired, which is the number to compare against the run average when
+    judging whether a guard is taxing good spots.
+    """
+    where = "where g.run_id = ?" if run_id is not None else ""
+    params: list = [run_id] if run_id is not None else []
+    params.append(min_fires)
+    return conn.execute(
+        f"""
+        select g.guard_id,
+               g.phase,
+               count(*) as fires,
+               sum(g.applied) as applied,
+               sum(g.shadow) as shadow,
+               g.original_action || ' -> ' || g.final_action as transition,
+               avg(d.hero_net_chips) as avg_net_chips,
+               avg(d.won_hand) as win_rate,
+               count(d.hero_net_chips) as decided
+        from guard_overrides g
+        left join decision_telemetry d
+          on d.run_id = g.run_id
+         and d.hand_id = g.hand_id
+         and d.decision_index = g.decision_index
+        {where}
+        group by g.guard_id, g.phase, transition
+        having fires >= ?
+        order by fires desc
+        """,
+        params,
+    ).fetchall()
 
 
 def _ensure_columns(conn, table, columns):
@@ -1322,6 +1426,21 @@ def merge_worker_db(main_path, worker_path):
                    facing_bet, voluntary, strategy_message, hero_net_chips,
                    won_hand, final_pot, created_at
             FROM worker.decision_telemetry
+            """
+        )
+        main_conn.execute(
+            """
+            INSERT INTO guard_overrides (
+                run_id, hand_id, decision_index, guard_id, pre_decision,
+                original_action, final_action, reason, street, pot_chips,
+                call_amount, available_actions, shadow, applied,
+                original_amount, final_amount, phase, precedence, created_at
+            )
+            SELECT run_id, hand_id, decision_index, guard_id, pre_decision,
+                   original_action, final_action, reason, street, pot_chips,
+                   call_amount, available_actions, shadow, applied,
+                   original_amount, final_amount, phase, precedence, created_at
+            FROM worker.guard_overrides
             """
         )
         main_conn.commit()
