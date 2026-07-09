@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>poker-bot replay</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>♠ poker-bot replay</h1>
+    <select id="run-select" title="telemetry run"></select>
+    <select id="order-select" title="sort">
+      <option value="recent">most recent</option>
+      <option value="biggest_loss">biggest losses</option>
+      <option value="biggest_win">biggest wins</option>
+    </select>
+    <input id="tag-filter" placeholder="filter tag (guard: / exploit:)" list="tag-list" />
+    <datalist id="tag-list"></datalist>
+    <span id="tag-summary" class="muted"></span>
+  </header>
+  <main>
+    <nav id="hand-list" aria-label="hands"></nav>
+    <section id="replay">
+      <div class="placeholder">pick a hand ←</div>
+    </section>
+    <aside id="opponents"></aside>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
