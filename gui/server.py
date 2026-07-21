@@ -27,6 +27,7 @@ REPO_ROOT = GUI_DIR.parent
 app = FastAPI(title="poker-bot replay")
 DB_PATH: Path | None = None
 OPP_DB_PATH: Path | None = None  # live runs keep profiles in a separate file
+ARENA_DB_PATH: Path | None = None  # arena mirror with 100%-revealed hole cards
 
 TAG_RE = re.compile(r"\[(guard|exploit):([a-z0-9_-]+)\]")
 
@@ -221,6 +222,64 @@ def _profile_row_from(conn, agent_id):
     return profile
 
 
+def _arena_hand(table_id: str | None):
+    """Look up the fully-revealed arena mirror for a hand's table.
+
+    Returns ``{"seats_by_agent", "winners", "final_board"}`` where
+    ``seats_by_agent`` maps agent_id → revealed hole cards + payout, or
+    ``None`` when the arena DB is not configured, ``table_id`` is missing
+    (old sim data), or the table is absent from the mirror. Always graceful.
+    """
+    if ARENA_DB_PATH is None or not table_id:
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{ARENA_DB_PATH}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    conn.row_factory = sqlite3.Row
+    try:
+        table = conn.execute(
+            "select board_cards, winners_json from arena_tables where id = ?",
+            (table_id,),
+        ).fetchone()
+        if table is None:
+            return None
+        seats = conn.execute(
+            "select agent_id, handle, hole_cards, payout_chips "
+            "from arena_seats where table_id = ?",
+            (table_id,),
+        ).fetchall()
+        seats_by_agent = {
+            s["agent_id"]: {
+                "revealed_hole_cards": s["hole_cards"],
+                "payout_chips": s["payout_chips"],
+                "handle": s["handle"],
+            }
+            for s in seats
+            if s["agent_id"]
+        }
+        winners = []
+        try:
+            for w in json.loads(table["winners_json"] or "[]"):
+                winners.append(
+                    {
+                        "agentName": w.get("agentName"),
+                        "amount": w.get("amount"),
+                        "handName": w.get("handName"),
+                        "message": w.get("message"),
+                    }
+                )
+        except ValueError:
+            pass
+        return {
+            "seats_by_agent": seats_by_agent,
+            "winners": winners,
+            "final_board": table["board_cards"],
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/hand")
 def hand(run_id: str, hand_id: str):
     conn = db()
@@ -307,7 +366,8 @@ def hand(run_id: str, hand_id: str):
                 if profile:
                     opponents[a["agent_id"]] = profile
 
-        return {
+        opp_list = list(opponents.values())
+        result = {
             "hand_id": hand_id,
             "hero": {
                 "agent_id": hero_id,
@@ -322,8 +382,22 @@ def hand(run_id: str, hand_id: str):
             },
             "timeline": timeline,
             "decisions": decisions,
-            "opponents": list(opponents.values()),
+            "opponents": opp_list,
         }
+
+        # Overlay the fully-revealed arena mirror when available. Old sim
+        # data has no table_id; missing DB/table is silently skipped.
+        arena = _arena_hand(decisions[0].get("table_id"))
+        if arena:
+            for o in opp_list:
+                seat = arena["seats_by_agent"].get(o["agent_id"])
+                if seat:
+                    o["revealed_hole_cards"] = seat["revealed_hole_cards"]
+                    o["payout_chips"] = seat["payout_chips"]
+            result["winners"] = arena["winners"]
+            result["final_board"] = arena["final_board"]
+
+        return result
     finally:
         conn.close()
 
@@ -373,6 +447,12 @@ def main():
         default=os.environ.get("POKER_BOT_OPPONENT_DB"),
         help="separate opponent-profile DB (live runs split the stores)",
     )
+    parser.add_argument(
+        "--arena-db",
+        default=os.environ.get("ARENA_TABLES_DB"),
+        help="arena mirror with revealed hole cards "
+        "(defaults to repo-root arena_tables.sqlite when present)",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8400)
     args = parser.parse_args()
@@ -384,6 +464,15 @@ def main():
         candidate = Path(args.opponent_db).expanduser()
         if candidate.is_file():
             OPP_DB_PATH = candidate
+    global ARENA_DB_PATH
+    arena_arg = args.arena_db
+    if arena_arg is None:
+        root_db = REPO_ROOT / "arena_tables.sqlite"
+        arena_arg = str(root_db) if root_db.is_file() else None
+    if arena_arg:
+        candidate = Path(arena_arg).expanduser()
+        if candidate.is_file():
+            ARENA_DB_PATH = candidate
     import uvicorn
 
     print(f"replay GUI: http://{args.host}:{args.port}  (db: {DB_PATH})")

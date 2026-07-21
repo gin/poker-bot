@@ -128,3 +128,30 @@ main {
 .statgrid dt { color: var(--muted); }
 .statgrid dd { margin: 0; text-align: right; }
 .api-note { margin-top: 6px; font-size: 11px; color: var(--muted); }
+.revealed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--panel);
+  border: 1px solid #262f38;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
+.revealed-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  font-weight: 700;
+}
+.reveal-row { display: flex; gap: 8px; align-items: baseline; }
+.reveal-row .who { min-width: 110px; color: var(--muted); }
+.win-row { font-size: 11px; }
+.opp-revealed {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 6px;
+}

@@ -131,22 +131,52 @@ async function loadHand(handId, rowEl) {
     )
     .join("");
 
+  const revealed = (hand.opponents || []).filter((o) => o.revealed_hole_cards);
+  const revealedHtml = revealed.length
+    ? `<div class="revealed">
+         <span class="revealed-label">revealed</span>
+         ${revealed
+           .map(
+             (o) =>
+               `<span class="reveal-row"><span class="who">${o.handle || o.agent_id.slice(0, 10)}</span>${cardsHtml(o.revealed_hole_cards)}</span>`
+           )
+           .join("")}
+         ${(hand.winners || [])
+           .filter((w) => w.handName || w.message)
+           .map(
+             (w) =>
+               `<span class="muted win-row">${w.agentName || "?"} won${w.amount != null ? " " + w.amount : ""}${w.handName ? " · " + w.handName : ""}${w.message ? " — " + w.message : ""}</span>`
+           )
+           .join("")}
+       </div>`
+    : "";
+
   $("#replay").innerHTML = `
     <div class="hand-header">
       ${netHtml(hand.hero.net)}
       <span>${cardsHtml(hand.hero.hole_cards)}</span>
       <span class="muted">${hand.hero.position || ""} · ${hand.hand_id}</span>
     </div>
+    ${revealedHtml}
     ${blocks}`;
 
   $("#opponents").innerHTML =
     hand.opponents
       .map((o) => {
         const api_ = o.api_stats || {};
-        const style = (api_.playingStyle || {}).label;
+        const ps = api_.playingStyle || {};
+        const style = ps.label;
+        const revealed = o.revealed_hole_cards
+          ? `<div class="opp-revealed">${cardsHtml(o.revealed_hole_cards)}${o.payout_chips != null ? `<span class="muted"> ${o.payout_chips >= 0 ? "+" : ""}${o.payout_chips}</span>` : ""}</div>`
+          : "";
+        const archetype = ps.archetype
+          ? `<div class="api-note">${ps.archetype}${ps.tagline ? ` — ${ps.tagline}` : ""}</div>`
+          : "";
         return `
         <div class="opp-card">
           <h3>${o.handle || o.agent_id.slice(0, 12)}</h3>
+          ${revealed}
+          ${archetype}
           <dl class="statgrid">
             <dt>observed hands</dt><dd>${o.hands_seen}</dd>
             <dt>VPIP / PFR</dt><dd>${o.vpip_pct ?? "?"}% / ${o.pfr_pct ?? "?"}%</dd>
