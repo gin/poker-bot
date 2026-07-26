@@ -82,11 +82,9 @@ def test_ac_kc_paired_board_effective_all_in_folds_end_to_end():
 
     assert multi_core.count_dealt_in_players(table) == 6
     action, _amount, message = multi_core.choose_action(table, hero)
-
-
     assert "[full_ring]" in message
     assert action == "fold"
-    assert "paired-board two pair effective all-in fold" in message
+    assert "board-assisted paired-board two pair 4x effective all-in fold" in message
 
 
 def test_ac_kc_top_pair_plus_board_pair_is_rank_two():
@@ -95,18 +93,68 @@ def test_ac_kc_top_pair_plus_board_pair_is_rank_two():
 
     assert s5base.made_hand_rank(hole_cards, board_cards) == 2
     assert s5base.has_top_pair_or_better(hole_cards, board_cards)
+    assert s5base.board_assisted_two_pair_on_paired_board(hole_cards, board_cards)
 
-
-def test_paired_board_two_pair_below_stack_is_not_effective_all_in_fold():
+def test_board_assisted_two_pair_below_four_times_stack_is_not_intercepted():
     table = _table(
         ["Ac", "Kc"],
         ["4h", "9s", "Ah", "9c"],
-        call=860,
+        call=3_443,
         pot=3_879,
         stack=861,
     )
 
+    assert 3_443 >= 861
+    assert 3_443 < 4.0 * 861
     assert s5base.effective_all_in_paired_board_fold(table, table["seats"][0]) is None
+
+
+def test_private_two_pair_on_paired_board_is_not_board_assisted_or_intercepted():
+    table = _table(
+        ["Ac", "4c"],
+        ["4h", "9s", "Ah", "9c"],
+        call=3_850,
+        pot=3_879,
+        stack=861,
+    )
+    hero = table["seats"][0]
+
+    assert s5base.made_hand_rank(hero["holeCards"], table["boardCards"]) == 2
+    assert not s5base.board_assisted_two_pair_on_paired_board(
+        hero["holeCards"], table["boardCards"]
+    )
+    assert s5base.effective_all_in_paired_board_fold(table, hero) is None
+
+
+@pytest.mark.parametrize(
+    "hole_cards",
+    [(["Kh", "Kd"]), (["Kc", "Qc"])],
+    ids=["pocket-pair", "no-board-singleton-participation"],
+)
+def test_pocket_pair_and_nonparticipating_holes_are_not_board_assisted(hole_cards):
+    assert not s5base.board_assisted_two_pair_on_paired_board(
+        hole_cards, ["4h", "9s", "Ah", "9c"]
+    )
+
+
+def test_fragile_rank_two_effective_all_in_behavior_remains():
+    table = _table(
+        ["Kc", "Kd"],
+        ["4h", "9s", "Ah", "9c"],
+        call=861,
+        pot=3_879,
+        stack=861,
+    )
+    hero = table["seats"][0]
+
+    assert s5base.fragile_rank_two_on_paired_board(
+        hero["holeCards"], table["boardCards"]
+    )
+    assert s5base.effective_all_in_paired_board_fold(table, hero) == (
+        "fold",
+        None,
+        "fragile paired-board rank-two effective all-in fold",
+    )
 
 
 @pytest.mark.parametrize(

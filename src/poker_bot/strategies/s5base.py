@@ -603,6 +603,19 @@ def fragile_rank_two_on_paired_board(hole_cards, board_cards):
         return False
     return not has_top_pair_or_better(hole_cards, board_cards)
 
+def board_assisted_two_pair_on_paired_board(hole_cards, board_cards):
+    """Whether exactly one unpaired hole rank pairs a board singleton."""
+    if (
+        made_hand_rank(hole_cards, board_cards) != 2
+        or not board_has_pair(board_cards)
+        or hole_pair_rank(hole_cards) is not None
+    ):
+        return False
+    singleton_board_ranks = {
+        value for value, count in rank_counts(board_cards).items() if count == 1
+    }
+    return len(set(card_values(hole_cards)).intersection(singleton_board_ranks)) == 1
+
 
 def trips_board_ranks(board_cards):
     return {value for value, count in rank_counts(board_cards).items() if count >= 3}
@@ -1426,7 +1439,7 @@ def simple_profile_river_bluff_catch(table, my_seat, base) -> ActionDecision | N
 def effective_all_in_paired_board_fold(
     table, my_seat
 ) -> ActionDecision | None:
-    """Fold paired-board two pair facing a call that exhausts the stack."""
+    """Fold fragile rank-two calls, plus extreme board-assisted over-shoves."""
     if table.get("street", "Preflop") == "Preflop":
         return None
 
@@ -1439,13 +1452,20 @@ def effective_all_in_paired_board_fold(
 
     hole_cards = my_seat.get("holeCards", [])
     board_cards = table.get("boardCards", [])
-    if (
-        made_hand_rank(hole_cards, board_cards) != 2
-        or not board_has_pair(board_cards)
-    ):
-        return None
+    if fragile_rank_two_on_paired_board(hole_cards, board_cards):
+        return "fold", None, "fragile paired-board rank-two effective all-in fold"
 
-    return "fold", None, "paired-board two pair effective all-in fold"
+    if (
+        board_assisted_two_pair_on_paired_board(hole_cards, board_cards)
+        and price >= 4.0 * stack
+    ):
+        return (
+            "fold",
+            None,
+            "board-assisted paired-board two pair 4x effective all-in fold",
+        )
+
+    return None
 
 def paired_board_range_fold(table, my_seat, base) -> ActionDecision | None:
     if table.get("street", "Preflop") == "Preflop":
