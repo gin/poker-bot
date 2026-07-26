@@ -14,13 +14,6 @@ from poker_bot.opponents import OpponentProfile, profile_from_mapping
 from poker_bot.range_model import class_strength, combo_class, estimate_action_range
 from poker_bot.range_model.preflop import position_label
 from poker_bot.strategies import auto_research as original_champion
-from poker_bot.strategies.auto_research_v003 import (
-    active_opponents,
-    average_opponent_range_strength,
-    hero_preflop_range_strength,
-    observed_profiles,
-    profile_value,
-)
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 1: Constants
@@ -1430,6 +1423,27 @@ def simple_profile_river_bluff_catch(table, my_seat, base) -> ActionDecision | N
     )
 
 
+def effective_all_in_paired_board_fold(
+    table, my_seat
+) -> ActionDecision | None:
+    """Fold fragile rank-two hands facing a call that exhausts the stack."""
+    if table.get("street", "Preflop") == "Preflop":
+        return None
+
+    allowed = table.get("allowedActions", {})
+    available = allowed.get("availableActions", [])
+    price = call_amount(allowed)
+    stack = int(my_seat.get("stackChips") or 0)
+    if "fold" not in available or price <= 0 or stack <= 0 or price < stack:
+        return None
+
+    hole_cards = my_seat.get("holeCards", [])
+    board_cards = table.get("boardCards", [])
+    if not fragile_rank_two_on_paired_board(hole_cards, board_cards):
+        return None
+
+    return "fold", None, "paired-board fragile rank-two effective all-in fold"
+
 def paired_board_range_fold(table, my_seat, base) -> ActionDecision | None:
     if table.get("street", "Preflop") == "Preflop":
         return None
@@ -1446,11 +1460,8 @@ def paired_board_range_fold(table, my_seat, base) -> ActionDecision | None:
     if not fragile_rank_two_on_paired_board(hole_cards, board_cards):
         return None
 
-    stack = int(my_seat.get("stackChips") or 0)
-    if stack > 0 and price >= stack:
-        return "fold", None, "paired-board fragile rank-two effective all-in fold"
-
-
+    if (decision := effective_all_in_paired_board_fold(table, my_seat)) is not None:
+        return decision
     pot = int(table.get("potChips") or 0)
     required = pot_odds(price, pot)
     if required < PAIRED_BOARD_MIN_FOLD_PRICE:
@@ -1741,7 +1752,7 @@ def high_wtsd_thin_value_bet(table, my_seat, base) -> ActionDecision | None:
         return None
 
     # Opponent Exploit: They call too often (call frequency / WTSD > 70%)
-    # AND they are passive (fold_to_bet > 50%), ensuring they aren't aggressive check-raisers.
+    # They are passive (fold_to_bet > 50%), not aggressive check-raisers.
     summary = bayesian_pressure_summary(table, my_seat)
     # Require a trustworthy read before betting thin for value.
     if summary["profile_confidence"] < 0.50:
@@ -1864,14 +1875,23 @@ def preflop_premium_3bet_shove(table, my_seat, blueprint) -> ActionDecision | No
         return (
             "raise",
             hero_stack,
-            f"preflop war premium shove: {hand} after {raise_count} raise-backs (raise=stack)",
+            (
+                f"preflop war premium shove: {hand} after {raise_count} "
+                "raise-backs (raise=stack)"
+            ),
         )
 
     return None
 
 
 def sixmax_adjustment(table, my_seat, base) -> ActionDecision | None:
-    # 0. Universal mathematical truth: Pot commitment overrides everything (all table sizes)
+    # Effective all-in fragile paired-board calls must not be converted to
+    # commitment calls by the generic SPR fallback below.
+    decision = effective_all_in_paired_board_fold(table, my_seat)
+    if decision is not None:
+        return decision
+
+    # 0. Universal mathematical truth: pot commitment overrides everything.
     decision = spr_commitment_lock(table, my_seat, base)
     if decision is not None:
         return decision

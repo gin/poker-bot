@@ -1,6 +1,7 @@
 """Exploitative adaptive strategy tuned against the simple baseline."""
 
 from poker_bot.hand_eval import evaluate_hand
+from poker_bot.hand_utils import is_board_made_or_kicker_vulnerable
 
 ActionDecision = tuple[str | None, int | None, str]
 
@@ -168,6 +169,39 @@ def raise_amount(table, allowed, strong=False):
     return capped(max(minimum, current_bet + pressure), allowed)
 
 
+def hero_has_bet_postflop(table, my_seat):
+    """Whether hero has already bet or raised on any postflop street this hand."""
+    hero_id = my_seat.get("agentId")
+    hero_seat = my_seat.get("seatNumber")
+    if hero_id is None and hero_seat is None:
+        return False
+
+    for source in ("actionHistory", "action_history", "recentEvents"):
+        events = table.get(source) or []
+        if not isinstance(events, list):
+            continue
+        for raw in events:
+            if not isinstance(raw, dict):
+                continue
+            summary = (
+                raw.get("summary") if isinstance(raw.get("summary"), dict) else raw
+            )
+            action = str(summary.get("action") or raw.get("action") or "").lower()
+            street = str(raw.get("street") or summary.get("street") or "").lower()
+            event_id = summary.get("agentId") or raw.get("agentId")
+            event_seat = summary.get("seatNumber") or raw.get("seatNumber")
+            is_hero = (hero_id is not None and event_id == hero_id) or (
+                hero_seat is not None and event_seat == hero_seat
+            )
+            if is_hero and action in {"bet", "raise"} and street in {
+                "flop",
+                "turn",
+                "river",
+            }:
+                return True
+    return False
+
+
 def choose_action(table, my_seat) -> ActionDecision:
     allowed = table.get("allowedActions", {})
     available = allowed.get("availableActions", [])
@@ -203,6 +237,7 @@ def choose_action(table, my_seat) -> ActionDecision:
             return "check", None, f"Preflop score {score}, checking"
 
     made_rank = made_hand_rank(hole_cards, board_cards)
+    board_owned_rank = is_board_made_or_kicker_vulnerable(hole_cards, board_cards)
     top_pair = has_top_pair_or_better(hole_cards, board_cards)
     texture = board_texture(board_cards)
     strong = made_rank >= 2
@@ -220,6 +255,13 @@ def choose_action(table, my_seat) -> ActionDecision:
         return "fold", None, f"Rank {made_rank} below price, folding"
 
     if "bet" in available:
+        if board_owned_rank:
+            # Benchmark-driven: retain one checked-to probe, but never barrel it.
+            if not hero_has_bet_postflop(table, my_seat):
+                amount = value_bet_amount(pot, allowed)
+                return "bet", amount, "Pressure probing board-owned rank"
+            if "check" in available:
+                return "check", None, "Board-owned rank after prior bet, checking"
         if strong:
             amount = value_bet_amount(pot, allowed, strong=made_rank >= 3)
             return "bet", amount, f"Value betting rank {made_rank}"
