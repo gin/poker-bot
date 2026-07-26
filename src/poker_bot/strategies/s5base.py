@@ -1426,7 +1426,7 @@ def simple_profile_river_bluff_catch(table, my_seat, base) -> ActionDecision | N
 def effective_all_in_paired_board_fold(
     table, my_seat
 ) -> ActionDecision | None:
-    """Fold fragile rank-two hands facing a call that exhausts the stack."""
+    """Fold paired-board two pair facing a call that exhausts the stack."""
     if table.get("street", "Preflop") == "Preflop":
         return None
 
@@ -1439,10 +1439,13 @@ def effective_all_in_paired_board_fold(
 
     hole_cards = my_seat.get("holeCards", [])
     board_cards = table.get("boardCards", [])
-    if not fragile_rank_two_on_paired_board(hole_cards, board_cards):
+    if (
+        made_hand_rank(hole_cards, board_cards) != 2
+        or not board_has_pair(board_cards)
+    ):
         return None
 
-    return "fold", None, "paired-board fragile rank-two effective all-in fold"
+    return "fold", None, "paired-board two pair effective all-in fold"
 
 def paired_board_range_fold(table, my_seat, base) -> ActionDecision | None:
     if table.get("street", "Preflop") == "Preflop":
