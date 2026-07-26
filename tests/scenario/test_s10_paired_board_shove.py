@@ -2,6 +2,7 @@
 
 import pytest
 
+from poker_bot.strategies import multi_core_tight as multi_core
 from poker_bot.strategies import s5base
 
 
@@ -13,7 +14,20 @@ def _table(
     pot,
     stack,
     available_actions=None,
+    dealt_in_players=2,
 ):
+    additional_players = [
+        {
+            "seatNumber": seat_number,
+            "agentId": f"opponent-{seat_number}",
+            "holeCards": [],
+            "stackChips": 5_000,
+            "currentBetChips": 0,
+            "folded": False,
+            "hasFolded": False,
+        }
+        for seat_number in (1, 3, 4, 6)[: dealt_in_players - 2]
+    ]
     hero = {
         "seatNumber": 5,
         "agentId": "hero",
@@ -41,7 +55,7 @@ def _table(
         "actingSeatNumber": 5,
         "selfSeatNumber": 5,
         "actionHistory": [{"agentId": "villain", "action": "raise", "street": "Turn"}],
-        "seats": [hero, villain],
+        "seats": [hero, villain, *additional_players],
         "opponentProfiles": {},
         "allowedActions": {
             "availableActions": available_actions or ["fold", "call", "all-in"],
@@ -62,11 +76,15 @@ def test_ac_kc_paired_board_effective_all_in_folds_end_to_end():
         call=3_850,
         pot=3_879,
         stack=861,
+        dealt_in_players=6,
     )
     hero = table["seats"][0]
 
-    action, _amount, message = s5base.choose_action(table, hero)
+    assert multi_core.count_dealt_in_players(table) == 6
+    action, _amount, message = multi_core.choose_action(table, hero)
 
+
+    assert "[full_ring]" in message
     assert action == "fold"
     assert "paired-board two pair effective all-in fold" in message
 
