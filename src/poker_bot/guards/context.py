@@ -15,7 +15,10 @@ from poker_bot.hand_utils import (
     board_texture,
     pot_odds,
     effective_pot,
-    seated_players,
+    count_dealt_in_players,
+    player_regime,
+    HandRegime,
+    REGIME_HEADS_UP,
     active_players,
     active_opponents,
     call_amount,
@@ -68,10 +71,11 @@ class GuardContext:
     pot_odds: float | None
     blind: int
     street: str
-    num_seated: int
+    num_dealt_in: int
+    regime: HandRegime
     num_active: int
     num_active_opponents: int
-    is_heads_up: bool
+    is_heads_up: bool  # derived from regime; kept for guard-code convenience
     no_one_bet: bool
     available_actions: list[str]
     allowed: dict
@@ -96,8 +100,17 @@ class GuardContext:
     is_aks: bool = False  # hero holds suited AK
 
     @classmethod
-    def build(cls, table: dict, my_seat: dict) -> "GuardContext":
-        """Build a GuardContext from a table state and hero seat."""
+    def build(
+        cls, table: dict, my_seat: dict, *, regime: HandRegime | None = None
+    ) -> "GuardContext":
+        """Build a GuardContext from a table state and hero seat.
+
+        `regime` lets a caller lock the canonical player regime explicitly
+        (e.g. multi_core's MULTI_CORE_ROUTER=active experiment, which routes
+        on the active count rather than the default dealt-in count) so the
+        context guards see always matches the regime the core was routed on.
+        Defaults to the dealt-in regime, matching default routing.
+        """
         hole_cards = my_seat.get("holeCards", [])
         board_cards = table.get("boardCards", [])
         allowed = table.get("allowedActions") or {}
@@ -134,7 +147,8 @@ class GuardContext:
         odds = pot_odds(price, pot) if facing and pot > 0 else None
         blind = blind_size(allowed, table)
 
-        num_seated = seated_players(table)
+        num_dealt_in = count_dealt_in_players(table)
+        resolved_regime = regime or player_regime(num_dealt_in)
         num_active = active_players(table)
         num_opp = active_opponents(table, my_seat)
         street = table.get("street", "Preflop")
@@ -202,10 +216,11 @@ class GuardContext:
             pot_odds=odds,
             blind=blind,
             street=street,
-            num_seated=num_seated,
+            num_dealt_in=num_dealt_in,
+            regime=resolved_regime,
             num_active=num_active,
             num_active_opponents=num_opp,
-            is_heads_up=(num_seated < 4),
+            is_heads_up=(resolved_regime == REGIME_HEADS_UP),
             no_one_bet=no_bet,
             available_actions=available,
             allowed=allowed,

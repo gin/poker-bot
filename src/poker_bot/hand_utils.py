@@ -12,6 +12,7 @@ from dataclasses import dataclass as _dataclass
 from dataclasses import field as _field
 from datetime import datetime as _datetime
 from typing import Any as _Any
+from typing import Literal as _Literal
 
 _RANKS = "23456789TJQKA"
 _SUITS = "CDHS"
@@ -319,7 +320,7 @@ def active_seat_numbers(table):
     return [
         int(s.get("seatNumber"))
         for s in table.get("seats", [])
-        if seat_is_live(s) and s.get("seatNumber") is not None
+        if s.get("agentId") and seat_is_live(s) and s.get("seatNumber") is not None
     ]
 
 
@@ -336,7 +337,7 @@ def active_opponents(table, my_seat):
     return sum(
         1
         for s in table.get("seats", [])
-        if s.get("agentId") != my_id and seat_is_live(s)
+        if s.get("agentId") and s.get("agentId") != my_id and seat_is_live(s)
     )
 
 
@@ -346,10 +347,68 @@ def live_opponent_seats(table, my_seat):
     return [
         s
         for s in table.get("seats", [])
-        if s.get("agentId") != hero_id
+        if s.get("agentId")
+        and s.get("agentId") != hero_id
         and s.get("seatNumber") != hero_seat
         and seat_is_live(s)
     ]
+
+
+# ── Player Regime ──────────────────────────────────────────────────────────
+#
+# The canonical hand-level "how many players are we playing against" signal,
+# shared by multi_core's core-routing decision and GuardContext/GuardRail's
+# guard-applicability decision. A mismatch between the two silently misapplies
+# table-size-scoped guards (e.g. a true 3-handed hand reading as HU, or a
+# busted-down 6-seat table reading as full_table) -- see
+# artifacts/RESEARCH_IMPROVEMENT_20260725.md P0.
+
+HandRegime = _Literal["heads_up", "three_handed", "full_table"]
+
+REGIME_HEADS_UP = "heads_up"
+REGIME_THREE_HANDED = "three_handed"
+REGIME_FULL_TABLE = "full_table"
+
+
+def count_dealt_in_players(table) -> int:
+    """Count players dealt into this hand: still live, or folded this hand.
+
+    Excludes seats that never took part (Busted/SittingOut/Waiting in the
+    arena; the simulator deals in every seat). This is the routing count:
+    it is stable for the whole hand, unlike the active count.
+    """
+    dealt = 0
+    for s in table.get("seats", []):
+        if not s.get("agentId"):
+            continue
+        if seat_is_live(s) or (
+            s.get("folded", False)
+            or s.get("hasFolded", False)
+            or s.get("status") == "Folded"
+        ):
+            dealt += 1
+    return dealt
+
+
+def player_regime(count: int) -> HandRegime:
+    """Canonical regime for a player count.
+
+    <=2 -> heads_up (also the safe default for an empty/degenerate count),
+    ==3 -> three_handed, >=4 -> full_table.
+    """
+    if count <= 2:
+        return REGIME_HEADS_UP
+    if count == 3:
+        return REGIME_THREE_HANDED
+    return REGIME_FULL_TABLE
+
+
+def dealt_in_regime(table) -> HandRegime:
+    """Canonical hand-level regime derived from players dealt into this hand.
+
+    Stable for the whole hand -- see count_dealt_in_players.
+    """
+    return player_regime(count_dealt_in_players(table))
 
 
 # ── Action Helpers ─────────────────────────────────────────────────────────
@@ -418,6 +477,11 @@ class OpponentProfile:
     hands_seen: int = 0
     vpip: int = 0
     pfr: int = 0
+    preflop_hands_seen: int = 0
+    profile_stats_schema_version: int = 2
+    profile_stats_provenance: str = "canonical"
+    legacy_vpip_action_count: int = 0
+    legacy_pfr_raise_count: int = 0
     calls: int = 0
     bets: int = 0
     raises: int = 0
@@ -450,12 +514,27 @@ class OpponentProfile:
         return self.fold_to_bet / self.opportunities_to_fold_to_bet
 
     @property
+    def has_canonical_preflop_stats(self):
+        return (
+            self.profile_stats_schema_version >= 2
+            and self.profile_stats_provenance == "canonical"
+        )
+
+    @property
     def vpip_frequency(self):
-        return self.vpip / self.hands_seen if self.hands_seen else 0.0
+        return (
+            self.vpip / self.preflop_hands_seen
+            if self.has_canonical_preflop_stats and self.preflop_hands_seen
+            else 0.0
+        )
 
     @property
     def pfr_frequency(self):
-        return self.pfr / self.hands_seen if self.hands_seen else 0.0
+        return (
+            self.pfr / self.preflop_hands_seen
+            if self.has_canonical_preflop_stats and self.preflop_hands_seen
+            else 0.0
+        )
 
     @property
     def weak_aggressive_showdown_frequency(self):
@@ -555,14 +634,40 @@ def profile_fold_to_bet_frequency(profile):
     return folds_val / opportunities if opportunities > 0 else 0.0
 
 
+def _canonical_preflop_vpip_frequency(profile):
+    """Return a trusted canonical VPIP frequency, or ``None`` without one."""
+    try:
+        schema_version = int(profile_value(profile, "profile_stats_schema_version"))
+    except (TypeError, ValueError):
+        return None
+    if (
+        schema_version < 2
+        or profile_value(profile, "profile_stats_provenance") != "canonical"
+    ):
+        return None
+    try:
+        preflop_hands = int(profile_value(profile, "preflop_hands_seen"))
+    except (TypeError, ValueError):
+        return None
+    if preflop_hands <= 0:
+        return None
+
+    explicit_frequency = profile_value(profile, "vpip_frequency")
+    if explicit_frequency is not None:
+        try:
+            return float(explicit_frequency)
+        except (TypeError, ValueError):
+            pass
+    try:
+        return int(profile_value(profile, "vpip") or 0) / preflop_hands
+    except (TypeError, ValueError):
+        return None
+
+
 def profile_vpip_frequency(profile):
-    value = profile_value(profile, "vpip_frequency")
-    if value is not None:
-        return float(value)
-    hands = int(profile_value(profile, "hands_seen") or 0)
-    if hands <= 0:
-        return 0.0
-    return int(profile_value(profile, "vpip") or 0) / hands
+    """Return VPIP only when the profile carries trusted canonical metadata."""
+    frequency = _canonical_preflop_vpip_frequency(profile)
+    return 0.0 if frequency is None else frequency
 
 
 def single_opponent_profile(table, min_hands=10):
@@ -612,8 +717,10 @@ def is_tight_opponent(
         hands = int(profile_value(profile, "hands_seen") or 0)
         if hands < min_hands:
             continue
-        vpip = int(profile_value(profile, "vpip") or 0)
-        if hands > 0 and (vpip / hands) < vpip_threshold:
+        if _canonical_preflop_vpip_frequency(profile) is None:
+            continue
+        vpip = profile_vpip_frequency(profile)
+        if vpip < vpip_threshold:
             return True
         if use_frequency_signal:
             fold_to_bet = profile_fold_to_bet_frequency(profile)
@@ -674,16 +781,52 @@ def board_trips_with_kicker_only(hole_cards, board_cards) -> bool:
     return full_rank[0] == 3
 
 
+def _board_pairing_category(board_cards) -> int:
+    """Made-hand category the board's OWN pairing structure gives everyone:
+    quads=7, full house=6, trips=3, two pair=2, pair=1, else 0."""
+    counts = sorted(rank_counts(board_cards).values(), reverse=True)
+    if not counts:
+        return 0
+    if counts[0] == 4:
+        return 7
+    if counts[0] == 3:
+        return 6 if len(counts) > 1 and counts[1] >= 2 else 3
+    if counts[0] == 2:
+        return 2 if len(counts) > 1 and counts[1] == 2 else 1
+    return 0
+
+
 def is_board_made_or_kicker_vulnerable(hole_cards, board_cards) -> bool:
-    """True when hero's hand is entirely board-made (playing the board) or
-    board-trips-with-kicker-only (no real private edge)."""
-    if len(board_cards) != 5:
+    """True when hero's made rank is entirely board-owned: the strength every
+    player shares (board pair/trips/quads, or a 5-card board-made hand) with
+    no hole card participating.
+
+    Works on 3-5 board cards. This used to be river-only (len == 5), which
+    let the 2026-07-09 AJo disaster through: board 6c Tc 6h 6s on the TURN
+    read as "hero has trips" (made_hand_rank counts board trips as hero
+    strength), so the bot value-bet air and called off its stack against
+    slow-played TT. Board-owned rank is not private strength on any street.
+    """
+    if len(board_cards) < 3:
         return False
-    if evaluate_hand(list(hole_cards) + list(board_cards)) == evaluate_hand(
-        board_cards
-    ):
-        return True
-    return board_trips_with_kicker_only(hole_cards, board_cards)
+    if len(board_cards) == 5:
+        if evaluate_hand(list(hole_cards) + list(board_cards)) == evaluate_hand(
+            board_cards
+        ):
+            return True
+        if board_trips_with_kicker_only(hole_cards, board_cards):
+            return True
+    shared = _board_pairing_category(board_cards)
+    if shared < 1:
+        return False  # board gives nothing away; hero's air is the core's call
+    if made_hand_rank(hole_cards, board_cards) > shared:
+        return False  # hero beats what the board hands out
+    hole_values = card_values(hole_cards)
+    pocket_pair = len(hole_values) == 2 and hole_values[0] == hole_values[1]
+    participates = pocket_pair or any(
+        value in card_values(board_cards) for value in hole_values
+    )
+    return not participates
 
 
 # ── Flush Utilities ────────────────────────────────────────────────────────

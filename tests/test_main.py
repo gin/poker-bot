@@ -459,6 +459,7 @@ class PokerBotTests(unittest.TestCase):
                 conn, _run_id = init_live_telemetry(state, "cmp-test")
                 table = {
                     "tableId": "table-2",
+                    "handId": "stable-hand-2",
                     "seats": [
                         {"agentId": "hero", "seatNumber": 1},
                         {"agentId": "villain-1", "seatNumber": 2, "name": "V1"},
@@ -480,6 +481,17 @@ class PokerBotTests(unittest.TestCase):
                     """
                 ).fetchone()["total"]
                 self.assertEqual(opponents, 2)
+                profile_rows = db.execute(
+                    """
+                    select preflop_hands_seen, profile_stats_provenance
+                    from opponent_stats
+                    """
+                ).fetchall()
+                self.assertEqual(
+                    [(row["preflop_hands_seen"], row["profile_stats_provenance"])
+                     for row in profile_rows],
+                    [(1, "canonical"), (1, "canonical")],
+                )
                 self.assertEqual(hands_seen, 2)
             finally:
                 if old_db is None:
@@ -518,6 +530,7 @@ class PokerBotTests(unittest.TestCase):
         state = {}
         table = {
             "tableId": "hand-1",
+            "handId": "stable-hand-1",
             "street": "Preflop",
             "potChips": 75,
             "actionHistory": [
@@ -571,6 +584,7 @@ class PokerBotTests(unittest.TestCase):
         state = {}
         table = {
             "tableId": "hand-action-taken",
+            "handId": "stable-hand-action-taken",
             "street": "Preflop",
             "potChips": 10,
             "events": [
@@ -620,7 +634,7 @@ class PokerBotTests(unittest.TestCase):
         self.assertEqual(row["calls"], 1)
         self.assertEqual(row["vpip"], 1)
         self.assertIn(
-            "hand-action-taken:cmq4fdpwj1w85s57w0shoqyme",
+            "stable-hand-action-taken:cmq4fdpwj1w85s57w0shoqyme",
             state["observed_action_event_keys"],
         )
 
@@ -658,7 +672,7 @@ class PokerBotTests(unittest.TestCase):
         self.assertEqual(count, 1)
         row = conn.execute(
             """
-            select a.action, a.amount, s.raises
+            select a.action, a.amount, s.raises, s.legacy_vpip_action_count
             from opponents o
             join opponent_stats s on s.opponent_id = o.id
             join opponent_actions a on a.opponent_id = o.id
@@ -668,9 +682,40 @@ class PokerBotTests(unittest.TestCase):
         self.assertEqual(row["action"], "raise")
         self.assertEqual(row["amount"], 90)
         self.assertEqual(row["raises"], 1)
+        self.assertEqual(row["legacy_vpip_action_count"], 0)
         self.assertIn(
             "hand-raise-taken:seq:2:villain-3:Turn:raise:90",
             state["observed_action_event_keys"],
+        )
+
+    def test_live_actions_without_protocol_hand_identity_remain_untrusted(self):
+        conn = connect(":memory:")
+        table = {
+            "tableId": "table-without-hand-id",
+            "street": "Preflop",
+            "events": [
+                {
+                    "id": "event-1",
+                    "agentId": "villain",
+                    "street": "Preflop",
+                    "action": "raise",
+                }
+            ],
+            "seats": [
+                {"agentId": "hero", "seatNumber": 1},
+                {"agentId": "villain", "seatNumber": 2},
+            ],
+        }
+
+        record_live_observed_actions(conn, {}, table, "hero")
+        row = conn.execute(
+            """
+            select preflop_hands_seen, vpip, pfr, profile_stats_provenance
+            from opponent_stats
+            """
+        ).fetchone()
+        self.assertEqual(
+            tuple(row), (0, 0, 0, "legacy_untrusted")
         )
 
     def test_normalize_live_table_metadata_uses_button_alias(self):

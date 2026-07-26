@@ -1,18 +1,29 @@
 """Opponent profiling helpers."""
 
 import json
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+
+_MAX_PREFLOP_HAND_FLAGS = 256
 
 
 @dataclass
 class OpponentProfile:
+    """Observed opponent statistics with explicit preflop-stat provenance."""
+
     agent_id: str
     name: str | None = None
     hands_seen: int = 0
+    # Canonical hand-level numerators.  They are never action-event counts.
     vpip: int = 0
     pfr: int = 0
+    preflop_hands_seen: int = 0
+    profile_stats_schema_version: int = 2
+    profile_stats_provenance: str = "canonical"
+    # Retained only for audit/migration of the pre-v2 action-count bug.
+    legacy_vpip_action_count: int = 0
+    legacy_pfr_raise_count: int = 0
     calls: int = 0
     bets: int = 0
     raises: int = 0
@@ -32,6 +43,9 @@ class OpponentProfile:
     api_sample_size: int = 0
     api_aggr_freq: float | None = None
     recent_actions: deque = field(default_factory=lambda: deque(maxlen=20))
+    _preflop_hand_flags: OrderedDict[str, int] = field(
+        default_factory=OrderedDict, repr=False, compare=False
+    )
 
     @property
     def aggression_frequency(self):
@@ -54,16 +68,24 @@ class OpponentProfile:
         return self.fold_to_bet / self.opportunities_to_fold_to_bet
 
     @property
+    def has_canonical_preflop_stats(self):
+        return (
+            self.profile_stats_schema_version >= 2
+            and self.profile_stats_provenance == "canonical"
+            and self.preflop_hands_seen >= 0
+        )
+
+    @property
     def vpip_frequency(self):
-        if self.hands_seen == 0:
+        if not self.has_canonical_preflop_stats or self.preflop_hands_seen == 0:
             return 0.0
-        return self.vpip / self.hands_seen
+        return self.vpip / self.preflop_hands_seen
 
     @property
     def pfr_frequency(self):
-        if self.hands_seen == 0:
+        if not self.has_canonical_preflop_stats or self.preflop_hands_seen == 0:
             return 0.0
-        return self.pfr / self.hands_seen
+        return self.pfr / self.preflop_hands_seen
 
     @property
     def weak_aggressive_showdown_frequency(self):
@@ -190,6 +212,9 @@ def profile_from_mapping(agent_id, data):
         "hands_seen",
         "vpip",
         "pfr",
+        "preflop_hands_seen",
+        "legacy_vpip_action_count",
+        "legacy_pfr_raise_count",
         "calls",
         "bets",
         "raises",
@@ -200,6 +225,12 @@ def profile_from_mapping(agent_id, data):
         "weak_aggressive_showdowns",
     ):
         setattr(profile, field_name, int(data.get(field_name, 0)))
+    profile.profile_stats_schema_version = int(
+        data.get("profile_stats_schema_version", 0)
+    )
+    profile.profile_stats_provenance = str(
+        data.get("profile_stats_provenance", "legacy_untrusted")
+    )
     stats_json = data.get("stats_json")
     if stats_json:
         try:
@@ -235,18 +266,67 @@ def profile_from_mapping(agent_id, data):
     return profile
 
 
-def record_action(profile, action, street=None, facing_bet=False, voluntary=False):
+def _preflop_flags_for_hand(profile, hand_id):
+    """Return recent hand flags, recording the hand once when first observed."""
+    flags = profile._preflop_hand_flags.get(hand_id)
+    if flags is not None:
+        profile._preflop_hand_flags.move_to_end(hand_id)
+        return flags
+
+    profile._preflop_hand_flags[hand_id] = 0
+    profile.preflop_hands_seen += 1
+    if len(profile._preflop_hand_flags) > _MAX_PREFLOP_HAND_FLAGS:
+        profile._preflop_hand_flags.popitem(last=False)
+    return 0
+
+
+def record_hand_seen(profile, hand_id):
+    """Start one observable hand; missing identity is ineligible for profiling."""
+    profile.hands_seen += 1
+    if not hand_id:
+        profile.profile_stats_provenance = "legacy_untrusted"
+        return
+    _preflop_flags_for_hand(profile, hand_id)
+
+
+def record_action(
+    profile,
+    action,
+    *,
+    hand_id=None,
+    street=None,
+    facing_bet=False,
+    voluntary=False,
+    is_preflop_raise=False,
+):
+    """Record an action while counting VPIP/PFR at most once per hand."""
     profile.recent_actions.append({"street": street, "action": action})
     if voluntary:
-        profile.vpip += 1
+        profile.legacy_vpip_action_count += 1
+    if street == "Preflop" and action in {"raise", "all-in"}:
+        profile.legacy_pfr_raise_count += 1
+
+    if (
+        profile.has_canonical_preflop_stats
+        and hand_id
+        and street == "Preflop"
+        and voluntary
+    ):
+        flags = _preflop_flags_for_hand(profile, hand_id)
+        if not flags & 1:
+            profile.vpip += 1
+            flags |= 1
+        if is_preflop_raise and not flags & 2:
+            profile.pfr += 1
+            flags |= 2
+        profile._preflop_hand_flags[hand_id] = flags
+
     if action == "call":
         profile.calls += 1
     elif action == "bet":
         profile.bets += 1
-    elif action == "raise":
+    elif action in {"raise", "all-in"}:
         profile.raises += 1
-        if street == "Preflop":
-            profile.pfr += 1
     elif action == "fold":
         profile.folds += 1
         if facing_bet:

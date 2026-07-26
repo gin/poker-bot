@@ -45,6 +45,9 @@ def make_table(street="Preflop", board=None, actions=None, hero=None, profiles=N
 def loose_aggressive_profile():
     return {
         "hands_seen": 20,
+        "preflop_hands_seen": 20,
+        "profile_stats_schema_version": 2,
+        "profile_stats_provenance": "canonical",
         "vpip": 14,
         "pfr": 8,
         "bets": 8,

@@ -441,6 +441,18 @@ def _derive_hand_id(table, state):
     return hand_id
 
 
+def _canonical_profile_hand_id(table):
+    """Return a protocol-stable hand key, never the process-local telemetry key."""
+    hand_id = table.get("handId") or table.get("hand_id")
+    if hand_id is not None and str(hand_id).strip():
+        return str(hand_id)
+    hand_number = table.get("handNumber") or table.get("hand_number")
+    table_id = table.get("tableId") or table.get("id")
+    if hand_number is not None and table_id is not None:
+        return f"{table_id}:{hand_number}"
+    return None
+
+
 def _record_hand_stack_state(table, state, hero_agent_id):
     """Record hero's stackChips/totalCommittedChips under the current hand_id.
 
@@ -504,8 +516,9 @@ def record_live_decision(
 def record_live_opponents_seen(telemetry_conn, state, table, agent_id):
     if telemetry_conn is None:
         return 0
+    hand_id = _canonical_profile_hand_id(table)
     table_id = str(table.get("tableId") or table.get("id") or "unknown-table")
-    seen_key = f"opponents_seen:{table_id}"
+    seen_key = f"opponents_seen:{hand_id or table_id}"
     if state.get(seen_key):
         return 0
 
@@ -520,6 +533,7 @@ def record_live_opponents_seen(telemetry_conn, state, table, agent_id):
                 "arena",
                 seat_agent_id,
                 handle=seat_display_name(seat),
+                hand_id=hand_id,
             )
             recorded += 1
         state[seen_key] = True
@@ -853,7 +867,7 @@ def record_live_observed_actions(telemetry_conn, state, table, hero_agent_id):
     prior_keys = list(state.get("observed_action_event_keys", []))
     seen = set(prior_keys)
     newly_seen = []
-    hand_id = _derive_hand_id(table, state)
+    canonical_hand_id = _canonical_profile_hand_id(table)
     recorded = 0
 
     try:
@@ -881,6 +895,8 @@ def record_live_observed_actions(telemetry_conn, state, table, hero_agent_id):
             pot = _safe_int(
                 _event_value(event, ("potChips", "pot")) or table.get("potChips")
             )
+            street = _event_value(event, ("street",)) or table.get("street")
+            voluntary = street == "Preflop" and action in {"call", "bet", "raise"}
             record_observed_action(
                 telemetry_conn,
                 platform="arena",
@@ -890,8 +906,8 @@ def record_live_observed_actions(telemetry_conn, state, table, hero_agent_id):
                     event,
                     ("agentHandle", "agentName", "handle", "name"),
                 ),
-                hand_id=hand_id,
-                street=_event_value(event, ("street",)) or table.get("street"),
+                hand_id=canonical_hand_id,
+                street=street,
                 action=action,
                 amount=amount,
                 pot=pot,
@@ -901,7 +917,8 @@ def record_live_observed_actions(telemetry_conn, state, table, hero_agent_id):
                 hero_stack_chips=(seat_by_agent.get(hero_agent_id) or {}).get(
                     "stackChips"
                 ),
-                voluntary=action in {"call", "bet", "raise"},
+                voluntary=voluntary,
+                is_preflop_raise=voluntary and action in {"raise", "bet"},
             )
             seen.add(dedupe_key)
             newly_seen.append(dedupe_key)

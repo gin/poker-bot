@@ -9,6 +9,9 @@ from poker_bot.hand_utils import (
     pot_odds,
     seated_players,
     active_opponents,
+    active_seat_numbers,
+    active_players,
+    live_opponent_seats,
     has_top_pair_or_better,
     fragile_rank_two,
     board_dominated_two_pair,
@@ -23,6 +26,12 @@ from poker_bot.hand_utils import (
     opponent_is_bluffy,
     is_tight_opponent,
     single_opponent_profile,
+    count_dealt_in_players,
+    player_regime,
+    dealt_in_regime,
+    REGIME_HEADS_UP,
+    REGIME_THREE_HANDED,
+    REGIME_FULL_TABLE,
 )
 
 
@@ -138,12 +147,144 @@ class TestTableUtils:
         }
         assert active_opponents(table, {"agentId": "hero"}) == 1
 
+    def test_active_seat_numbers_excludes_empty_numbered_slot(self):
+        # An empty/unfilled seat (agentId falsy) carries no dead status or
+        # folded flag, so it looked "live" to seat_is_live alone. A truthy
+        # agentId is required before liveness counts, matching
+        # count_dealt_in_players/multi_core's dealt-in semantics.
+        table = {
+            "seats": [
+                {"agentId": "hero", "seatNumber": 1},
+                {"agentId": "v1", "seatNumber": 2},
+                {"agentId": None, "seatNumber": 3},
+            ]
+        }
+        assert active_seat_numbers(table) == [1, 2]
+        assert active_players(table) == 2
+
+    def test_active_opponents_excludes_empty_numbered_slot(self):
+        table = {
+            "seats": [
+                {"agentId": "hero", "seatNumber": 1},
+                {"agentId": "v1", "seatNumber": 2},
+                {"agentId": None, "seatNumber": 3},
+            ]
+        }
+        assert active_opponents(table, {"agentId": "hero"}) == 1
+
+    def test_live_opponent_seats_excludes_empty_numbered_slot(self):
+        # Same invariant as active_seat_numbers/active_opponents: an empty
+        # numbered seat (agentId falsy) must never be returned as a live
+        # opponent. guard_pre's spr_commitment_lock (and other guards) sum
+        # stacks over this list, so an empty slot silently pulled in a
+        # phantom opponent with stackChips defaulting via `or 0`.
+        table = {
+            "seats": [
+                {"agentId": "hero", "seatNumber": 1, "stackChips": 2000},
+                {"agentId": "v1", "seatNumber": 2, "stackChips": 1500},
+                {"agentId": None, "seatNumber": 3, "stackChips": 0},
+            ]
+        }
+        hero = table["seats"][0]
+        opponents = live_opponent_seats(table, hero)
+        assert [s["agentId"] for s in opponents] == ["v1"]
+
+
+class TestPlayerRegime:
+    """Contract tests for the shared dealt-in count / canonical regime,
+    shared verbatim by multi_core routing and GuardContext/GuardRail."""
+
+    def test_dealt_in_counts_live_and_folded_this_hand_simulator_style(self):
+        # Simulator schema: 'folded'/'hasFolded' flags, no 'status'. All
+        # seats are dealt in regardless of fold state.
+        table = {
+            "seats": [
+                {"agentId": "hero", "folded": False, "hasFolded": False},
+                {"agentId": "v1", "folded": True, "hasFolded": False},
+                {"agentId": "v2", "folded": False, "hasFolded": True},
+                {},  # no agentId: never dealt in
+            ]
+        }
+        assert count_dealt_in_players(table) == 3
+
+    def test_dealt_in_excludes_never_dealt_in_arena_statuses(self):
+        # Arena schema: 'status' field. Busted/SittingOut/Waiting never took
+        # part in this hand; Folded/Active/AllIn did.
+        table = {
+            "seats": [
+                {"agentId": "hero", "status": "Active"},
+                {"agentId": "v1", "status": "Folded"},
+                {"agentId": "v2", "status": "AllIn"},
+                {"agentId": "v3", "status": "Busted"},
+                {"agentId": "v4", "status": "SittingOut"},
+                {"agentId": "v5", "status": "Waiting"},
+            ]
+        }
+        assert count_dealt_in_players(table) == 3
+
+    def test_dealt_in_zero_when_no_seats(self):
+        assert count_dealt_in_players({"seats": []}) == 0
+        assert count_dealt_in_players({}) == 0
+
+    def test_player_regime_boundaries(self):
+        assert player_regime(0) == REGIME_HEADS_UP
+        assert player_regime(1) == REGIME_HEADS_UP
+        assert player_regime(2) == REGIME_HEADS_UP
+        assert player_regime(3) == REGIME_THREE_HANDED
+        assert player_regime(4) == REGIME_FULL_TABLE
+        assert player_regime(6) == REGIME_FULL_TABLE
+        assert player_regime(9) == REGIME_FULL_TABLE
+
+    def test_dealt_in_regime_busted_down_six_seat_table_is_heads_up(self):
+        # 6 seats, 4 Busted + 2 live: routing and guards must both see HU,
+        # not full_table (the seated-count bug this replaces).
+        table = {
+            "seats": [
+                {"agentId": "hero", "status": "Active"},
+                {"agentId": "v1", "status": "Active"},
+                {"agentId": "v2", "status": "Busted"},
+                {"agentId": "v3", "status": "Busted"},
+                {"agentId": "v4", "status": "Busted"},
+                {"agentId": "v5", "status": "Busted"},
+            ]
+        }
+        assert count_dealt_in_players(table) == 2
+        assert dealt_in_regime(table) == REGIME_HEADS_UP
+
+    def test_dealt_in_regime_three_dealt_in_is_three_handed(self):
+        table = {
+            "seats": [
+                {"agentId": "hero", "folded": False},
+                {"agentId": "v1", "folded": False},
+                {"agentId": "v2", "folded": True},
+            ]
+        }
+        assert count_dealt_in_players(table) == 3
+        assert dealt_in_regime(table) == REGIME_THREE_HANDED
+
+    def test_dealt_in_regime_six_seats_four_folded_stays_full_table(self):
+        # Dealt-in stays stable across the hand: folds don't shrink the
+        # regime mid-hand the way a live active count would.
+        table = {
+            "seats": [
+                {"agentId": "hero", "folded": False},
+                {"agentId": "v1", "folded": True},
+                {"agentId": "v2", "folded": True},
+                {"agentId": "v3", "folded": True},
+                {"agentId": "v4", "folded": True},
+                {"agentId": "v5", "folded": False},
+            ]
+        }
+        assert count_dealt_in_players(table) == 6
+        assert dealt_in_regime(table) == REGIME_FULL_TABLE
+
 
 class TestOpponentProfile:
     def _bluffy(self):
         return OpponentProfile(
             agent_id="vill",
             hands_seen=20,
+            preflop_hands_seen=20,
             vpip=10,
             calls=3,
             bets=4,
@@ -159,6 +300,7 @@ class TestOpponentProfile:
         return OpponentProfile(
             agent_id="vill",
             hands_seen=20,
+            preflop_hands_seen=20,
             vpip=3,
             calls=2,
             bets=1,
@@ -186,11 +328,31 @@ class TestOpponentProfile:
         assert opponent_is_bluffy(self._tight()) is False
 
     def test_is_tight(self):
-        table = {"opponentProfiles": {"vill": {"hands_seen": 20, "vpip": 3}}}
+        table = {
+            "opponentProfiles": {
+                "vill": {
+                    "hands_seen": 20,
+                    "preflop_hands_seen": 20,
+                    "profile_stats_schema_version": 2,
+                    "profile_stats_provenance": "canonical",
+                    "vpip": 3,
+                }
+            }
+        }
         assert is_tight_opponent(table) is True
 
     def test_is_not_tight(self):
-        table = {"opponentProfiles": {"vill": {"hands_seen": 20, "vpip": 10}}}
+        table = {
+            "opponentProfiles": {
+                "vill": {
+                    "hands_seen": 20,
+                    "preflop_hands_seen": 20,
+                    "profile_stats_schema_version": 2,
+                    "profile_stats_provenance": "canonical",
+                    "vpip": 10,
+                }
+            }
+        }
         assert is_tight_opponent(table) is False
 
     def test_single_opponent_profile(self):

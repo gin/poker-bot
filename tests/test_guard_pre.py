@@ -103,26 +103,65 @@ class TestRoyalFlushPredecision:
 
 
 class TestBoardMadeHandGuard:
-    def test_playing_the_board_checks(self):
-        # 2C 3D on AS KS QS JH TH (royal flush on board) -> board-made
+    """Moved to a POST guard 2026-07-09 (see tests/scenario/
+    test_board_owned_rank.py for the full behavior): it vetoes proposed
+    bets/raises/expensive calls but never preempts the core."""
+
+    def test_bets_always_stand(self):
+        from poker_bot.guards.guard_post import guard_post
+
+        # 2C 3D on AS KS QS JH TH (royal flush on board): even board-made,
+        # the core's bets stand (bet vetoes failed the pool gate).
         ctx = _ctx(["2C", "3D"], ["AS", "KS", "QS", "JH", "TH"], call=0, pot=200)
-        result = guard_rail.run_pre(ctx)
-        assert result is not None
-        assert result[0][0] == "check"
-        assert result[1] == "board_made_hand_guard"
+        decision, guard_id = guard_post.run_post(ctx, ("bet", 100, "core bet"))
+        assert guard_id != "board_made_hand_guard"
 
-    def test_real_hand_silent(self):
-        ctx = _ctx(["AH", "KH"], ["7S", "9D", "KH", "2C", "3H"], call=0, pot=200)
-        result = guard_rail.run_pre(ctx)
-        assert result is None or result[1] != "board_made_hand_guard"
+    def test_real_hand_call_silent(self):
+        from poker_bot.guards.guard_post import guard_post
 
-    def test_folds_expensive_bet(self):
-        # Board-made hand facing a 50% pot bet -> fold
-        ctx = _ctx(["2C", "3D"], ["AS", "KS", "QS", "JH", "TH"], call=200, pot=400)
-        result = guard_rail.run_pre(ctx)
-        assert result is not None
-        assert result[0][0] == "fold"
-        assert result[1] == "board_made_hand_guard"
+        ctx = _ctx(["AH", "KH"], ["7S", "9D", "KH", "2C", "3H"], call=400, pot=400)
+        decision, guard_id = guard_post.run_post(ctx, ("call", 400, "core call"))
+        assert guard_id != "board_made_hand_guard"
+
+    def test_folds_expensive_proposed_call_on_board_trips(self):
+        from poker_bot.guards.guard_post import guard_post
+
+        # Kicker-only on board trips (Qh Kd on 3-3-3-8-5) vs a value-heavy
+        # read, core proposes calling a pot-size overbet -> fold.
+        # players=6: the guard is 6max-gated (HU pool rejected it).
+        ctx = _ctx(
+            ["QH", "KD"], ["3S", "3H", "3D", "8C", "5H"],
+            call=400, pot=400, players=6,
+        )
+        ctx.opponent_wasd = 0.10
+        ctx.opponent_is_bluffy = False
+        decision, guard_id = guard_post.run_post(ctx, ("call", 400, "core call"))
+        assert guard_id == "board_made_hand_guard"
+        assert decision[0] == "fold"
+
+    def test_board_made_five_card_hand_calls_stand(self):
+        from poker_bot.guards.guard_post import guard_post
+
+        # Playing the board on a royal board: a call mostly SPLITS —
+        # folding forfeits hero's share, so the guard must stay silent.
+        ctx = _ctx(["2C", "3D"], ["AS", "KS", "QS", "JH", "TH"], call=400, pot=400)
+        decision, guard_id = guard_post.run_post(ctx, ("call", 400, "core call"))
+        assert guard_id != "board_made_hand_guard"
+
+    def test_cheap_calls_stand(self):
+        from poker_bot.guards.guard_post import guard_post
+
+        # 25% required equity < 40% threshold: the core's call stands.
+        ctx = _ctx(["QH", "KD"], ["3S", "3H", "3D", "8C", "5H"], call=100, pot=300)
+        decision, guard_id = guard_post.run_post(ctx, ("call", 100, "core call"))
+        assert guard_id != "board_made_hand_guard"
+
+    def test_never_touches_core_fold(self):
+        from poker_bot.guards.guard_post import guard_post
+
+        ctx = _ctx(["2C", "3D"], ["AS", "KS", "QS", "JH", "TH"], call=400, pot=400)
+        decision, guard_id = guard_post.run_post(ctx, ("fold", None, "core fold"))
+        assert guard_id == "approved"
 
 
 class TestSprCommitmentLock:

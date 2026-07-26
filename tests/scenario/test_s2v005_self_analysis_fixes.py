@@ -478,6 +478,9 @@ def test_anti_bully_still_3_barrels_vs_aggressive_label():
         "opponentProfiles": {
             "loose_aggressive_bot": {
                 "hands_seen": 30,
+                "preflop_hands_seen": 30,
+                "profile_stats_schema_version": 2,
+                "profile_stats_provenance": "canonical",
                 "vpip": 15,  # 0.5
                 "pfr": 8,  # 0.27
                 "calls": 8,  # 23 actions total

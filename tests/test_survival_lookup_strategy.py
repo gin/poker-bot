@@ -50,6 +50,9 @@ def fold_seat(seat):
 def loose_aggressive_profile():
     return {
         "hands_seen": 20,
+        "preflop_hands_seen": 20,
+        "profile_stats_schema_version": 2,
+        "profile_stats_provenance": "canonical",
         "vpip": 14,
         "pfr": 8,
         "bets": 8,

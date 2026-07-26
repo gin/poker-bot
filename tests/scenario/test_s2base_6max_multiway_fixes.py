@@ -44,6 +44,7 @@ def _profile(
     return OpponentProfile(
         agent_id=agent_id,
         hands_seen=hands,
+        preflop_hands_seen=hands,
         vpip=int(vpip * hands),
         pfr=int(pfr * hands),
         calls=calls,

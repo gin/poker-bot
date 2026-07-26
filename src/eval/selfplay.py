@@ -8,7 +8,7 @@ import random
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -50,6 +50,164 @@ DEFAULT_DB_COMMIT_INTERVAL = 1000
 DEFAULT_WORKER_CAP = 16
 OPPONENT_LINEUP_SEPARATOR = "+"
 OPPONENT_LINEUP_INPUT_SEPARATORS = (OPPONENT_LINEUP_SEPARATOR, ",")
+PROFILE_STATE_UNTRACKED = "untracked"
+PROFILE_STATE_PERSISTENT = "persistent"
+PROFILE_STATE_SHARDED_RESEARCH = "sharded_research"
+PROFILE_STATE_MODES = frozenset(
+    {
+        PROFILE_STATE_UNTRACKED,
+        PROFILE_STATE_PERSISTENT,
+        PROFILE_STATE_SHARDED_RESEARCH,
+    }
+)
+
+
+# This schema describes evaluator-observed route messages only. Profile-stat
+# producers may later attach their own versioned provenance without this
+# evaluator reading or interpreting profile internals.
+PROFILE_ROUTE_DIAGNOSTICS_SCHEMA_VERSION = 1
+ALTERNATE_V007_ROUTE_TAG = "[short_handed profile-gated s3v013]"
+CANONICAL_V007_ROUTE_TAG = "[v007 canonical low-VPIP"
+BASELINE_FALLBACK_ROUTE_TAG = "[short_handed]"
+
+
+@dataclass(frozen=True)
+class RouteDiagnostics:
+    """Behavior-neutral route observations for one self-play result.
+
+    Route state is inferred solely from stable strategy messages emitted at a
+    hero decision. Unknown covers guards and strategies that do not expose a
+    recognized message tag. It must never be used to influence play or gates.
+    """
+
+    schema_version: int = PROFILE_ROUTE_DIAGNOSTICS_SCHEMA_VERSION
+    observed_hands: int = 0
+    hero_decisions: int = 0
+    alternate_decisions: int = 0
+    fallback_decisions: int = 0
+    unknown_decisions: int = 0
+    alternate_hands: int = 0
+    fallback_hands: int = 0
+    unknown_hands: int = 0
+    # Reserved integration point for the profile-stat owner. This evaluator
+    # intentionally leaves it unset rather than inferring profile semantics.
+    profile_stats_schema_version: int | None = None
+    profile_stats_provenance: str | None = None
+    profile_state_mode: str = PROFILE_STATE_UNTRACKED
+
+    @property
+    def activation_fraction(self):
+        if self.observed_hands == 0:
+            return 0.0
+        return self.alternate_hands / self.observed_hands
+
+
+def _route_state_from_message(message):
+    if not isinstance(message, str):
+        return "unknown"
+    if (
+        CANONICAL_V007_ROUTE_TAG in message
+        or ALTERNATE_V007_ROUTE_TAG in message
+    ):
+        return "alternate"
+    if BASELINE_FALLBACK_ROUTE_TAG in message:
+        return "fallback"
+    return "unknown"
+
+
+class _RouteDiagnosticCollector:
+    """Collect one decision state per hero action and one canonical state/hand."""
+
+    _STATE_PRIORITY = {"unknown": 0, "fallback": 1, "alternate": 2}
+
+    def __init__(self):
+        self._decision_counts = {"alternate": 0, "fallback": 0, "unknown": 0}
+        self._hand_states = {}
+
+    def observe(self, *, hand_id, message):
+        state = _route_state_from_message(message)
+        self._decision_counts[state] += 1
+        if hand_id is None:
+            return
+        previous = self._hand_states.get(hand_id)
+        if (
+            previous is None
+            or self._STATE_PRIORITY[state] > self._STATE_PRIORITY[previous]
+        ):
+            self._hand_states[hand_id] = state
+
+    def result(self):
+        hand_counts = {"alternate": 0, "fallback": 0, "unknown": 0}
+        for state in self._hand_states.values():
+            hand_counts[state] += 1
+        return RouteDiagnostics(
+            observed_hands=len(self._hand_states),
+            hero_decisions=sum(self._decision_counts.values()),
+            alternate_decisions=self._decision_counts["alternate"],
+            fallback_decisions=self._decision_counts["fallback"],
+            unknown_decisions=self._decision_counts["unknown"],
+            alternate_hands=hand_counts["alternate"],
+            fallback_hands=hand_counts["fallback"],
+            unknown_hands=hand_counts["unknown"],
+        )
+
+
+def merge_route_diagnostics(diagnostics):
+    """Sum independent case or worker observations without changing behavior."""
+
+    diagnostics = tuple(diagnostics)
+    if not diagnostics:
+        return RouteDiagnostics()
+
+    def common_optional(name):
+        observed = {
+            getattr(item, name)
+            for item in diagnostics
+            if getattr(item, name) is not None
+        }
+        return next(iter(observed)) if len(observed) == 1 else None
+    return RouteDiagnostics(
+        schema_version=max(item.schema_version for item in diagnostics),
+        observed_hands=sum(item.observed_hands for item in diagnostics),
+        hero_decisions=sum(item.hero_decisions for item in diagnostics),
+        alternate_decisions=sum(item.alternate_decisions for item in diagnostics),
+        fallback_decisions=sum(item.fallback_decisions for item in diagnostics),
+        unknown_decisions=sum(item.unknown_decisions for item in diagnostics),
+        alternate_hands=sum(item.alternate_hands for item in diagnostics),
+        fallback_hands=sum(item.fallback_hands for item in diagnostics),
+        unknown_hands=sum(item.unknown_hands for item in diagnostics),
+        profile_stats_schema_version=common_optional(
+            "profile_stats_schema_version"
+        ),
+        profile_stats_provenance=common_optional("profile_stats_provenance"),
+        profile_state_mode=common_optional("profile_state_mode")
+        or PROFILE_STATE_UNTRACKED,
+    )
+
+
+def _exported_profile_metadata(profiles):
+    """Return stable profile metadata without interpreting profile statistics."""
+
+    values = tuple((profiles or {}).values())
+    if not values:
+        return None, None
+
+    def exported_value(profile, name):
+        if isinstance(profile, dict):
+            return profile.get(name)
+        return getattr(profile, name, None)
+
+    def common(name):
+        observed = {
+            exported_value(profile, name)
+            for profile in values
+            if exported_value(profile, name) is not None
+        }
+        return next(iter(observed)) if len(observed) == 1 else None
+
+    return common("profile_stats_schema_version"), common(
+        "profile_stats_provenance"
+    )
 
 
 @dataclass(frozen=True)
@@ -63,7 +221,9 @@ class SelfPlayResult:
     net_chips: int
     elapsed: float
     players: int = DEFAULT_PLAYERS
+    initial_stack: int = INITIAL_STACK
     profile: StrategyProfile | None = None
+    route_diagnostics: RouteDiagnostics = field(default_factory=RouteDiagnostics)
 
     @property
     def bb_per_100(self):
@@ -99,14 +259,30 @@ def run_selfplay(
     db_commit_interval=DEFAULT_DB_COMMIT_INTERVAL,
     sqlite_fast=False,
     hand_id_prefix=None,
+    initial_stack=INITIAL_STACK,
+    profile_state_mode=PROFILE_STATE_PERSISTENT,
 ):
     if hands < 0:
         raise ValueError("--hands must be non-negative")
+    if initial_stack <= 0:
+        raise ValueError("--initial-stack must be positive")
     players = resolve_player_count(opponent_name, players)
     if players < 2 or players > 6:
         raise ValueError("--players must be between 2 and 6")
     if db_commit_interval is not None and db_commit_interval < 0:
         raise ValueError("--commit-every must be non-negative")
+    if profile_state_mode not in PROFILE_STATE_MODES - {PROFILE_STATE_UNTRACKED}:
+        raise ValueError(
+            "profile_state_mode must be 'persistent' or 'sharded_research'"
+        )
+    if (
+        profile_state_mode == PROFILE_STATE_SHARDED_RESEARCH
+        and hand_id_prefix is None
+    ):
+        raise ValueError(
+            "sharded_research profile mode is only available via parallel self-play"
+        )
+
 
     opponent_names = resolve_opponent_lineup(opponent_name, players)
     opponent_label = format_opponent_label(opponent_names)
@@ -144,6 +320,7 @@ def run_selfplay(
     if should_track and db_conn is not None:
         opponent_profiles.update(load_profiles_for_agents(db_conn, platform, agent_ids))
     decision_indexes = {}
+    route_diagnostics = _RouteDiagnosticCollector()
 
     # Build the profiler observer if a profiler was given
     use_profiler = profiler is not None
@@ -157,6 +334,12 @@ def run_selfplay(
         guard_events = drain_guard_events()
         if use_profiler:
             profiler._observe(**event)
+        seat = event.get("seat") or {}
+        if seat.get("agentId") == PLAYER_AGENT_ID:
+            route_diagnostics.observe(
+                hand_id=event.get("hand_id"),
+                message=event.get("message"),
+            )
         if db_conn is not None and "seat" in event and "table" in event:
             seat = event["seat"]
             table = event["table"]
@@ -229,11 +412,17 @@ def run_selfplay(
         if players == 2:
             if db_conn is not None:
                 for agent_id in agent_ids:
-                    increment_hand_seen(db_conn, platform, agent_id, commit=False)
+                    increment_hand_seen(
+                        db_conn,
+                        platform,
+                        agent_id,
+                        hand_id=hand_id,
+                        commit=False,
+                    )
             player_is_small_blind = hand_index % 2 == 0
             player_stack, opponent_stack = play_hand(
-                INITIAL_STACK,
-                INITIAL_STACK,
+                initial_stack,
+                initial_stack,
                 player_is_small_blind=player_is_small_blind,
                 player_strategy=strat,
                 bot_strategy=opponent_strategies[0],
@@ -243,15 +432,21 @@ def run_selfplay(
                 hand_id=hand_id,
                 opponent_profiles=opponent_profiles if should_track else None,
             )
-            hero_delta = player_stack - INITIAL_STACK
+            hero_delta = player_stack - initial_stack
             hero_won = player_stack > opponent_stack
             hero_lost = player_stack < opponent_stack
         else:
             if db_conn is not None:
                 for agent_id in agent_ids:
-                    increment_hand_seen(db_conn, platform, agent_id, commit=False)
+                    increment_hand_seen(
+                        db_conn,
+                        platform,
+                        agent_id,
+                        hand_id=hand_id,
+                        commit=False,
+                    )
             stacks = play_hand_multiway(
-                [INITIAL_STACK] * players,
+                [initial_stack] * players,
                 [strat, *opponent_strategies],
                 button_index=hand_index % players,
                 rng=rng,
@@ -260,7 +455,7 @@ def run_selfplay(
                 hand_id=hand_id,
                 verbose=False,
             )
-            hero_delta = stacks[0] - INITIAL_STACK
+            hero_delta = stacks[0] - initial_stack
             hero_won = hero_delta > 0
             hero_lost = hero_delta < 0
 
@@ -306,6 +501,9 @@ def run_selfplay(
     elapsed = time.perf_counter() - started
     if db_conn is not None:
         db_conn.commit()
+    profile_schema_version, profile_provenance = _exported_profile_metadata(
+        opponent_profiles
+    )
     return SelfPlayResult(
         hands=hands,
         strat=strat_name,
@@ -316,6 +514,15 @@ def run_selfplay(
         net_chips=net_chips,
         elapsed=elapsed,
         players=players,
+        initial_stack=initial_stack,
+        route_diagnostics=replace(
+            route_diagnostics.result(),
+            profile_stats_schema_version=profile_schema_version,
+            profile_stats_provenance=profile_provenance,
+            profile_state_mode=(
+                profile_state_mode if should_track else PROFILE_STATE_UNTRACKED
+            ),
+        ),
     )
 
 
@@ -354,6 +561,8 @@ def _run_selfplay_worker(args):
         platform,
         db_commit_interval,
         sqlite_fast,
+        initial_stack,
+        profile_state_mode,
     ) = args
     worker_seed = None if seed is None else seed + worker_index
     return run_selfplay(
@@ -370,6 +579,8 @@ def _run_selfplay_worker(args):
         db_commit_interval=db_commit_interval,
         sqlite_fast=sqlite_fast,
         hand_id_prefix=f"w{worker_index}",
+        initial_stack=initial_stack,
+        profile_state_mode=profile_state_mode,
     )
 
 
@@ -387,6 +598,10 @@ def _aggregate_worker_results(results, *, elapsed):
         net_chips=sum(result.net_chips for result in results),
         elapsed=elapsed,
         players=first.players,
+        initial_stack=first.initial_stack,
+        route_diagnostics=merge_route_diagnostics(
+            result.route_diagnostics for result in results
+        ),
     )
 
 
@@ -405,13 +620,45 @@ def run_selfplay_parallel(
     workers=0,
     db_commit_interval=DEFAULT_DB_COMMIT_INTERVAL,
     sqlite_fast=False,
+    initial_stack=INITIAL_STACK,
+    profile_state_mode=PROFILE_STATE_PERSISTENT,
 ):
     if hands < 0:
         raise ValueError("--hands must be non-negative")
+    if initial_stack <= 0:
+        raise ValueError("--initial-stack must be positive")
     if db_commit_interval is not None and db_commit_interval < 0:
         raise ValueError("--commit-every must be non-negative")
     players = resolve_player_count(opponent_name, players)
     actual_workers = _resolve_workers(workers)
+    if profile_state_mode not in PROFILE_STATE_MODES - {PROFILE_STATE_UNTRACKED}:
+        raise ValueError(
+            "profile_state_mode must be 'persistent' or 'sharded_research'"
+        )
+    tracks_profiles = track_opponents or opponent_db is not None
+    if (
+        profile_state_mode == PROFILE_STATE_SHARDED_RESEARCH
+        and not tracks_profiles
+    ):
+        raise ValueError(
+            "sharded_research profile mode requires tracked opponent profiles"
+        )
+    if (
+        profile_state_mode == PROFILE_STATE_SHARDED_RESEARCH
+        and actual_workers <= 1
+    ):
+        raise ValueError("sharded_research profile mode requires more than one worker")
+
+    if (
+        tracks_profiles
+        and actual_workers > 1
+        and profile_state_mode != PROFILE_STATE_SHARDED_RESEARCH
+    ):
+        raise ValueError(
+            "tracked parallel self-play requires one worker for persistent "
+            "profiles; set profile_state_mode='sharded_research' only for "
+            "explicit research"
+        )
     if actual_workers <= 1 or hands <= 1:
         return run_selfplay(
             strat_name,
@@ -426,6 +673,8 @@ def run_selfplay_parallel(
             platform=platform,
             db_commit_interval=db_commit_interval,
             sqlite_fast=sqlite_fast,
+            initial_stack=initial_stack,
+            profile_state_mode=profile_state_mode,
         )
 
     hand_splits = tuple(split for split in _split_hands(hands, actual_workers) if split)
@@ -463,6 +712,8 @@ def run_selfplay_parallel(
                 platform,
                 db_commit_interval,
                 sqlite_fast,
+                initial_stack,
+                profile_state_mode,
             )
             for index, worker_hands in enumerate(hand_splits)
         ]
@@ -543,6 +794,18 @@ def format_result(result):
         f"  chips/hand  : {format_signed_float(result.chips_per_hand)}",
         f"  bb/100      : {format_signed_float(result.bb_per_100)}",
         (f"  elapsed     : {result.elapsed:.1f}s  ({result.hands_per_second} hands/s)"),
+        (
+            "  route diag  : "
+            f"v{result.route_diagnostics.schema_version}, "
+            f"{result.route_diagnostics.alternate_hands}/"
+            f"{result.route_diagnostics.observed_hands} alternate hands "
+            f"({result.route_diagnostics.activation_fraction:.1%}), "
+            f"{result.route_diagnostics.alternate_decisions}/"
+            f"{result.route_diagnostics.fallback_decisions}/"
+            f"{result.route_diagnostics.unknown_decisions} decisions "
+            "(alternate/fallback/unknown)"
+        ),
+        f"  profile state: {result.route_diagnostics.profile_state_mode}",
     ]
     if result.profile is not None:
         profile_text = format_profile(result.profile)
@@ -637,6 +900,17 @@ def build_parser():
             f"count. Safety cap: {DEFAULT_WORKER_CAP} workers."
         ),
     )
+    parser.add_argument(
+        "--initial-stack",
+        type=int,
+        default=INITIAL_STACK,
+        dest="initial_stack",
+        help=(
+            "Starting stack for hero and every opponent, in chips "
+            f"(default: {INITIAL_STACK}, i.e. {INITIAL_STACK // BIG_BLIND} big "
+            "blinds). Hero's per-hand delta is measured against this stack."
+        ),
+    )
     return parser
 
 
@@ -656,6 +930,7 @@ def main(argv=None):
         workers=args.workers,
         db_commit_interval=args.commit_every,
         sqlite_fast=args.sqlite_fast,
+        initial_stack=args.initial_stack,
     )
     print(format_result(result))
 

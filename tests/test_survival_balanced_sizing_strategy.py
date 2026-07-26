@@ -48,6 +48,9 @@ def make_table(street="Preflop", board=None, actions=None, hero=None, profiles=N
 def tight_profile():
     return {
         "hands_seen": 30,
+        "preflop_hands_seen": 30,
+        "profile_stats_schema_version": 2,
+        "profile_stats_provenance": "canonical",
         "vpip": 3,
         "pfr": 1,
         "bets": 2,
@@ -60,6 +63,9 @@ def tight_profile():
 def loose_aggressive_profile():
     return {
         "hands_seen": 30,
+        "preflop_hands_seen": 30,
+        "profile_stats_schema_version": 2,
+        "profile_stats_provenance": "canonical",
         "vpip": 18,
         "pfr": 10,
         "bets": 12,

@@ -20,6 +20,9 @@ def make_top_pair_table(opponent_vpip=0.5, opponent_pfr=0.3):
         "opponentProfiles": {
             "opp4": {
                 "hands_seen": 50,
+                "preflop_hands_seen": 50,
+                "profile_stats_schema_version": 2,
+                "profile_stats_provenance": "canonical",
                 "vpip": int(round(opponent_vpip * 50)),
                 "pfr": int(round(opponent_pfr * 50)),
             }
@@ -85,7 +88,8 @@ def test_top_pair_kicker_should_not_fold_to_loose_player_at_bad_price():
 
     assert result is not None
     assert result[0] != "fold", (
-        f"Expected call/raise for Kd Qc top pair vs loose 80% pot bet, got {result[0]}: {result[2]}"
+        "Expected call/raise for Kd Qc top pair vs loose 80% pot bet, "
+        f"got {result[0]}: {result[2]}"
     )
 
 
@@ -106,7 +110,8 @@ def test_top_pair_kicker_folds_to_tight_player_at_bad_price():
 
     assert result is not None
     assert result[0] == "fold", (
-        f"Expected fold for Kd Qc top pair vs tight 80% pot bet, got {result[0]}: {result[2]}"
+        "Expected fold for Kd Qc top pair vs tight 80% pot bet, "
+        f"got {result[0]}: {result[2]}"
     )
 
 

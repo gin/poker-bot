@@ -101,6 +101,7 @@ def _tight_raiser_profile():
         "raiser": OpponentProfile(
             agent_id="raiser",
             hands_seen=100,
+            preflop_hands_seen=100,
             vpip=12,
             pfr=8,
             calls=20,
@@ -118,6 +119,7 @@ def _loose_raiser_profile():
         "raiser": OpponentProfile(
             agent_id="raiser",
             hands_seen=100,
+            preflop_hands_seen=100,
             vpip=45,
             pfr=35,
             calls=30,

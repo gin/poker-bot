@@ -1,6 +1,6 @@
 """GuardRail registry — precedence-based guard cascade.
 
-Guards are registered with metadata (id, phase, precedence, table_sizes).
+Guards are registered with metadata (id, phase, precedence, regimes).
 The registry runs them in precedence order (lowest number = highest priority
 = fires first). This prevents the "general guard swallows specific guard"
 problem: specific guards (lower precedence number) always fire before general
@@ -19,7 +19,12 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from poker_bot.guards.context import GuardContext
-from poker_bot.guards.telemetry import GuardEvent, guard_mode, record_event
+from poker_bot.guards.telemetry import (
+    GuardEvent,
+    guard_mode,
+    record_event,
+    record_guard_error,
+)
 
 ActionDecision = tuple[str, int | None, str]
 GuardFunc = Callable[[GuardContext], Optional[ActionDecision]]
@@ -33,7 +38,11 @@ class GuardMeta:
     guard_id: str
     phase: str  # "pre" or "post"
     precedence: int  # 0=highest (fires first), 4=lowest
-    table_sizes: list[str]  # ["hu"], ["6max"], ["hu", "6max"]
+    # Canonical hand-level player regimes this guard applies to: any of
+    # "heads_up", "three_handed", "full_table", or the sentinel "all" for
+    # guards genuinely unrestricted by table size. Matched against
+    # ctx.regime (poker_bot.hand_utils.player_regime), never seat counts.
+    regimes: list[str]
     description: str
     func: Callable
     shadow: bool = False  # shadow guards log fires but never override
@@ -59,7 +68,7 @@ class GuardRail:
         guard_id: str,
         phase: str,
         precedence: int,
-        table_sizes: list[str] | None = None,
+        regimes: list[str] | None = None,
         description: str = "",
         shadow: bool | None = None,
     ):
@@ -71,7 +80,7 @@ class GuardRail:
                     guard_id=guard_id,
                     phase=phase,
                     precedence=precedence,
-                    table_sizes=table_sizes or ["hu", "6max"],
+                    regimes=regimes or ["all"],
                     description=description,
                     func=func,
                     shadow=self._default_shadow if shadow is None else shadow,
@@ -82,14 +91,8 @@ class GuardRail:
         return decorator
 
     def _applicable(self, meta: GuardMeta, ctx: GuardContext) -> bool:
-        """Check if a guard applies to the current table size."""
-        if "all" in meta.table_sizes:
-            return True
-        if ctx.is_heads_up and "hu" in meta.table_sizes:
-            return True
-        if not ctx.is_heads_up and "6max" in meta.table_sizes:
-            return True
-        return False
+        """Check if a guard applies to the hand's canonical player regime."""
+        return "all" in meta.regimes or ctx.regime in meta.regimes
 
     def _record_fire(
         self,
@@ -136,7 +139,11 @@ class GuardRail:
         *active* guard is applied (returned). Shadow fires and fires after
         the applied one are logged with applied=False, which gives overlap
         data (co-firing guards) for free. A guard that raises is skipped so
-        one broken guard cannot kill the whole cascade.
+        one broken guard cannot kill the whole cascade, but the failure is
+        still recorded as an observable error event (poker_bot.guards.
+        telemetry.record_guard_error) -- multi_core's outer run_pre/run_post
+        try/except can never see an exception raised inside a single guard's
+        func here, so this is the only place that failure can be reported.
         """
         winner: tuple[ActionDecision, str] | None = None
         for meta in sorted(self._guards, key=lambda m: m.precedence):
@@ -151,7 +158,8 @@ class GuardRail:
                 result = (
                     meta.func(ctx) if phase == "pre" else meta.func(ctx, proposed)
                 )
-            except Exception:
+            except Exception as exc:
+                record_guard_error(phase, exc)
                 continue
             if result is None:
                 continue

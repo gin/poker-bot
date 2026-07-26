@@ -28,6 +28,7 @@ def test_guard_post_alias_matches_registry():
 BLUFFY = OpponentProfile(
     agent_id=VILL,
     hands_seen=20,
+    preflop_hands_seen=20,
     vpip=10,
     calls=3,
     bets=4,
@@ -40,6 +41,9 @@ BLUFFY = OpponentProfile(
 )
 TIGHT = {
     "hands_seen": 20,
+    "preflop_hands_seen": 20,
+    "profile_stats_schema_version": 2,
+    "profile_stats_provenance": "canonical",
     "vpip": 3,
     "pfr": 2,
     "calls": 2,
@@ -52,6 +56,7 @@ TIGHT = {
 VALUE = OpponentProfile(
     agent_id=VILL,
     hands_seen=20,
+    preflop_hands_seen=20,
     vpip=3,
     calls=5,
     bets=1,

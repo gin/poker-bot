@@ -66,6 +66,9 @@ def make_river_table(
         "opponentProfiles": {
             "villain": {
                 "hands_seen": 50,
+                "preflop_hands_seen": 50,
+                "profile_stats_schema_version": 2,
+                "profile_stats_provenance": "canonical",
                 "vpip": int(round(opponent_vpip * 50)),
                 "pfr": int(round(opponent_pfr * 50)),
             }

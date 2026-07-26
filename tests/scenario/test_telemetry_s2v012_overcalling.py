@@ -22,6 +22,9 @@ def make_turn_table(opponent_vpip=16, opponent_pfr=14):
         "opponentProfiles": {
             "villain": {
                 "hands_seen": 127,
+                "preflop_hands_seen": 127,
+                "profile_stats_schema_version": 2,
+                "profile_stats_provenance": "canonical",
                 "vpip": opponent_vpip,
                 "pfr": opponent_pfr,
             }
@@ -101,7 +104,16 @@ def test_two_pair_on_paired_board_continues_vs_loose_aggressive_turn_jam():
     opponent (VPIP 43%, PFR 23%). The jamming range is wider with more bluffs
     and thinner value, so two pair should continue rather than auto-fold.
     """
-    profiles = {"villain": {"hands_seen": 127, "vpip": 43, "pfr": 23}}
+    profiles = {
+        "villain": {
+            "hands_seen": 127,
+            "preflop_hands_seen": 127,
+            "profile_stats_schema_version": 2,
+            "profile_stats_provenance": "canonical",
+            "vpip": 43,
+            "pfr": 23,
+        }
+    }
     assert (
         act(
             ["5c", "Ks"],

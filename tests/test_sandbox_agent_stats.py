@@ -19,6 +19,8 @@ API_STATS = {
     "vpip": 0.4928,
     "pfr": 0.1170,
     "af": 1.3804,
+    "wtsd": 0.4918,
+    "bluffPct": 0.5369,
     "playingStyle": {"label": "loose-measured"},
 }
 
@@ -56,8 +58,13 @@ class TestMergePolicy:
         assert out["vpip_frequency"] == 0.493
         assert out["pfr_frequency"] == 0.117
         assert out["vpip"] == round(0.4928 * 11079)
-        # AF 1.38 clamps to the 0.70 frequency ceiling, like live play.
-        assert out["aggression_frequency"] == 0.70
+        # AF (aggr/calls) converts to a frequency via af/(1+af).
+        assert out["aggression_frequency"] == round(1.3804 / 2.3804, 3)
+        # Proxy fields replace the tracker's confident local zeros:
+        # call ~ (vpip - pfr) * 0.75, fold-to-bet ~ 0.9 - wtsd, wasd ~ bluffPct.
+        assert out["call_frequency"] == round((0.4928 - 0.1170) * 0.75, 3)
+        assert out["fold_to_bet_frequency"] == round(0.9 - 0.4918, 3)
+        assert out["weak_aggressive_showdown_frequency"] == 0.537
         assert out["api_style"] == "loose-measured"
 
     def test_local_wins_at_threshold(self):
@@ -122,6 +129,112 @@ class TestSnapshotAndLiveFallback:
         assert sas.get_prior(agent_id="agent-x") is None
         assert sas.get_prior(agent_id="agent-x") is None
         assert calls == ["agent-x"], "failure must be cached: one fetch max"
+
+
+class TestSqlitePriorTable:
+    def _make_db(self, path, *, api_key=None):
+        import sqlite3
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from update_opponent_prior_db import open_prior_db
+
+        conn = open_prior_db(path)
+        conn.execute(
+            "insert into agent_prior(agent_id, handle, competition_id, "
+            "sample_size, stats_json, fetched_at) values (?, ?, ?, ?, ?, ?)",
+            (
+                "agent-1",
+                "villain",
+                "comp-1",
+                11079,
+                json.dumps(API_STATS),
+                "2026-07-07T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            "insert into meta(key, value) values('competitionId', 'comp-1')"
+        )
+        if api_key:
+            conn.execute(
+                "insert into meta(key, value) values('apiKey', ?)", (api_key,)
+            )
+        conn.commit()
+        conn.close()
+        assert sqlite3.connect(path).execute("select 1").fetchone()
+
+    def test_sqlite_prior_loads_and_matches_by_handle(self, tmp_path):
+        db = tmp_path / sas.PRIOR_DB_BASENAME
+        self._make_db(db, api_key="k")
+        snap = sas.load_snapshot(db)
+        assert snap["competitionId"] == "comp-1"
+        assert snap["apiKey"] == "k"
+        assert sas.get_prior(agent_id="agent-1")["sampleSize"] == 11079
+        assert sas.get_prior(handle="villain")["sampleSize"] == 11079
+        assert sas.get_prior(handle="  VILLAIN ")["sampleSize"] == 11079
+
+    def test_seat_id_shift_matches_by_suffix(self):
+        # Real incident: table seats expose cmq6atdj70el0pd228w5czu4o for
+        # account cmq5atdj70el0pd228w5czu4o — same cuid suffix, one segment
+        # shifted. The prior lookup must bridge that namespace gap.
+        account_id = "cmq5atdj70el0pd228w5czu4o"
+        seat_id = "cmq6atdj70el0pd228w5czu4o"
+        sas._snapshot = {"agents": {account_id: dict(API_STATS)}}
+        assert sas.get_prior(agent_id=seat_id)["sampleSize"] == 11079
+
+    def test_alias_id_matches_by_suffix(self):
+        sas._snapshot = {
+            "agents": {"agent-1": {**API_STATS, "aliasId": "zzz-alias-9876543210abcd"}}
+        }
+        assert sas.get_prior(agent_id="zzz-alias-9876543210abcd") is not None
+
+    def test_env_credentials_enable_live_fetch_without_prior_file(
+        self, monkeypatch
+    ):
+        # The [VPIP: 0%] incident: no prior file used to mean no live
+        # fetching at all. Env credentials must now be enough.
+        sas._snapshot = {}
+        monkeypatch.setenv("ARENA_API_KEY", "env-key")
+        monkeypatch.setenv("ARENA_COMPETITION_ID", "comp-env")
+        seen = {}
+
+        def fake_fetch(agent_id, competition_id, api_key, timeout=None):
+            seen.update(agent=agent_id, comp=competition_id, key=api_key)
+            return dict(API_STATS)
+
+        monkeypatch.setattr(sas, "fetch_agent_stats", fake_fetch)
+        assert sas.get_prior(agent_id="agent-9")["sampleSize"] == 11079
+        assert seen == {"agent": "agent-9", "comp": "comp-env", "key": "env-key"}
+
+    def test_prior_status_reports_sources(self, tmp_path):
+        db = tmp_path / sas.PRIOR_DB_BASENAME
+        self._make_db(db, api_key="k")
+        sas.load_snapshot(db)
+        status = sas.prior_status()
+        assert "agents=1" in status
+        assert "key=yes" in status
+
+
+class TestUpdaterScript:
+    def test_parse_roster_extracts_ids(self, tmp_path):
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from update_opponent_prior_db import parse_roster
+
+        roster = tmp_path / "opponents.md"
+        roster.write_text(
+            "cmq6atdj70el0pd228w5czu4o\n"
+            "- cmqvg50so537et6mn1cbrl1vm  # bullet + comment\n"
+            "not an id\n"
+            "cmq6atdj70el0pd228w5czu4o\n"  # duplicate
+        )
+        assert parse_roster(roster) == [
+            "cmq6atdj70el0pd228w5czu4o",
+            "cmqvg50so537et6mn1cbrl1vm",
+        ]
 
 
 class TestTrackerIntegration:

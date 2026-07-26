@@ -12,19 +12,29 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from eval import benchmark, population_selfplay
-from eval.selfplay import BIG_BLIND, run_selfplay
+from eval.selfplay import (
+    BIG_BLIND,
+    INITIAL_STACK,
+    PROFILE_ROUTE_DIAGNOSTICS_SCHEMA_VERSION,
+    PROFILE_STATE_PERSISTENT,
+    PROFILE_STATE_SHARDED_RESEARCH,
+    run_selfplay,
+)
 
 DEFAULT_CONFIG = Path("benchmarks/promotion_gate.json")
+DEFAULT_SMOKE_CONFIG = Path("benchmarks/promotion_gate.smoke.json")
 DEFAULT_CHAMPION_JSON = Path("benchmarks/champion.json")
 DEFAULT_OUTPUT_DIR = Path("benchmark-runs")
 DEFAULT_HISTORY_DIR = Path("promotions")
 DEFAULT_HISTORY_INDEX = "index.jsonl"
 DEFAULT_SCENARIO_TESTS = ("tests/scenario",)
+DEFAULT_PROFILE = "production"
+VALID_PROFILES = ("production", "smoke")
 DEFAULT_PROMOTION_OPPONENTS = (
     "simple",
     "adaptive",
@@ -62,6 +72,15 @@ DEFAULT_SMALL_MARGIN_BB100 = -2.5
 DEFAULT_CATASTROPHIC_FLOOR_BB100 = -10.0
 DEFAULT_SIMPLE_MIN_BB100 = 0.0
 DEFAULT_MIN_SEED_PASS_RATE = 0.8
+# Sequential paired evaluation is OFF by default (single run at `hands`);
+# it activates only when a config sets `target_delta_ci95_half_width_bb100`.
+# 5.0 bb/100 is the documented default half-width target for production:
+# it is coarser than the -2.5 bb/100 non-inferiority floor (so precision
+# never masks a real regression signal at that floor) while remaining
+# achievable within a bounded number of additional hands given this
+# simulator's typical per-seed bb/100 variance. Deployments with tighter
+# variance or a larger hand budget can lower it per-config.
+DEFAULT_DELTA_CI95_HALF_WIDTH_BB100 = 5.0
 
 
 @dataclass(frozen=True)
@@ -90,18 +109,19 @@ class SeedVariance:
     baseline_bb_per_100: tuple[float, ...]
     delta_bb_per_100: tuple[float, ...]
     candidate_mean_bb_per_100: float
-    candidate_stddev_bb_per_100: float
-    candidate_stderr_bb_per_100: float
-    candidate_ci95_low_bb_per_100: float
-    candidate_ci95_high_bb_per_100: float
+    candidate_stddev_bb_per_100: float | None
+    candidate_stderr_bb_per_100: float | None
+    candidate_ci95_low_bb_per_100: float | None
+    candidate_ci95_high_bb_per_100: float | None
     delta_mean_bb_per_100: float
-    delta_stddev_bb_per_100: float
-    delta_stderr_bb_per_100: float
-    delta_ci95_low_bb_per_100: float
-    delta_ci95_high_bb_per_100: float
+    delta_stddev_bb_per_100: float | None
+    delta_stderr_bb_per_100: float | None
+    delta_ci95_low_bb_per_100: float | None
+    delta_ci95_high_bb_per_100: float | None
     seed_passes: int
     seed_count: int
     seed_pass_rate: float
+    initial_stack: int = INITIAL_STACK
 
 
 @dataclass(frozen=True)
@@ -118,7 +138,45 @@ class PromotionGateConfig:
     counter_strategies: tuple[str, ...]
     min_seed_pass_rate: float
     population_config: str | None
-    workers: int = 0
+    initial_stacks: tuple[int, ...] = (INITIAL_STACK,)
+    workers: int = 1
+    profile: str = "production"
+    regime_overrides: dict = field(default_factory=dict)
+    max_hands: int | None = None
+    batch_hands: int | None = None
+    target_delta_ci95_half_width_bb100: float | None = None
+    profile_state_mode: str = PROFILE_STATE_PERSISTENT
+
+
+    def __post_init__(self):
+        if self.profile_state_mode not in {
+            PROFILE_STATE_PERSISTENT,
+            PROFILE_STATE_SHARDED_RESEARCH,
+        }:
+            raise ValueError(
+                "profile_state_mode must be 'persistent' or 'sharded_research'"
+            )
+        if self.profile == "production" and (
+            self.profile_state_mode != PROFILE_STATE_PERSISTENT
+        ):
+            raise ValueError(
+                "production promotion requires profile_state_mode='persistent'"
+            )
+        if self.target_delta_ci95_half_width_bb100 is not None:
+            if self.target_delta_ci95_half_width_bb100 <= 0:
+                raise ValueError(
+                    "target_delta_ci95_half_width_bb100 must be positive"
+                )
+            if self.max_hands is None:
+                raise ValueError(
+                    "max_hands is required when "
+                    "target_delta_ci95_half_width_bb100 is set, to bound "
+                    "sequential sampling"
+                )
+            if self.max_hands < self.hands:
+                raise ValueError("max_hands must be >= hands")
+            if self.batch_hands is not None and self.batch_hands <= 0:
+                raise ValueError("batch_hands must be positive")
 
 
 @dataclass(frozen=True)
@@ -142,6 +200,10 @@ class PromotionGateReport:
     output_markdown: str | None = None
     history_index: str | None = None
     model_checkpoint: str | None = None
+    aggregate_variance: AggregateVariance | None = None
+    evaluated_hands: int = 0
+    evaluation_stages: int = 0
+    sequential_precision_achieved: bool | None = None
 
     @property
     def passed(self):
@@ -186,6 +248,22 @@ def load_promotion_config(path=DEFAULT_CONFIG):
     if not isinstance(data, dict):
         raise ValueError("promotion gate config must be a JSON object")
 
+    profile = str(data.get("profile", DEFAULT_PROFILE))
+    if profile not in VALID_PROFILES:
+        raise ValueError(
+            f"promotion gate config profile must be one of {VALID_PROFILES}, "
+            f"got {profile!r}"
+        )
+    regime_overrides_raw = data.get("regime_overrides") or {}
+    if not isinstance(regime_overrides_raw, dict):
+        raise ValueError(
+            "regime_overrides must be a JSON object keyed by player count"
+        )
+    regime_overrides = {
+        int(players): dict(overrides)
+        for players, overrides in regime_overrides_raw.items()
+    }
+
     return PromotionGateConfig(
         hands=int(data.get("hands", benchmark.DEFAULT_HANDS)),
         opponents=_csv_or_tuple(data.get("opponents"), DEFAULT_PROMOTION_OPPONENTS),
@@ -214,8 +292,40 @@ def load_promotion_config(path=DEFAULT_CONFIG):
             data.get("min_seed_pass_rate", DEFAULT_MIN_SEED_PASS_RATE)
         ),
         population_config=data.get("population_config"),
-        workers=int(data.get("workers", 0)),
+        initial_stacks=_csv_ints_or_tuple(data.get("initial_stacks"), (INITIAL_STACK,)),
+        workers=int(data.get("workers", 1)),
+        profile=profile,
+        profile_state_mode=str(
+            data.get("profile_state_mode", PROFILE_STATE_PERSISTENT)
+        ),
+        regime_overrides=regime_overrides,
+        max_hands=(
+            int(data["max_hands"]) if data.get("max_hands") is not None else None
+        ),
+        batch_hands=(
+            int(data["batch_hands"]) if data.get("batch_hands") is not None else None
+        ),
+        target_delta_ci95_half_width_bb100=(
+            float(data["target_delta_ci95_half_width_bb100"])
+            if data.get("target_delta_ci95_half_width_bb100") is not None
+            else None
+        ),
     )
+
+
+def resolve_regime_floor(config, players, key):
+    """Look up a per-player-count override for ``key`` (one of
+    ``min_delta_bb_per_100`` or ``catastrophic_floor_bb100``), falling back
+    to the config-wide default.
+
+    Lets one production gate enforce a tighter non-inferiority /
+    catastrophic floor for thin regimes (HU, 3-handed) than for 6-max, so
+    a large 6-max win can never offset a collapse elsewhere.
+    """
+    override = config.regime_overrides.get(players)
+    if override and key in override:
+        return float(override[key])
+    return getattr(config, key)
 
 
 def resolve_champion_placeholders(values, champion):
@@ -269,17 +379,99 @@ def _sample_stddev(values):
     return math.sqrt(variance)
 
 
+def _regularized_incomplete_beta(x, a, b):
+    """Return I_x(a, b) using a continued fraction."""
+
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    log_front = (
+        math.lgamma(a + b)
+        - math.lgamma(a)
+        - math.lgamma(b)
+        + a * math.log(x)
+        + b * math.log1p(-x)
+    )
+    front = math.exp(log_front)
+    tiny = 1e-300
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    d = tiny if abs(d) < tiny else d
+    d = 1.0 / d
+    fraction = d
+    for iteration in range(1, 201):
+        twice_iteration = 2 * iteration
+        coefficient = iteration * (b - iteration) * x / (
+            (qam + twice_iteration) * (a + twice_iteration)
+        )
+        d = 1.0 + coefficient * d
+        d = tiny if abs(d) < tiny else d
+        c = 1.0 + coefficient / c
+        c = tiny if abs(c) < tiny else c
+        d = 1.0 / d
+        fraction *= d * c
+        coefficient = -(
+            (a + iteration)
+            * (qab + iteration)
+            * x
+            / ((a + twice_iteration) * (qap + twice_iteration))
+        )
+        d = 1.0 + coefficient * d
+        d = tiny if abs(d) < tiny else d
+        c = 1.0 + coefficient / c
+        c = tiny if abs(c) < tiny else c
+        d = 1.0 / d
+        delta = d * c
+        fraction *= delta
+        if abs(delta - 1.0) <= 3e-14:
+            break
+    return front * fraction / a
+
+
+def _student_t_cdf(value, degrees_of_freedom):
+    if value == 0.0:
+        return 0.5
+    x = degrees_of_freedom / (degrees_of_freedom + value * value)
+    tail = 0.5 * _regularized_incomplete_beta(
+        x, degrees_of_freedom / 2.0, 0.5
+    )
+    return 1.0 - tail if value > 0.0 else tail
+
+
+def _student_t_critical_95(degrees_of_freedom):
+    """Return the two-sided 95% Student-t critical value for a positive df."""
+
+    if degrees_of_freedom < 1:
+        raise ValueError("degrees_of_freedom must be positive")
+    lower, upper = 0.0, 1.0
+    while _student_t_cdf(upper, degrees_of_freedom) < 0.975:
+        upper *= 2.0
+    for _ in range(60):
+        midpoint = (lower + upper) / 2.0
+        if _student_t_cdf(midpoint, degrees_of_freedom) < 0.975:
+            lower = midpoint
+        else:
+            upper = midpoint
+    return (lower + upper) / 2.0
+
+
 def _series_stats(values):
     mean = _mean(values)
+    if len(values) < 2:
+        return mean, None, None, None, None
     stddev = _sample_stddev(values)
-    stderr = stddev / math.sqrt(len(values)) if values else 0.0
-    ci95 = 1.96 * stderr
+    stderr = stddev / math.sqrt(len(values))
+    ci95 = _student_t_critical_95(len(values) - 1) * stderr
     return mean, stddev, stderr, mean - ci95, mean + ci95
 
 
-def calculate_seed_variance(report, min_delta_bb_per_100):
+def calculate_seed_variance(report, min_delta_fn):
     baseline_by_case = {
-        (result.opponent, result.players, case.seed): result
+        (result.opponent, result.players, result.initial_stack, case.seed): result
         for case, result in zip(
             report.cases,
             report.baseline_results,
@@ -288,12 +480,14 @@ def calculate_seed_variance(report, min_delta_bb_per_100):
     }
     grouped = {}
     for case, result in zip(report.cases, report.results, strict=True):
-        baseline = baseline_by_case[(result.opponent, result.players, case.seed)]
-        key = (result.opponent, result.players)
+        baseline = baseline_by_case[
+            (result.opponent, result.players, result.initial_stack, case.seed)
+        ]
+        key = (result.opponent, result.players, result.initial_stack)
         grouped.setdefault(key, []).append((case.seed, result, baseline))
 
     rows = []
-    for (opponent, players), group in sorted(grouped.items()):
+    for (opponent, players, initial_stack), group in sorted(grouped.items()):
         seeds = tuple(seed for seed, _result, _baseline in group)
         candidate_values = tuple(
             result.bb_per_100 for _seed, result, _baseline in group
@@ -314,12 +508,13 @@ def calculate_seed_variance(report, min_delta_bb_per_100):
         delta_mean, delta_stddev, delta_stderr, delta_low, delta_high = _series_stats(
             delta_values
         )
-        seed_passes = sum(1 for value in delta_values if value >= min_delta_bb_per_100)
+        seed_passes = sum(1 for value in delta_values if value >= min_delta_fn(players))
         seed_count = len(delta_values)
         rows.append(
             SeedVariance(
                 opponent=opponent,
                 players=players,
+                initial_stack=initial_stack,
                 seeds=seeds,
                 candidate_bb_per_100=candidate_values,
                 baseline_bb_per_100=baseline_values,
@@ -342,6 +537,34 @@ def calculate_seed_variance(report, min_delta_bb_per_100):
     return tuple(rows)
 
 
+@dataclass(frozen=True)
+class AggregateVariance:
+    seed_count: int
+    delta_mean_bb_per_100: float
+    delta_stddev_bb_per_100: float | None
+    delta_stderr_bb_per_100: float | None
+    delta_ci95_low_bb_per_100: float | None
+    delta_ci95_high_bb_per_100: float | None
+
+
+def calculate_aggregate_variance(seed_variance):
+    """Pool every (opponent, players, seed) paired delta into one overall
+    95% CI, alongside the per-row breakdown already in ``seed_variance``.
+    This is the "aggregate" half of "paired deltas and 95% confidence
+    intervals, both aggregate and per player count/opponent."
+    """
+    all_deltas = [delta for row in seed_variance for delta in row.delta_bb_per_100]
+    mean, stddev, stderr, low, high = _series_stats(all_deltas)
+    return AggregateVariance(
+        seed_count=len(all_deltas),
+        delta_mean_bb_per_100=mean,
+        delta_stddev_bb_per_100=stddev,
+        delta_stderr_bb_per_100=stderr,
+        delta_ci95_low_bb_per_100=low,
+        delta_ci95_high_bb_per_100=high,
+    )
+
+
 def evaluate_gate(report, config, champion):
     rows_by_opponent = _aggregates_by_opponent(report)
     checks = []
@@ -353,54 +576,82 @@ def evaluate_gate(report, config, champion):
     simple_detail = f"simple rows must be > {config.simple_min_bb100:.1f} bb/100"
     if simple_rows:
         observed = ", ".join(
-            f"{row.players}p {row.bb_per_100:+.1f}" for row in simple_rows
+            f"{row.players}p@{row.initial_stack} {row.bb_per_100:+.1f}"
+            for row in simple_rows
         )
         simple_detail = f"{simple_detail}; observed {observed}"
     checks.append(GateCheck("positive bb/100 vs simple", simple_passed, simple_detail))
 
-    delta_passed = all(row.passed for row in report.comparisons)
-    worst_delta = min(
-        (row.delta_bb_per_100 for row in report.comparisons),
-        default=math.inf,
-    )
-    worst_delta_str = "n/a" if worst_delta == math.inf else f"{worst_delta:+.1f}"
-    checks.append(
-        GateCheck(
-            "champion regression margin",
-            delta_passed,
-            (
-                f"candidate must stay within {config.min_delta_bb_per_100:.1f} bb/100 "
-                f"of {champion}; worst delta {worst_delta_str}"
-            ),
+    delta_margins = [
+        (
+            row,
+            resolve_regime_floor(config, row.players, "min_delta_bb_per_100"),
+            row.delta_bb_per_100,
+            row.delta_bb_per_100
+            - resolve_regime_floor(config, row.players, "min_delta_bb_per_100"),
         )
+        for row in report.comparisons
+    ]
+    delta_passed = bool(delta_margins) and all(
+        margin >= 0 for _row, _floor, _delta, margin in delta_margins
     )
-
+    if delta_margins:
+        worst_row, worst_floor, worst_delta, _worst_margin = min(
+            delta_margins, key=lambda item: item[3]
+        )
+        delta_detail = (
+            "candidate paired delta must clear each regime's non-inferiority "
+            f"floor (default {config.min_delta_bb_per_100:.1f}); worst "
+            f"{worst_row.players}p@{worst_row.initial_stack} "
+            f"{worst_row.opponent} {worst_delta:+.1f} vs {worst_floor:+.1f}"
+        )
+    else:
+        delta_detail = "no paired candidate/champion comparisons were available"
+    checks.append(
+        GateCheck("champion regression margin", delta_passed, delta_detail)
+    )
     counter_names = set(
         resolve_champion_placeholders(config.counter_strategies, champion)
     )
     counter_rows = [row for row in report.aggregates if row.opponent in counter_names]
     baseline_by_key = {
-        (row.opponent, row.players): row.bb_per_100
+        (row.opponent, row.players, row.initial_stack): row.bb_per_100
         for row in report.baseline_aggregates
     }
-    deltas = []
+    counter_margins = []
     for row in counter_rows:
-        baseline_bb = baseline_by_key.get((row.opponent, row.players))
+        baseline_bb = baseline_by_key.get(
+            (row.opponent, row.players, row.initial_stack)
+        )
         if baseline_bb is None:
             continue
-        deltas.append(row.bb_per_100 - baseline_bb)
-    catastrophic_passed = bool(deltas) and all(
-        delta >= config.catastrophic_floor_bb100 for delta in deltas
+        floor = resolve_regime_floor(config, row.players, "catastrophic_floor_bb100")
+        delta = row.bb_per_100 - baseline_bb
+        counter_margins.append((row, floor, delta, delta - floor))
+    catastrophic_passed = bool(counter_margins) and all(
+        margin >= 0 for _row, _floor, _delta, margin in counter_margins
     )
-    worst_counter = min(deltas, default=0.0)
+    worst_row, worst_floor, worst_delta, _worst_margin = min(
+        counter_margins,
+        key=lambda item: item[3],
+        default=(None, config.catastrophic_floor_bb100, 0.0, 0.0),
+    )
+    worst_counter_str = (
+        "n/a"
+        if worst_row is None
+        else (
+            f"{worst_delta:+.1f} (floor {worst_floor:+.1f}, "
+            f"{worst_row.players}p@{worst_row.initial_stack} {worst_row.opponent})"
+        )
+    )
     checks.append(
         GateCheck(
             "no catastrophic counter loss",
             catastrophic_passed,
             (
-                f"known counters must be >= "
-                f"{config.catastrophic_floor_bb100:.1f} bb/100 vs {champion}; "
-                f"worst delta {worst_counter:+.1f}"
+                f"known counters must clear each regime's configured floor "
+                f"(default {config.catastrophic_floor_bb100:.1f} bb/100) vs "
+                f"{champion}; worst delta {worst_counter_str}"
             ),
         )
     )
@@ -419,29 +670,38 @@ def evaluate_seed_consistency(seed_variance, config):
         row
         for row in seed_variance
         if row.seed_pass_rate < config.min_seed_pass_rate
-        or row.delta_ci95_low_bb_per_100 < config.min_delta_bb_per_100
+        or row.delta_ci95_low_bb_per_100 is None
+        or row.delta_ci95_low_bb_per_100
+        < resolve_regime_floor(config, row.players, "min_delta_bb_per_100")
     ]
     worst_rate = min((row.seed_pass_rate for row in seed_variance), default=0.0)
-    worst_ci_low = min(
-        (row.delta_ci95_low_bb_per_100 for row in seed_variance),
-        default=0.0,
-    )
+    ci_lows = [
+        row.delta_ci95_low_bb_per_100
+        for row in seed_variance
+        if row.delta_ci95_low_bb_per_100 is not None
+    ]
+    worst_ci_low = min(ci_lows, default=None)
     if weak_rows:
         examples = ", ".join(
-            f"{row.opponent} {row.players}p {row.seed_passes}/{row.seed_count}"
+            f"{row.opponent} {row.players}p@{row.initial_stack} "
+            f"{row.seed_passes}/{row.seed_count}"
             for row in weak_rows[:3]
         )
         detail = (
             f"requires at least {config.min_seed_pass_rate:.0%} of seeds per row "
-            f"to clear delta {config.min_delta_bb_per_100:.1f} and "
-            f"delta CI95 low >= {config.min_delta_bb_per_100:.1f}; "
-            f"weak rows: {examples}; "
-            f"worst rate {worst_rate:.0%}, worst delta CI95 low {worst_ci_low:+.1f}"
+            "and a finite Student-t paired-delta CI95 lower bound against each "
+            f"regime's floor (default {config.min_delta_bb_per_100:.1f}); "
+            f"weak rows: {examples}; worst rate {worst_rate:.0%}"
         )
+        if worst_ci_low is None:
+            detail += "; insufficient paired samples for CI95"
+        else:
+            detail += f", worst delta CI95 low {worst_ci_low:+.1f}"
     else:
         detail = (
             f"all rows clear {config.min_seed_pass_rate:.0%} seed pass rate "
-            f"and delta CI95 low >= {config.min_delta_bb_per_100:.1f}; "
+            "and each regime's Student-t delta CI95 lower bound "
+            f"(default {config.min_delta_bb_per_100:.1f}); "
             f"worst rate {worst_rate:.0%}, worst delta CI95 low {worst_ci_low:+.1f}"
         )
     return GateCheck("seed consistency", not weak_rows, detail)
@@ -454,7 +714,7 @@ def strategy_snapshot(name):
     if spec is None or spec.origin is None:
         return snapshot
     path = Path(spec.origin)
-    snapshot["found"] = path.exists()
+    snapshot["found"] = True
     snapshot["path"] = str(path)
     if path.exists() and path.is_file():
         snapshot["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -536,6 +796,7 @@ def _history_row(report):
         "generated_at": report.generated_at,
         "candidate": report.candidate,
         "champion": report.champion,
+        "profile": report.config.profile,
         "passed": report.passed,
         "promoted": report.promoted,
         "champion_updated": report.champion_updated,
@@ -571,7 +832,11 @@ def run_promotion_gate(
 ):
     started = time.perf_counter()
     config = load_promotion_config(config_path)
-    # Use config's workers if not explicitly provided; default to 0 (auto)
+    # Every logical (strategy, opponent, players, stack, seed) benchmark
+    # case now runs against its own fresh, isolated opponent-profile DB
+    # (see eval.benchmark._case_db_paths) regardless of worker count, so
+    # profile-dependent production promotions no longer need to force
+    # sequential (workers=1) execution to avoid cross-case contamination.
     actual_workers = workers if workers is not None else config.workers
     champion_metadata = load_champion_metadata(champion_json)
     champion = champion_metadata.get("strategy")
@@ -621,55 +886,71 @@ def run_promotion_gate(
     if nn_mode:
         nn_mode_ctx = _env_override("NN_MODE", nn_mode)
 
-    # For NN strategies, also set policy/value checkpoint paths
-    # for candidate and baseline
-    candidate_policy_ctx = contextlib.nullcontext()
-    candidate_value_ctx = contextlib.nullcontext()
-    baseline_policy_ctx = contextlib.nullcontext()
-    baseline_value_ctx = contextlib.nullcontext()
-
-    if candidate_checkpoint:
-        candidate_policy_ctx = _env_override(
-            "NN_POLICY_PATH", str(candidate_checkpoint)
-        )
-        # Also set value path if there's a matching value file
-        value_candidate = str(
-            Path(candidate_checkpoint).with_name(
-                Path(candidate_checkpoint).stem.replace("policy_", "value_")
-                + Path(candidate_checkpoint).suffix
-            )
-        )
-        if Path(value_candidate).exists():
-            candidate_value_ctx = _env_override("NN_VALUE_PATH", value_candidate)
-
-    if champion_checkpoint:
-        baseline_policy_ctx = _env_override("NN_POLICY_PATH", str(champion_checkpoint))
-        value_champion = str(
-            Path(champion_checkpoint).with_name(
-                Path(champion_checkpoint).stem.replace("policy_", "value_")
-                + Path(champion_checkpoint).suffix
-            )
-        )
-        if Path(value_champion).exists():
-            baseline_value_ctx = _env_override("NN_VALUE_PATH", value_champion)
+    # For NN strategies, also set policy/value checkpoint paths for
+    # candidate and baseline. Rebuilt fresh per stage below via
+    # _candidate_ctxs()/_baseline_ctxs() -- see their docstring in
+    # _run_stage for why (env-override context managers are one-shot).
 
     opponents = build_opponent_pool(config, champion)
+    sequential_enabled = config.target_delta_ci95_half_width_bb100 is not None
 
-    # We need to run candidate and baseline with different model checkpoints.
-    # Since the arbiter caches loaded models, we run them sequentially with
-    # appropriate env vars and clear the arbiter cache between runs.
-    with nn_mode_ctx:
-        # Run candidate
+    def _candidate_ctxs():
+        policy_ctx = contextlib.nullcontext()
+        value_ctx = contextlib.nullcontext()
+        if candidate_checkpoint:
+            policy_ctx = _env_override("NN_POLICY_PATH", str(candidate_checkpoint))
+            value_candidate = str(
+                Path(candidate_checkpoint).with_name(
+                    Path(candidate_checkpoint).stem.replace("policy_", "value_")
+                    + Path(candidate_checkpoint).suffix
+                )
+            )
+            if Path(value_candidate).exists():
+                value_ctx = _env_override("NN_VALUE_PATH", value_candidate)
+        return policy_ctx, value_ctx
+
+    def _baseline_ctxs():
+        policy_ctx = contextlib.nullcontext()
+        value_ctx = contextlib.nullcontext()
+        if champion_checkpoint:
+            policy_ctx = _env_override("NN_POLICY_PATH", str(champion_checkpoint))
+            value_champion = str(
+                Path(champion_checkpoint).with_name(
+                    Path(champion_checkpoint).stem.replace("policy_", "value_")
+                    + Path(champion_checkpoint).suffix
+                )
+            )
+            if Path(value_champion).exists():
+                value_ctx = _env_override("NN_VALUE_PATH", value_champion)
+        return policy_ctx, value_ctx
+
+    def _run_stage(hands_this_stage):
+        """Run one paired candidate-vs-baseline benchmark stage at the
+        given cumulative (not incremental) hand count per case.
+
+        Rerunning from hand 0 each stage -- rather than incrementally
+        appending new hands -- is deterministic and preserves exact
+        paired deal streams: both strategies share the same per-(opponent,
+        players, seed) RNG seed, and the deck consumes exactly one shuffle
+        per hand regardless of policy (see the deal-stream pairing tests
+        in tests/test_selfplay.py), so hands 0..N-1 of a run at hands=M>N
+        are byte-identical to a run at hands=N. Context managers are
+        rebuilt fresh each call: `_env_override` is a one-shot generator
+        context manager and cannot be re-entered, and the arbiter cache is
+        cleared before every run regardless of stage.
+        """
+        candidate_policy_ctx, candidate_value_ctx = _candidate_ctxs()
         with candidate_policy_ctx, candidate_value_ctx:
             from poker_bot.strategies.nnbase import _clear_arbiter_cache
 
             _clear_arbiter_cache()
-            candidate_report = benchmark.run_benchmark(
+            stage_candidate_report = benchmark.run_benchmark(
                 candidate,
                 opponents=opponents,
                 players=config.players,
                 seeds=config.seeds,
-                hands=config.hands,
+                hands=hands_this_stage,
+                initial_stacks=config.initial_stacks,
                 track_opponents=config.track_opponents,
                 baseline_strat=None,  # no baseline for candidate-only run
                 min_delta_bb_per_100=config.min_delta_bb_per_100,
@@ -677,38 +958,82 @@ def run_promotion_gate(
                 workers=actual_workers,
             )
 
-        # Run baseline with champion's checkpoint
+        baseline_policy_ctx, baseline_value_ctx = _baseline_ctxs()
         with baseline_policy_ctx, baseline_value_ctx:
             from poker_bot.strategies.nnbase import _clear_arbiter_cache
 
             _clear_arbiter_cache()
-            baseline_report = benchmark.run_benchmark(
+            stage_baseline_report = benchmark.run_benchmark(
                 champion,
                 opponents=opponents,
                 players=config.players,
                 seeds=config.seeds,
-                hands=config.hands,
+                hands=hands_this_stage,
+                initial_stacks=config.initial_stacks,
                 track_opponents=config.track_opponents,
                 baseline_strat=None,
                 min_delta_bb_per_100=config.min_delta_bb_per_100,
                 runner=benchmark_runner,
                 workers=actual_workers,
             )
+        return stage_candidate_report, stage_baseline_report
 
-    # Combine candidate and baseline reports for gate evaluation
-    seed_variance = calculate_seed_variance(
-        replace(candidate_report, baseline_results=baseline_report.results),
+    cumulative_hands = config.hands
+    stage_count = 0
+    precision_achieved = not sequential_enabled
+    with nn_mode_ctx:
+        while True:
+            candidate_report, baseline_report = _run_stage(cumulative_hands)
+            stage_count += 1
+            seed_variance = calculate_seed_variance(
+                replace(candidate_report, baseline_results=baseline_report.results),
+                lambda players: resolve_regime_floor(
+                    config, players, "min_delta_bb_per_100"
+                ),
+            )
+            if not sequential_enabled:
+                break
+            half_widths = [
+                (row.delta_ci95_high_bb_per_100 - row.delta_ci95_low_bb_per_100)
+                / 2
+                for row in seed_variance
+                if row.delta_ci95_low_bb_per_100 is not None
+                and row.delta_ci95_high_bb_per_100 is not None
+            ]
+            precision_achieved = (
+                len(half_widths) == len(seed_variance)
+                and bool(half_widths)
+                and all(
+                    width <= config.target_delta_ci95_half_width_bb100
+                    for width in half_widths
+                )
+            )
+            if precision_achieved or cumulative_hands >= config.max_hands:
+                break
+            batch = config.batch_hands or config.hands
+            cumulative_hands = min(cumulative_hands + batch, config.max_hands)
+
+    # Combine candidate and baseline reports for gate evaluation. Each
+    # benchmark.run_benchmark() call above was run with baseline_strat=None
+    # (candidate and baseline strategies are run as two separate,
+    # single-strategy benchmark passes so NN checkpoint env vars can be
+    # swapped between them), so each report's own `.comparisons` is empty.
+    # The real per-(opponent, players) comparisons must be built here by
+    # matching the two reports' aggregates -- concatenating the (empty)
+    # per-report comparisons would make every gate that reads
+    # `report.comparisons` vacuously pass.
+    aggregate_variance = calculate_aggregate_variance(seed_variance)
+    comparisons = benchmark.compare_aggregates(
+        candidate_report.aggregates,
+        baseline_report.aggregates,
         config.min_delta_bb_per_100,
     )
-    # Both reports have the SAME cases (same opponents × seeds), run twice.
-    # We use candidate's cases/results, baseline's baseline_results, and
-    # combine aggregates/comparisons.
     benchmark_report = replace(
         candidate_report,
         baseline_results=baseline_report.results,
-        aggregates=candidate_report.aggregates + baseline_report.aggregates,
+        aggregates=candidate_report.aggregates,
         baseline_aggregates=baseline_report.aggregates,
-        comparisons=candidate_report.comparisons + baseline_report.comparisons,
+        comparisons=comparisons,
         elapsed=candidate_report.elapsed + baseline_report.elapsed,
         baseline_strat=champion,
     )
@@ -732,9 +1057,29 @@ def run_promotion_gate(
                 population_gate["detail"],
             ),
         )
+    sequential_check = ()
+    if sequential_enabled:
+        sequential_check = (
+            GateCheck(
+                "sequential precision",
+                precision_achieved,
+                (
+                    f"paired-delta CI95 half-width must be <= "
+                    f"{config.target_delta_ci95_half_width_bb100:.2f} bb/100 on "
+                    f"every row within max_hands={config.max_hands}; evaluated "
+                    f"{cumulative_hands} hands/case across {stage_count} stage(s)"
+                    + (
+                        ""
+                        if precision_achieved
+                        else " -- inconclusive, never promote on unresolved noise"
+                    )
+                ),
+            ),
+        )
     checks = (
         *evaluate_gate(benchmark_report, config, champion),
         evaluate_seed_consistency(seed_variance, config),
+        *sequential_check,
         *population_check,
     )
     passed = all(check.passed for check in checks)
@@ -748,18 +1093,24 @@ def run_promotion_gate(
         benchmark_report=benchmark_report,
         population_report=population_report,
         seed_variance=seed_variance,
+        aggregate_variance=aggregate_variance,
         checks=checks,
         reproducibility=reproducibility,
         elapsed=time.perf_counter() - started,
         generated_at=generated_at,
         attempt_id=attempt_id,
-        promoted=passed and not dry_run,
+        promoted=passed and not dry_run and config.profile == "production",
         champion_updated=False,
         output_json=str(output_json) if output_json else None,
         output_markdown=str(output_markdown) if output_markdown else None,
         history_index=str(history_index) if history_index else None,
+        evaluated_hands=cumulative_hands,
+        evaluation_stages=stage_count,
+        sequential_precision_achieved=(
+            precision_achieved if sequential_enabled else None
+        ),
     )
-    if passed and not dry_run:
+    if passed and not dry_run and config.profile == "production":
         write_json_report(report, output_json)
         write_markdown_report(report, output_markdown)
         report = replace(report, champion_updated=True)
@@ -815,8 +1166,12 @@ def _aggregate_summary(report):
             default=0.0,
         ),
         "worst_delta_ci95_low_bb_per_100": min(
-            (row.delta_ci95_low_bb_per_100 for row in report.seed_variance),
-            default=0.0,
+            (
+                row.delta_ci95_low_bb_per_100
+                for row in report.seed_variance
+                if row.delta_ci95_low_bb_per_100 is not None
+            ),
+            default=None,
         ),
         "population_passed": (
             population_score.passed if population_score is not None else None
@@ -837,11 +1192,50 @@ def _aggregate_summary(report):
     }
 
 
+def _route_diagnostics_summary(report):
+    """Expose evaluator-only route observations without changing gate checks."""
+
+    if report.benchmark_report is None:
+        return {
+            "schema_version": PROFILE_ROUTE_DIAGNOSTICS_SCHEMA_VERSION,
+            "candidate": [],
+            "baseline": [],
+        }
+
+    def _rows(rows):
+        return [
+            {
+                "opponent": row.opponent,
+                "players": row.players,
+                "initial_stack": row.initial_stack,
+                **asdict(row.route_diagnostics),
+                "activation_fraction": row.route_diagnostics.activation_fraction,
+            }
+            for row in rows
+        ]
+
+    diagnostics = _rows(report.benchmark_report.aggregates)
+    baseline_diagnostics = _rows(report.benchmark_report.baseline_aggregates)
+    return {
+        "schema_version": max(
+            (
+                item["schema_version"]
+                for item in [*diagnostics, *baseline_diagnostics]
+            ),
+            default=PROFILE_ROUTE_DIAGNOSTICS_SCHEMA_VERSION,
+        ),
+        "candidate": diagnostics,
+        "baseline": baseline_diagnostics,
+    }
+
+
 def report_to_jsonable(report):
     return {
         "candidate": report.candidate,
         "champion": report.champion,
         "champion_metadata": report.champion_metadata,
+        "profile": report.config.profile,
+        "promotion_quality": report.config.profile == "production",
         "generated_at": report.generated_at,
         "attempt_id": report.attempt_id,
         "elapsed": report.elapsed,
@@ -855,8 +1249,20 @@ def report_to_jsonable(report):
         "scenario_tests": asdict(report.scenario_tests),
         "checks": [asdict(check) for check in report.checks],
         "seed_variance": [asdict(row) for row in report.seed_variance],
+        "aggregate_variance": (
+            asdict(report.aggregate_variance)
+            if report.aggregate_variance is not None
+            else None
+        ),
+        "evaluated_hands": report.evaluated_hands,
+        "evaluation_stages": report.evaluation_stages,
+        "sequential_precision_achieved": report.sequential_precision_achieved,
+        "target_delta_ci95_half_width_bb100": (
+            report.config.target_delta_ci95_half_width_bb100
+        ),
         "reproducibility": report.reproducibility,
         "summary": _aggregate_summary(report),
+        "route_diagnostics": _route_diagnostics_summary(report),
         "benchmark": (
             benchmark.report_to_jsonable(report.benchmark_report)
             if report.benchmark_report is not None
@@ -890,6 +1296,22 @@ def write_history_index(report, path):
         f.write("\n")
 
 
+def _evaluated_hands_summary(report):
+    base = (
+        f"Evaluated hands: {report.evaluated_hands} per case across "
+        f"{report.evaluation_stages} stage(s)"
+    )
+    if report.sequential_precision_achieved is None:
+        return base + "."
+    target = report.config.target_delta_ci95_half_width_bb100
+    status = "achieved" if report.sequential_precision_achieved else "NOT achieved"
+    suffix = "" if report.sequential_precision_achieved else " -- inconclusive"
+    return (
+        f"{base} (target paired-delta CI95 half-width: {target:.2f} bb/100, "
+        f"{status}{suffix})."
+    )
+
+
 def format_markdown_report(report):
     status = "PASS" if report.passed else "FAIL"
     lines = [
@@ -899,14 +1321,26 @@ def format_markdown_report(report):
         f"Current champion: `{report.champion}`.",
         f"Generated at: {report.generated_at}.",
         f"Attempt ID: `{report.attempt_id}`.",
-        "",
-        "## Scenario Tests",
-        "",
-        f"- Command: `{' '.join(report.scenario_tests.command)}`",
-        f"- Status: {'PASS' if report.scenario_tests.passed else 'FAIL'}",
-        f"- Exit code: {report.scenario_tests.exit_code}",
-        f"- Elapsed: {report.scenario_tests.elapsed:.1f}s",
+        f"Profile: `{report.config.profile}`.",
+        _evaluated_hands_summary(report),
     ]
+    if report.config.profile != "production":
+        lines.append(
+            "\n> ⚠️ **SMOKE PROFILE** -- this run is NOT promotion-quality and "
+            "never updates `champion.json`, regardless of PASS/FAIL. Use the "
+            "production config for an authoritative promotion decision."
+        )
+    lines.append("")
+    lines.extend(
+        [
+            "## Scenario Tests",
+            "",
+            f"- Command: `{' '.join(report.scenario_tests.command)}`",
+            f"- Status: {'PASS' if report.scenario_tests.passed else 'FAIL'}",
+            f"- Exit code: {report.scenario_tests.exit_code}",
+            f"- Elapsed: {report.scenario_tests.elapsed:.1f}s",
+        ]
+    )
     if not report.scenario_tests.passed:
         lines.extend(
             [
@@ -955,34 +1389,93 @@ def format_markdown_report(report):
         )
 
     if report.seed_variance:
-        lines.extend(
+        seed_variance_lines = [
+            "",
+            "## Seed Variance",
+            "",
+        ]
+        if report.aggregate_variance is not None:
+            agg = report.aggregate_variance
+            aggregate_ci = (
+                f"[{agg.delta_ci95_low_bb_per_100:+.1f}, "
+                f"{agg.delta_ci95_high_bb_per_100:+.1f}]"
+                if agg.delta_ci95_low_bb_per_100 is not None
+                and agg.delta_ci95_high_bb_per_100 is not None
+                else "insufficient paired samples"
+            )
+            seed_variance_lines.append(
+                f"**Aggregate (all {agg.seed_count} paired opponent/player/seed "
+                f"deltas):** mean {agg.delta_mean_bb_per_100:+.1f} bb/100, "
+                f"95% CI {aggregate_ci}"
+            )
+            seed_variance_lines.append("")
+        seed_variance_lines.extend(
             [
-                "",
-                "## Seed Variance",
-                "",
                 (
-                    "| Opponent | Players | Seeds Passed | Delta Mean | "
+                    "| Opponent | Players | Stack | Seeds Passed | Delta Mean | "
                     "Delta Stddev | Delta CI95 | Candidate CI95 |"
                 ),
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
+        lines.extend(seed_variance_lines)
         for row in report.seed_variance:
             delta_ci = (
                 f"{row.delta_ci95_low_bb_per_100:+.1f}.."
                 f"{row.delta_ci95_high_bb_per_100:+.1f}"
+                if row.delta_ci95_low_bb_per_100 is not None
+                and row.delta_ci95_high_bb_per_100 is not None
+                else "insufficient"
             )
             candidate_ci = (
                 f"{row.candidate_ci95_low_bb_per_100:+.1f}.."
                 f"{row.candidate_ci95_high_bb_per_100:+.1f}"
+                if row.candidate_ci95_low_bb_per_100 is not None
+                and row.candidate_ci95_high_bb_per_100 is not None
+                else "insufficient"
+            )
+            delta_stddev = (
+                f"{row.delta_stddev_bb_per_100:.1f}"
+                if row.delta_stddev_bb_per_100 is not None
+                else "insufficient"
             )
             lines.append(
-                f"| {row.opponent} | {row.players} | "
+                f"| {row.opponent} | {row.players} | {row.initial_stack} | "
                 f"{row.seed_passes}/{row.seed_count} | "
-                f"{row.delta_mean_bb_per_100:+.1f} | "
-                f"{row.delta_stddev_bb_per_100:.1f} | "
+                f"{row.delta_mean_bb_per_100:+.1f} | {delta_stddev} | "
                 f"{delta_ci} | {candidate_ci} |"
             )
+
+    route_diagnostics = _route_diagnostics_summary(report)
+    if route_diagnostics["candidate"] or route_diagnostics["baseline"]:
+        lines.extend(
+            [
+                "",
+                "## Route Diagnostics",
+                "",
+                (
+                    f"Evaluator schema v{route_diagnostics['schema_version']}; "
+                    "observational only and excluded from promotion checks."
+                ),
+                "",
+                (
+                    "| Role | Opponent | Players | Stack | Profile state | "
+                    "Alternate Hands / Observed | Activation | "
+                    "Decisions (alt/fallback/unknown) |"
+                ),
+                "| --- | --- | ---: | ---: | --- | ---: | ---: | --- |",
+            ]
+        )
+        for role in ("candidate", "baseline"):
+            for row in route_diagnostics[role]:
+                lines.append(
+                    f"| {role} | {row['opponent']} | {row['players']} | "
+                    f"{row['initial_stack']} | {row['profile_state_mode']} | "
+                    f"{row['alternate_hands']}/{row['observed_hands']} | "
+                    f"{row['activation_fraction']:.1%} | "
+                    f"{row['alternate_decisions']}/{row['fallback_decisions']}/"
+                    f"{row['unknown_decisions']} |"
+                )
 
     candidate_snapshot = report.reproducibility.get("strategies", {}).get(
         "candidate",
@@ -1095,8 +1588,21 @@ def build_parser():
     )
     parser.add_argument(
         "--config",
-        default=str(DEFAULT_CONFIG),
-        help="Promotion gate JSON config.",
+        default=None,
+        help=(
+            "Promotion gate JSON config. Defaults to the production gate "
+            f"({DEFAULT_CONFIG}), or the smoke config with --smoke."
+        ),
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help=(
+            "Use the fast smoke-check config "
+            f"({DEFAULT_SMOKE_CONFIG}) instead of the production gate. "
+            "Output is NOT promotion-quality: champion.json is never "
+            "updated, regardless of PASS/FAIL."
+        ),
     )
     parser.add_argument(
         "--champion-json",
@@ -1161,10 +1667,15 @@ def main(argv=None):
         if args.history_index is not None
         else history_dir / DEFAULT_HISTORY_INDEX
     )
+    config_path = (
+        Path(args.config)
+        if args.config is not None
+        else (DEFAULT_SMOKE_CONFIG if args.smoke else DEFAULT_CONFIG)
+    )
     try:
         report = run_promotion_gate(
             args.strat,
-            config_path=args.config,
+            config_path=config_path,
             champion_json=args.champion_json,
             dry_run=args.dry_run,
             output_json=output_json,

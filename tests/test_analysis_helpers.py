@@ -9,6 +9,7 @@ def test_summarize_tendencies_uses_local_profiles():
     profile = OpponentProfile(
         agent_id="villain",
         hands_seen=40,
+        preflop_hands_seen=40,
         vpip=24,
         calls=20,
         folds=4,

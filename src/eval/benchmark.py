@@ -8,20 +8,27 @@ import os
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 # Use 'spawn' to avoid fork() deadlock issues with threaded parents
 multiprocessing.set_start_method("spawn", force=True)
 
-from eval.profiler import (
+from eval.profiler import (  # noqa: E402
     PlayProfiler,
     StrategyProfile,
     aggregate_profiles,
     format_profile,
 )
-from eval.selfplay import BIG_BLIND, SelfPlayResult, run_selfplay
-from poker_bot import opponent_store
+from eval.selfplay import (  # noqa: E402
+    BIG_BLIND,
+    INITIAL_STACK,
+    RouteDiagnostics,
+    SelfPlayResult,
+    merge_route_diagnostics,
+    run_selfplay,
+)
+from poker_bot import opponent_store  # noqa: E402
 
 DEFAULT_HANDS = 10000
 DEFAULT_OPPONENTS = ("simple", "adaptive", "royal_adaptive")
@@ -37,6 +44,7 @@ class BenchmarkCase:
     players: int
     seed: int
     hands: int
+    initial_stack: int = INITIAL_STACK
 
 
 @dataclass(frozen=True)
@@ -51,7 +59,9 @@ class BenchmarkAggregate:
     pushes: int
     net_chips: int
     elapsed: float
+    initial_stack: int = INITIAL_STACK
     profile: StrategyProfile | None = None
+    route_diagnostics: RouteDiagnostics = field(default_factory=RouteDiagnostics)
 
     @property
     def bb_per_100(self):
@@ -74,6 +84,7 @@ class BenchmarkComparison:
     baseline_bb_per_100: float
     delta_bb_per_100: float
     min_delta_bb_per_100: float
+    initial_stack: int = INITIAL_STACK
 
     @property
     def passed(self):
@@ -177,6 +188,11 @@ def resolve_options(args):
         or DEFAULT_SEEDS
     )
     hands = args.hands if args.hands is not None else config.get("hands", DEFAULT_HANDS)
+    initial_stacks = (
+        parse_csv_ints(args.initial_stacks)
+        or parse_csv_ints(config.get("initial_stacks"))
+        or (INITIAL_STACK,)
+    )
     track_opponents = bool(
         h2h or args.track_opponents or config.get("track_opponents", False)
     )
@@ -200,6 +216,7 @@ def resolve_options(args):
         "players": players,
         "seeds": seeds,
         "hands": int(hands),
+        "initial_stacks": initial_stacks,
         "track_opponents": track_opponents,
         "baseline": baseline,
         "min_delta_bb_per_100": float(min_delta_bb_per_100),
@@ -212,7 +229,9 @@ def resolve_options(args):
     }
 
 
-def build_cases(strat, opponents, players, seeds, hands):
+def build_cases(
+    strat, opponents, players, seeds, hands, initial_stacks=(INITIAL_STACK,)
+):
     if hands <= 0:
         raise ValueError("--hands must be positive")
     cases = []
@@ -220,27 +239,31 @@ def build_cases(strat, opponents, players, seeds, hands):
         for player_count in players:
             if player_count < 2 or player_count > 6:
                 raise ValueError("--players values must be between 2 and 6")
-            for seed in seeds:
-                cases.append(
-                    BenchmarkCase(
-                        strat=strat,
-                        opponent=opponent,
-                        players=player_count,
-                        seed=seed,
-                        hands=hands,
+            for initial_stack in initial_stacks:
+                if initial_stack <= 0:
+                    raise ValueError("--initial-stacks values must be positive")
+                for seed in seeds:
+                    cases.append(
+                        BenchmarkCase(
+                            strat=strat,
+                            opponent=opponent,
+                            players=player_count,
+                            seed=seed,
+                            hands=hands,
+                            initial_stack=initial_stack,
+                        )
                     )
-                )
     return tuple(cases)
 
 
 def aggregate_results(cases, results):
     grouped = {}
     for case, result in zip(cases, results, strict=True):
-        key = (result.strat, result.opponent, result.players)
+        key = (result.strat, result.opponent, result.players, result.initial_stack)
         grouped.setdefault(key, []).append((case, result))
 
     rows = []
-    for (strat, opponent, players), group in grouped.items():
+    for (strat, opponent, players, initial_stack), group in grouped.items():
         profiles = []
         for _case, r in group:
             if r.profile is not None:
@@ -257,17 +280,25 @@ def aggregate_results(cases, results):
                 pushes=sum(result.pushes for _case, result in group),
                 net_chips=sum(result.net_chips for _case, result in group),
                 elapsed=sum(result.elapsed for _case, result in group),
+                initial_stack=initial_stack,
                 profile=aggregate_profiles(profiles) if profiles else None,
+                route_diagnostics=merge_route_diagnostics(
+                    result.route_diagnostics for _case, result in group
+                ),
             )
         )
     return tuple(rows)
 
 
 def compare_aggregates(candidate_rows, baseline_rows, min_delta_bb_per_100):
-    baseline_by_key = {(row.opponent, row.players): row for row in baseline_rows}
+    baseline_by_key = {
+        (row.opponent, row.players, row.initial_stack): row for row in baseline_rows
+    }
     comparisons = []
     for candidate in candidate_rows:
-        baseline = baseline_by_key.get((candidate.opponent, candidate.players))
+        baseline = baseline_by_key.get(
+            (candidate.opponent, candidate.players, candidate.initial_stack)
+        )
         if baseline is None:
             continue
         delta = candidate.bb_per_100 - baseline.bb_per_100
@@ -279,9 +310,12 @@ def compare_aggregates(candidate_rows, baseline_rows, min_delta_bb_per_100):
                 baseline_bb_per_100=baseline.bb_per_100,
                 delta_bb_per_100=delta,
                 min_delta_bb_per_100=min_delta_bb_per_100,
+                initial_stack=candidate.initial_stack,
             )
         )
     return tuple(comparisons)
+
+
 
 
 def _resolve_workers(workers: int) -> int:
@@ -310,21 +344,37 @@ def _h2h_platform(case: BenchmarkCase) -> str:
     )
 
 
+def _case_db_paths(cases, temp_dir, label):
+    """One fresh, uniquely-named opponent-profile DB path per case --
+    never reused across cases, workers, or candidate/baseline runs, so
+    every logical (strategy, opponent, players, stack, seed) run starts
+    with zero inherited profile history and only ever accumulates state
+    within its own hands."""
+    return [
+        os.path.join(temp_dir, f"{label}_{index:06d}.sqlite")
+        for index in range(len(cases))
+    ]
+
+
 def _run_case_worker(args):
     """Run a single benchmark case in a worker process.
 
     ``args`` is a tuple ``(case, runner, track_opponents, profile,
-    worker_db_path, h2h, telemetry, telemetry_run_id)``. The worker uses
-    ``worker_db_path`` as the opponent DB (a per-worker private file) so
-    that parallel writes do not collide; the orchestrator merges those
-    files afterwards.
+    case_db_path, h2h, telemetry, telemetry_run_id)``. ``case_db_path`` is
+    a private, per-case opponent DB scoped to exactly this one logical
+    (strategy, opponent, players, stack, seed) run -- fresh and empty at
+    the start of the call, so no case's profile history can leak into any
+    other case, worker, or candidate/baseline run. The orchestrator merges
+    every finished case's snapshot into the requested aggregate DB
+    (``--db-path``) afterwards; that aggregate is write-only from a
+    case's perspective and is never read back as profile input.
     """
     (
         case,
         runner,
         track_opponents,
         profile,
-        worker_db_path,
+        case_db_path,
         h2h,
         telemetry,
         telemetry_run_id,
@@ -342,9 +392,10 @@ def _run_case_worker(args):
         opponent_name=case.opponent,
         players=case.players,
         track_opponents=track_opponents,
-        opponent_db=worker_db_path,
+        opponent_db=case_db_path,
         profiler=profiler,
         telemetry=telemetry,
+        initial_stack=case.initial_stack,
         **runner_kwargs,
     )
     if profile and profiler is not None:
@@ -359,20 +410,20 @@ def _run_cases_parallel(
     runner,
     track_opponents,
     profile,
-    worker_db_paths,
+    case_db_paths,
     h2h,
     telemetry,
     telemetry_run_id,
+    workers: int,
     label: str,
 ) -> list[SelfPlayResult]:
-    actual_workers = len(worker_db_paths) if worker_db_paths else _resolve_workers(0)
     results: list[SelfPlayResult | None] = [None] * len(cases)
     total = len(cases)
     completed = 0
-    with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as pool:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {}
         for i, case in enumerate(cases):
-            worker_db = worker_db_paths[i % actual_workers] if worker_db_paths else None
+            case_db = case_db_paths[i] if case_db_paths else None
             future = pool.submit(
                 _run_case_worker,
                 (
@@ -380,7 +431,7 @@ def _run_cases_parallel(
                     runner,
                     track_opponents,
                     profile,
-                    worker_db,
+                    case_db,
                     h2h,
                     telemetry,
                     telemetry_run_id,
@@ -406,7 +457,7 @@ def _run_cases_sequential(
     runner,
     track_opponents,
     profile,
-    opponent_db,
+    case_db_paths,
     h2h,
     telemetry,
     telemetry_run_id,
@@ -418,13 +469,13 @@ def _run_cases_sequential(
                 runner,
                 track_opponents,
                 profile,
-                opponent_db,
+                case_db_paths[i] if case_db_paths else None,
                 h2h,
                 telemetry,
                 telemetry_run_id,
             )
         )
-        for case in cases
+        for i, case in enumerate(cases)
     ]
 
 
@@ -435,6 +486,7 @@ def run_benchmark(
     players=DEFAULT_PLAYERS,
     seeds=DEFAULT_SEEDS,
     hands=DEFAULT_HANDS,
+    initial_stacks=(INITIAL_STACK,),
     track_opponents=False,
     opponent_db=None,
     fail_under_bb100=None,
@@ -457,20 +509,34 @@ def run_benchmark(
     # default behavior so benchmark and selfplay stay symmetric.
     if telemetry and opponent_db is None:
         opponent_db = opponent_store.default_telemetry_db_path()
-    cases = build_cases(strat, opponents, players, seeds, hands)
+    cases = build_cases(strat, opponents, players, seeds, hands, initial_stacks)
     started = time.perf_counter()
     actual_workers = _resolve_workers(workers)
 
-    worker_db_paths: list[str] | None = None
+    # Every logical (strategy, opponent, players, stack, seed) run gets a
+    # fresh, isolated opponent-profile DB whenever profile tracking or
+    # telemetry is requested -- never shared across cases, workers, or
+    # candidate/baseline runs. A strategy that reads opponent-profile
+    # history therefore always starts that run cold, exactly once,
+    # instead of silently inheriting another case's (or the other
+    # strategy's) accumulated hands. The caller-requested `opponent_db`
+    # (`--db-path`) is write-only: it only ever receives a post-hoc,
+    # transactional merge of every finished case's snapshot and is never
+    # itself opened as profile input mid-run.
+    needs_case_db = (
+        track_opponents
+        or opponent_db is not None
+        or telemetry
+        or telemetry_run_id is not None
+    )
     temp_dir_ctx: tempfile.TemporaryDirectory | None = None
-    if opponent_db is not None and actual_workers > 1:
+    candidate_db_paths: list[str] | None = None
+    baseline_db_paths: list[str] | None = None
+    if needs_case_db:
         temp_dir_ctx = tempfile.TemporaryDirectory()
-        worker_db_paths = [
-            os.path.join(temp_dir_ctx.name, f"worker_{i}.sqlite")
-            for i in range(actual_workers)
-        ]
-        for path in worker_db_paths:
-            opponent_store.connect(path)
+        candidate_db_paths = _case_db_paths(cases, temp_dir_ctx.name, "candidate")
+        if baseline_strat is not None:
+            baseline_db_paths = _case_db_paths(cases, temp_dir_ctx.name, "baseline")
 
     if actual_workers <= 1:
         results = _run_cases_sequential(
@@ -478,7 +544,7 @@ def run_benchmark(
             runner=runner,
             track_opponents=track_opponents,
             profile=profile,
-            opponent_db=opponent_db,
+            case_db_paths=candidate_db_paths,
             h2h=h2h,
             telemetry=telemetry,
             telemetry_run_id=telemetry_run_id,
@@ -489,10 +555,11 @@ def run_benchmark(
             runner=runner,
             track_opponents=track_opponents,
             profile=profile,
-            worker_db_paths=worker_db_paths,
+            case_db_paths=candidate_db_paths,
             h2h=h2h,
             telemetry=telemetry,
             telemetry_run_id=telemetry_run_id,
+            workers=actual_workers,
             label="candidate",
         )
 
@@ -505,7 +572,7 @@ def run_benchmark(
                 runner=runner,
                 track_opponents=track_opponents,
                 profile=profile,
-                opponent_db=opponent_db,
+                case_db_paths=baseline_db_paths,
                 h2h=h2h,
                 telemetry=telemetry,
                 telemetry_run_id=telemetry_run_id,
@@ -516,16 +583,18 @@ def run_benchmark(
                 runner=runner,
                 track_opponents=track_opponents,
                 profile=profile,
-                worker_db_paths=worker_db_paths,
+                case_db_paths=baseline_db_paths,
                 h2h=h2h,
                 telemetry=telemetry,
                 telemetry_run_id=telemetry_run_id,
+                workers=actual_workers,
                 label="baseline",
             )
 
-    if worker_db_paths is not None and temp_dir_ctx is not None:
-        for path in worker_db_paths:
-            opponent_store.merge_worker_db(opponent_db, path)
+    if temp_dir_ctx is not None:
+        if opponent_db is not None:
+            for path in list(candidate_db_paths or ()) + list(baseline_db_paths or ()):
+                opponent_store.merge_worker_db(opponent_db, path)
         temp_dir_ctx.cleanup()
 
     elapsed = time.perf_counter() - started
@@ -575,22 +644,24 @@ def report_opponent_width(report):
 
 def format_report(report):
     opponent_width = report_opponent_width(report)
+    header = (
+        f"{'opponent':<{opponent_width}} players stack seeds hands      net    "
+        "bb/100 chips/hand  W/L/P"
+    )
     lines = [
         f"benchmark   : {report.strat}",
         f"cases       : {len(report.cases)}",
         f"elapsed     : {report.elapsed:.1f}s",
         "",
-        (
-            f"{'opponent':<{opponent_width}} players seeds hands      net    "
-            "bb/100 chips/hand  W/L/P"
-        ),
-        "-" * (54 + opponent_width),
+        header,
+        "-" * len(header),
     ]
     for row in report.aggregates:
         seeds = len(row.seeds)
         lines.append(
             f"{row.opponent:<{opponent_width}} "
             f"{row.players:<7} "
+            f"{row.initial_stack:<5} "
             f"{seeds:<5} "
             f"{row.hands:<8} "
             f"{_signed_int(row.net_chips):>8} "
@@ -602,16 +673,29 @@ def format_report(report):
             profile_text = format_profile(row.profile)
             for line in profile_text.split("\n"):
                 lines.append(f"  {line}")
+        diagnostics = row.route_diagnostics
+        lines.append(
+            "  route diag v"
+            f"{diagnostics.schema_version}: "
+            f"profile state {diagnostics.profile_state_mode}, alt "
+            f"{diagnostics.alternate_hands}/"
+            f"{diagnostics.observed_hands} hands "
+            f"({diagnostics.activation_fraction:.1%}), decisions "
+            f"{diagnostics.alternate_decisions} alt/"
+            f"{diagnostics.fallback_decisions} fallback/"
+            f"{diagnostics.unknown_decisions} unknown"
+        )
     if report.baseline_strat is not None:
+        baseline_header = (
+            f"{'opponent':<{opponent_width}} players stack candidate "
+            "baseline delta gate"
+        )
         lines.extend(
             [
                 "",
                 f"baseline    : {report.baseline_strat}",
-                (
-                    f"{'opponent':<{opponent_width}} players candidate "
-                    "baseline delta gate"
-                ),
-                "-" * (48 + opponent_width),
+                baseline_header,
+                "-" * len(baseline_header),
             ]
         )
         for row in report.comparisons:
@@ -619,6 +703,7 @@ def format_report(report):
             lines.append(
                 f"{row.opponent:<{opponent_width}} "
                 f"{row.players:<7} "
+                f"{row.initial_stack:<5} "
                 f"{_signed_float(row.candidate_bb_per_100):>9} "
                 f"{_signed_float(row.baseline_bb_per_100):>8} "
                 f"{_signed_float(row.delta_bb_per_100):>6} "
@@ -722,6 +807,16 @@ def build_parser():
         help=f"Hands per case. Defaults to {DEFAULT_HANDS}.",
     )
     parser.add_argument(
+        "--initial-stacks",
+        dest="initial_stacks",
+        default=None,
+        help=(
+            "Comma-separated starting stack depths in chips (e.g. "
+            f"500,1000,2000). Overrides config. Defaults to a single "
+            f"{INITIAL_STACK}-chip stack."
+        ),
+    )
+    parser.add_argument(
         "--track-opponents",
         action="store_true",
         help="Maintain opponent profiles during self-play.",
@@ -813,6 +908,7 @@ def main(argv=None):
             players=options["players"],
             seeds=options["seeds"],
             hands=options["hands"],
+            initial_stacks=options["initial_stacks"],
             track_opponents=options["track_opponents"],
             opponent_db=args.opponent_db,
             fail_under_bb100=options["fail_under_bb100"],

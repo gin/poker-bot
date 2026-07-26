@@ -29,6 +29,11 @@ class OpponentProfile:
     hands_seen: int = 0
     vpip: int = 0
     pfr: int = 0
+    preflop_hands_seen: int = 0
+    profile_stats_schema_version: int = 2
+    profile_stats_provenance: str = "canonical"
+    legacy_vpip_action_count: int = 0
+    legacy_pfr_raise_count: int = 0
     calls: int = 0
     bets: int = 0
     raises: int = 0
@@ -38,6 +43,9 @@ class OpponentProfile:
     showdowns: int = 0
     weak_aggressive_showdowns: int = 0
     recent_actions: deque = field(default_factory=lambda: deque(maxlen=20))
+    _preflop_hand_flags: dict[str, int] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     @property
     def aggression_frequency(self) -> float:
@@ -56,12 +64,27 @@ class OpponentProfile:
         return self.fold_to_bet / self.opportunities_to_fold_to_bet
 
     @property
+    def has_canonical_preflop_stats(self) -> bool:
+        return (
+            self.profile_stats_schema_version >= 2
+            and self.profile_stats_provenance == "canonical"
+        )
+
+    @property
     def vpip_frequency(self) -> float:
-        return 0.0 if self.hands_seen == 0 else self.vpip / self.hands_seen
+        return (
+            0.0
+            if not self.has_canonical_preflop_stats or self.preflop_hands_seen == 0
+            else self.vpip / self.preflop_hands_seen
+        )
 
     @property
     def pfr_frequency(self) -> float:
-        return 0.0 if self.hands_seen == 0 else self.pfr / self.hands_seen
+        return (
+            0.0
+            if not self.has_canonical_preflop_stats or self.preflop_hands_seen == 0
+            else self.pfr / self.preflop_hands_seen
+        )
 
     @property
     def weak_aggressive_showdown_frequency(self) -> float:
@@ -94,6 +117,11 @@ class OpponentProfile:
             "hands_seen": self.hands_seen,
             "vpip": self.vpip,
             "pfr": self.pfr,
+            "preflop_hands_seen": self.preflop_hands_seen,
+            "profile_stats_schema_version": self.profile_stats_schema_version,
+            "profile_stats_provenance": self.profile_stats_provenance,
+            "legacy_vpip_action_count": self.legacy_vpip_action_count,
+            "legacy_pfr_raise_count": self.legacy_pfr_raise_count,
             "calls": self.calls,
             "bets": self.bets,
             "raises": self.raises,
@@ -162,6 +190,23 @@ def enrich_table(table: dict) -> dict:
     return table
 
 
+def debug_status() -> str:
+    """One-line diagnostic: how opponents are keyed and how much we've seen.
+
+    The profile keys directly answer whether the sandbox exposes real
+    agent ids in seats ("cmq..." keys) or only seat numbers ("seat-N" keys,
+    which make agent-id prior lookups impossible and handle matching the
+    only option).
+    """
+    keys = list(_PROFILES)[:3]
+    seen = sum(p.hands_seen for p in _PROFILES.values())
+    with_prior = sum(1 for p in _PROFILES.values() if p.api_stats)
+    return (
+        f"track:profiles={len(_PROFILES)} prior={with_prior} "
+        f"hands={seen} keys={','.join(keys) or '-'}"
+    )
+
+
 def _profile_for(agent_id: str, name: str | None = None) -> OpponentProfile:
     if agent_id not in _PROFILES:
         profile = OpponentProfile(agent_id=agent_id, name=name)
@@ -182,11 +227,17 @@ def _profile_for(agent_id: str, name: str | None = None) -> OpponentProfile:
 
 
 def _mark_hand_seen(table: dict, profile: OpponentProfile) -> None:
-    key = f"{profile.agent_id}:{_hand_key(table)}"
+    hand_id = _hand_key(table)
+    key = f"{profile.agent_id}:{hand_id}"
     if key in _SEEN_HAND_KEYS:
         return
     _SEEN_HAND_KEYS.add(key)
     profile.hands_seen += 1
+    if not hand_id or hand_id.startswith("unknown-table"):
+        profile.profile_stats_provenance = "legacy_untrusted"
+        return
+    profile._preflop_hand_flags.setdefault(hand_id, 0)
+    profile.preflop_hands_seen += 1
 
 
 def _record_event(
@@ -226,30 +277,86 @@ def _record_event(
     if not facing_bet:
         facing_bet = action == "fold" and int(table.get("currentBet") or 0) > 0
     voluntary = street == "Preflop" and action in {"call", "bet", "raise", "all-in"}
-    _record_action(
-        profile, action, street=street, facing_bet=facing_bet, voluntary=voluntary
+    is_preflop_raise = action in {"bet", "raise"} or (
+        action == "all-in" and _all_in_raises_preflop(table, event, summary, seat)
     )
+    _record_action(
+        profile,
+        action,
+        hand_id=_hand_key(table),
+        street=street,
+        facing_bet=facing_bet,
+        voluntary=voluntary,
+        is_preflop_raise=is_preflop_raise,
+    )
+
+
+def _all_in_raises_preflop(
+    table: dict, event: dict, summary: dict, seat: dict | None
+) -> bool:
+    """Return whether an all-in increased the pre-action table bet.
+
+    The sandbox marks both a covering all-in call and an all-in raise as
+    ``all-in``.  Its target commitment must therefore be compared with the
+    table's pre-action current bet.  Missing or non-numeric data is not a
+    raise: recording a false PFR is worse than omitting an ambiguous one.
+    """
+    all_in_to = _first(
+        summary,
+        event,
+        "allInTo",
+        "allInToAmount",
+        "toAmount",
+        "committedChips",
+    )
+    if all_in_to is None and seat is not None:
+        all_in_to = seat.get("currentBetChips")
+    current_bet = _first(
+        summary, event, "preActionCurrentBet", "currentBetBefore"
+    )
+    if current_bet is None:
+        current_bet = table.get("currentBet")
+    try:
+        return int(all_in_to) > int(current_bet)
+    except (TypeError, ValueError):
+        return False
 
 
 def _record_action(
     profile: OpponentProfile,
     action: str,
     *,
+    hand_id: str | None = None,
     street: str | None = None,
     facing_bet: bool = False,
     voluntary: bool = False,
+    is_preflop_raise: bool = False,
 ) -> None:
     profile.recent_actions.append({"street": street, "action": action})
     if voluntary:
-        profile.vpip += 1
+        profile.legacy_vpip_action_count += 1
+    if street == "Preflop" and is_preflop_raise:
+        profile.legacy_pfr_raise_count += 1
+    if (
+        profile.has_canonical_preflop_stats
+        and hand_id
+        and street == "Preflop"
+        and voluntary
+    ):
+        flags = profile._preflop_hand_flags.get(hand_id, 0)
+        if not flags & 1:
+            profile.vpip += 1
+            flags |= 1
+        if is_preflop_raise and not flags & 2:
+            profile.pfr += 1
+            flags |= 2
+        profile._preflop_hand_flags[hand_id] = flags
     if action == "call":
         profile.calls += 1
     elif action == "bet":
         profile.bets += 1
     elif action in {"raise", "all-in"}:
         profile.raises += 1
-        if street == "Preflop":
-            profile.pfr += 1
     elif action == "fold":
         profile.folds += 1
         if facing_bet:

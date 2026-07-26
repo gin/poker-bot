@@ -101,6 +101,9 @@ def make_preflop_table(
     profiles = {
         "raiser": {
             "hands_seen": 50,
+            "preflop_hands_seen": 50,
+            "profile_stats_schema_version": 2,
+            "profile_stats_provenance": "canonical",
             "vpip": int(round(raiser_vpip * 50)),
             "pfr": int(round(raiser_pfr * 50)),
         }

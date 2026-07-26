@@ -81,3 +81,56 @@ def guard_mode(guard_id: str, *, shadow_default: bool) -> str:
     if _env_matches("POKER_GUARD_ACTIVATE", guard_id):
         return "active"
     return "shadow" if shadow_default else "active"
+
+
+# ── Pipeline failure observability ──────────────────────────────────────────
+#
+# multi_core previously swallowed GuardContext-build / pre-guard / post-guard
+# exceptions silently (bare `except Exception: pass`), so a broken guard or a
+# malformed table could degrade decisions with zero signal. record_guard_error
+# reuses the GuardEvent buffer/drain path so the selfplay observer's existing
+# per-decision drain surfaces these failures for free, without a second
+# telemetry pipeline. It is deliberately NOT a guard fire: guard_id is a
+# reserved sentinel, applied is always False, and shadow is always True, so
+# an error event can never be mistaken for (or replace) a real guard action.
+# It must never itself raise -- a telemetry failure must never break action
+# selection -- and it must never be given hole cards, table state, or other
+# secrets. It records ONLY the failing phase and the exception's CLASS NAME,
+# in a fixed generic sentence, never `str(exc)`: an exception message can
+# embed arbitrary state (a KeyError echoes the missing key, an AssertionError
+# can echo a repr of the value under test, etc.) and so cannot be trusted not
+# to contain hole cards or other secrets.
+
+ERROR_GUARD_ID = "__pipeline_error__"
+
+
+def record_guard_error(phase: str, exc: BaseException) -> None:
+    """Record an observable guard-pipeline failure for the given phase.
+
+    `phase` identifies where the exception was caught: "context" (building
+    GuardContext), "pre", or "post". Only the exception's class name is
+    recorded, inside a fixed generic message -- never the exception's own
+    message text -- so this is always safe to call with a real production
+    exception, regardless of what that exception happened to be carrying.
+    """
+    try:
+        record_event(
+            GuardEvent(
+                guard_id=ERROR_GUARD_ID,
+                phase=phase,
+                precedence=-1,
+                shadow=True,
+                applied=False,
+                original_action="__pending__",
+                original_amount=None,
+                final_action="__error__",
+                final_amount=None,
+                reason=f"unhandled {type(exc).__name__} during {phase} guard phase",
+                street=None,
+                pot=None,
+                call_price=None,
+                available_actions="",
+            )
+        )
+    except Exception:
+        pass

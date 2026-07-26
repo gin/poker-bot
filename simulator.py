@@ -15,7 +15,7 @@ from poker_bot.hand_eval import (  # noqa: E402
     deal_cards,
     evaluate_hand,
 )
-from poker_bot.opponents import OpponentProfile, record_action  # noqa: E402
+from poker_bot.opponents import OpponentProfile, record_action, record_hand_seen  # noqa: E402
 from poker_bot.strategies.loader import load_strategy  # noqa: E402
 
 DEFAULT_STRATEGY = "simple"
@@ -118,11 +118,18 @@ def format_cards(cards):
     return " ".join(cards)
 
 
-def build_allowed_actions(seat, current_bet, min_raise=BIG_BLIND, can_raise=True):
+def build_allowed_actions(
+    seat,
+    current_bet,
+    min_raise=BIG_BLIND,
+    can_raise=True,
+    big_blind=BIG_BLIND,
+    raise_reopened=True,
+):
     call_shortfall = max(0, current_bet - seat["currentBetChips"])
     call_amount = min(call_shortfall, seat["stackChips"])
     max_commit = seat["currentBetChips"] + seat["stackChips"]
-    min_bet = min(BIG_BLIND, seat["stackChips"])
+    min_bet = min(big_blind, seat["stackChips"])
     if seat["stackChips"] == 0:
         available = []
     elif call_shortfall == 0:
@@ -130,9 +137,17 @@ def build_allowed_actions(seat, current_bet, min_raise=BIG_BLIND, can_raise=True
     else:
         available = ["fold", "call"]
         min_raise_to = current_bet + min_raise
-        if can_raise and max_commit >= min_raise_to:
+        if can_raise and raise_reopened and max_commit >= min_raise_to:
             available.append("raise")
-        available.append("all-in")
+        # An all-in that would put in MORE than the current bet functions
+        # as a raise, so it must be withheld exactly when this seat's
+        # raise rights are closed (an earlier short all-in this player
+        # already acted behind, per NLHE reopening rules) -- unrelated to
+        # `can_raise`, which reflects whether anyone at the table could
+        # still respond to a raise at all. An all-in that does not exceed
+        # the current bet is just a short call and is always legal.
+        if raise_reopened or max_commit <= current_bet:
+            available.append("all-in")
 
     min_raise_to = None
     if "raise" in available:
@@ -160,18 +175,38 @@ def build_allowed_actions(seat, current_bet, min_raise=BIG_BLIND, can_raise=True
     }
 
 
-def collect_live_bets(pot, seats):
-    if seats[0]["currentBetChips"] != seats[1]["currentBetChips"]:
-        high = max(seats, key=lambda seat: seat["currentBetChips"])
-        low = min(seats, key=lambda seat: seat["currentBetChips"])
-        uncalled = high["currentBetChips"] - low["currentBetChips"]
-        high["stackChips"] += uncalled
-        high["currentBetChips"] -= uncalled
+def _refund_uncalled_bet(seats):
+    """Return an unmatched wager to its owner before it enters the pot.
 
-    pot += seats[0]["currentBetChips"] + seats[1]["currentBetChips"]
-    seats[0]["currentBetChips"] = 0
-    seats[1]["currentBetChips"] = 0
-    return pot
+    If exactly one seat's ``currentBetChips`` this street strictly exceeds
+    every other seat's, the excess no other seat could match was never
+    genuinely at risk and is refunded immediately -- mirroring live-table
+    rules and preventing a later fold from stranding the excess in a pot
+    layer nobody is eligible to win.
+    """
+    if not seats:
+        return
+    top_bet = max(seat["currentBetChips"] for seat in seats)
+    if top_bet == 0:
+        return
+    top_seats = [seat for seat in seats if seat["currentBetChips"] == top_bet]
+    if len(top_seats) != 1:
+        return
+    second_bet = max(
+        (seat["currentBetChips"] for seat in seats if seat is not top_seats[0]),
+        default=0,
+    )
+    uncalled = top_bet - second_bet
+    if uncalled <= 0:
+        return
+    top_seats[0]["stackChips"] += uncalled
+    top_seats[0]["currentBetChips"] -= uncalled
+
+
+def collect_live_bets(pot, seats):
+    """Heads-up entry point; multiway settlement already generalizes to
+    N=2 seats, so this simply delegates."""
+    return collect_live_bets_multiway(pot, seats)
 
 
 def all_in_betting_is_closed(seats, current_bet):
@@ -246,7 +281,29 @@ def prompt_player_action(allowed):
             )
 
 
-def resolve_action(seat, action, amount, current_bet, min_raise_to=None):
+def resolve_action(
+    seat, action, amount, current_bet, min_raise_to=None, big_blind=BIG_BLIND
+):
+    # Chips are always discrete integers. Strategies occasionally compute a
+    # call/bet/raise amount via float arithmetic (e.g. BIG_BLIND * 2.5, or
+    # pot * a float fraction) without casting back to int. Left uncast,
+    # that float would flow straight into stackChips/currentBetChips below
+    # and permanently contaminate every downstream chip computation for
+    # this seat (pot settlement, tournament stage deltas, report
+    # formatting, ...) with float typing. resolve_action is the single
+    # choke point every action passes through, so normalize any
+    # strategy-supplied amount/target to an integer chip count here, using
+    # the same int() truncation already used elsewhere in the engine (e.g.
+    # the pot-relative sizing helpers strategies themselves call). This
+    # preserves all legality/default logic below unchanged -- it only
+    # fixes the numeric type, not the value, for any amount that already
+    # represented a whole number of chips (the overwhelmingly common
+    # case); a genuinely fractional amount is truncated toward zero, never
+    # rounded up past what the strategy asked for or past a legal bound.
+    if amount is not None:
+        amount = int(amount)
+    if min_raise_to is not None:
+        min_raise_to = int(min_raise_to)
     if action == "fold":
         return current_bet
 
@@ -267,12 +324,12 @@ def resolve_action(seat, action, amount, current_bet, min_raise_to=None):
         target = amount
 
     if target is None:
-        target = current_bet + BIG_BLIND
-    if action == "bet" and target < BIG_BLIND:
-        target = min(BIG_BLIND, seat["currentBetChips"] + seat["stackChips"])
+        target = current_bet + big_blind
+    if action == "bet" and target < big_blind:
+        target = min(big_blind, seat["currentBetChips"] + seat["stackChips"])
     if action == "raise":
         if min_raise_to is None:
-            min_raise_to = current_bet + BIG_BLIND
+            min_raise_to = current_bet + big_blind
         target = max(target, min_raise_to)
 
     if target < seat["currentBetChips"]:
@@ -293,6 +350,8 @@ def build_table(
     street,
     acting_seat,
     button_seat_number=None,
+    small_blind=SMALL_BLIND,
+    big_blind=BIG_BLIND,
 ):
     return {
         "street": street,
@@ -303,6 +362,8 @@ def build_table(
         "actingSeatNumber": acting_seat,
         "selfSeatNumber": acting_seat,
         "buttonSeatNumber": button_seat_number,
+        "smallBlindChips": small_blind,
+        "bigBlindChips": big_blind,
     }
 
 
@@ -438,7 +499,14 @@ def run_betting_round(
                 print(f"  {_c(_YELLOW + _BOLD, 'BOT')}: {act_msg}")
 
         facing_bet = int(allowed.get("callAmount") or 0) > 0
-        voluntary = action in {"call", "bet", "raise", "all-in"}
+        voluntary = street == "Preflop" and action in {"call", "bet", "raise", "all-in"}
+        is_preflop_raise = street == "Preflop" and (
+            action in {"bet", "raise"}
+            or (
+                action == "all-in"
+                and int(allowed.get("allInToAmount") or 0) > current_bet
+            )
+        )
         if opponent_profiles is not None:
             profile = opponent_profiles.setdefault(
                 seat["agentId"], OpponentProfile(agent_id=seat["agentId"])
@@ -446,9 +514,11 @@ def run_betting_round(
             record_action(
                 profile,
                 action,
+                hand_id=hand_id,
                 street=street,
                 facing_bet=facing_bet,
                 voluntary=voluntary,
+                is_preflop_raise=is_preflop_raise,
             )
 
         if action_observer is not None:
@@ -530,7 +600,17 @@ def active_seats(seats):
 
 
 def collect_live_bets_multiway(pot, seats):
+    """Sweep this street's bets into the pot.
+
+    Refunds any unmatched excess first (see :func:`_refund_uncalled_bet`),
+    then accumulates each seat's cumulative ``committedChips`` for the
+    whole hand -- :func:`build_pots` needs this running total to build
+    correct main/side pots at showdown, independent of which street the
+    chips were committed on.
+    """
+    _refund_uncalled_bet(seats)
     for seat in seats:
+        seat["committedChips"] = seat.get("committedChips", 0) + seat["currentBetChips"]
         pot += seat["currentBetChips"]
         seat["currentBetChips"] = 0
     return pot
@@ -582,13 +662,22 @@ def run_betting_round_multiway(
     action_observer=None,
     hand_id=None,
     verbose=False,
+    small_blind=SMALL_BLIND,
+    big_blind=BIG_BLIND,
 ):
     action_providers = action_providers or {}
     active_idx = first_active_from(seats, first_actor_idx)
     if active_idx is None:
         return None, collect_live_bets_multiway(pot, seats)
 
-    min_raise = BIG_BLIND
+    min_raise = big_blind
+    # Agent ids for whom raising is currently closed: they already acted
+    # (called/raised/bet) at a prior betting level, and the most recent
+    # increase was a short all-in (below min_raise) rather than a full
+    # raise. NLHE: only a full raise reopens raising for players who have
+    # already acted; a short all-in only obliges them to call the extra
+    # amount or fold.
+    raise_closed_for = set()
     last_actions = {
         seat["agentId"]: None for seat in seats if not seat.get("folded", False)
     }
@@ -608,11 +697,14 @@ def run_betting_round_multiway(
             continue
 
         can_raise = len(active_seats(seats)) > 1
+        raise_reopened = seat["agentId"] not in raise_closed_for
         allowed = build_allowed_actions(
             seat,
             current_bet,
             min_raise,
             can_raise=can_raise,
+            big_blind=big_blind,
+            raise_reopened=raise_reopened,
         )
         table = build_table(
             seats,
@@ -622,6 +714,8 @@ def run_betting_round_multiway(
             street,
             seat["seatNumber"],
             button_seat_number=button_seat_number,
+            small_blind=small_blind,
+            big_blind=big_blind,
         )
         table["allowedActions"] = allowed
         if opponent_profiles is not None:
@@ -662,7 +756,14 @@ def run_betting_round_multiway(
             )
 
         facing_bet = int(allowed.get("callAmount") or allowed.get("callChips") or 0) > 0
-        voluntary = action in {"call", "bet", "raise", "all-in"}
+        voluntary = street == "Preflop" and action in {"call", "bet", "raise", "all-in"}
+        is_preflop_raise = street == "Preflop" and (
+            action in {"bet", "raise"}
+            or (
+                action == "all-in"
+                and int(allowed.get("allInToAmount") or 0) > current_bet
+            )
+        )
         if opponent_profiles is not None:
             profile = opponent_profiles.setdefault(
                 seat["agentId"], OpponentProfile(agent_id=seat["agentId"])
@@ -670,9 +771,11 @@ def run_betting_round_multiway(
             record_action(
                 profile,
                 action,
+                hand_id=hand_id,
                 street=street,
                 facing_bet=facing_bet,
                 voluntary=voluntary,
+                is_preflop_raise=is_preflop_raise,
             )
         if action_observer is not None:
             action_observer(
@@ -706,7 +809,7 @@ def run_betting_round_multiway(
         else:
             previous_current_bet = current_bet
             current_bet = resolve_action(
-                seat, action, amount, current_bet, allowed["minRaiseTo"]
+                seat, action, amount, current_bet, allowed["minRaiseTo"], big_blind
             )
             last_actions[seat["agentId"]] = action
             if (
@@ -717,6 +820,18 @@ def run_betting_round_multiway(
                 raise_inc = current_bet - previous_current_bet
                 if raise_inc >= min_raise:
                     min_raise = raise_inc
+                    # A full raise reopens raising for every other player,
+                    # even one a prior short all-in had closed it for.
+                    raise_closed_for.clear()
+                else:
+                    # Short all-in: close raising only for players who had
+                    # already acted at the previous level (captured from
+                    # last_actions BEFORE the reset below clears it).
+                    # Players who have not yet acted this round keep their
+                    # normal raise rights when their turn comes.
+                    for other_id, other_action in last_actions.items():
+                        if other_id != seat["agentId"] and other_action is not None:
+                            raise_closed_for.add(other_id)
                 for other in live_seats(seats):
                     if other["agentId"] != seat["agentId"] and other["stackChips"] > 0:
                         last_actions[other["agentId"]] = None
@@ -733,18 +848,103 @@ def run_betting_round_multiway(
     return None, pot
 
 
-def showdown(seats, board):
-    best_score = None
-    ties = []
-    for seat in live_seats(seats):
-        hand_value = evaluate_hand(seat["holeCards"] + board)
-        if best_score is None or hand_value > best_score:
-            best_score = hand_value
-            ties = [seat]
-        elif hand_value == best_score:
-            ties.append(seat)
+def _seat_order_from_button(seats, button_seat_number):
+    """Order seats starting immediately after the button.
 
-    return ties, best_score
+    Used only to make odd-chip distribution deterministic: when a pot
+    layer is split among tied hands, the leftover chip(s) go to the tied
+    seat(s) closest to acting first next hand (i.e. immediately left of
+    the button), matching common live-table convention.
+    """
+    if not seats:
+        return []
+    if button_seat_number is None:
+        return list(seats)
+    start = 0
+    for index, seat in enumerate(seats):
+        if seat["seatNumber"] == button_seat_number:
+            start = (index + 1) % len(seats)
+            break
+    return seats[start:] + seats[:start]
+
+
+def build_pots(seats):
+    """Decompose per-seat cumulative contributions into main + side pots.
+
+    Each seat must expose ``committedChips`` (its total chips put into the
+    pot this hand, across every street, including blinds and anything
+    contributed before folding) and ``folded``. Returns a tuple of
+    ``(amount, eligible_agent_ids)`` layers ordered from the main pot
+    outward. Chip-conserving: ``sum(amount for amount, _ in pots) ==
+    sum(seat["committedChips"] for seat in seats)``.
+
+    A layer contributed to by exactly one seat is returned to that seat
+    whole -- this is defence in depth around :func:`_refund_uncalled_bet`,
+    which already refunds a street's unmatched excess immediately, so this
+    case should not arise from a legally played hand.
+    """
+    contributions = {seat["agentId"]: seat.get("committedChips", 0) for seat in seats}
+    folded = {seat["agentId"] for seat in seats if seat.get("folded", False)}
+    levels = sorted({amount for amount in contributions.values() if amount > 0})
+    pots = []
+    previous_level = 0
+    for level in levels:
+        layer = level - previous_level
+        contributors = [
+            agent_id for agent_id, amount in contributions.items() if amount >= level
+        ]
+        layer_amount = layer * len(contributors)
+        if layer_amount > 0:
+            eligible = tuple(
+                agent_id for agent_id in contributors if agent_id not in folded
+            )
+            pots.append((layer_amount, eligible))
+        previous_level = level
+    return tuple(pots)
+
+
+def settle_pots(seats, board, button_seat_number=None):
+    """Award every pot layer to its best eligible hand(s).
+
+    Splits a tied layer evenly and hands any odd chip(s) to the tied
+    seat(s) ordered by :func:`_seat_order_from_button` (documented
+    odd-chip convention: closest to acting first next hand, i.e.
+    immediately left of the button).
+
+    Returns ``{agentId: chips_won}``; callers apply the result to
+    ``stackChips`` themselves. Every legally played hand has at least one
+    live (non-folded) seat, so every pot layer has an eligible winner --
+    an empty eligible set indicates a bookkeeping bug upstream and is
+    raised rather than silently dropping chips.
+    """
+    ordered_seats = _seat_order_from_button(seats, button_seat_number)
+    by_agent = {seat["agentId"]: seat for seat in seats}
+    winnings = {seat["agentId"]: 0 for seat in seats}
+    for amount, eligible_ids in build_pots(seats):
+        if not eligible_ids:
+            raise ValueError(
+                "pot layer has no eligible (non-folded) contributor; this "
+                "indicates a pot-accounting bug, not a legal hand"
+            )
+        if len(eligible_ids) == 1:
+            winnings[eligible_ids[0]] += amount
+            continue
+        eligible_seats = [by_agent[agent_id] for agent_id in eligible_ids]
+        best_score = None
+        ties = []
+        for seat in eligible_seats:
+            score = evaluate_hand(seat["holeCards"] + board)
+            if best_score is None or score > best_score:
+                best_score = score
+                ties = [seat]
+            elif score == best_score:
+                ties.append(seat)
+        tie_ids = {seat["agentId"] for seat in ties}
+        ordered_ties = [seat for seat in ordered_seats if seat["agentId"] in tie_ids]
+        share, remainder = divmod(amount, len(ordered_ties))
+        for index, seat in enumerate(ordered_ties):
+            winnings[seat["agentId"]] += share + (1 if index < remainder else 0)
+    return winnings
 
 
 def post_blind(stack, blind):
@@ -799,7 +999,7 @@ def play_hand(
             profile = opponent_profiles.setdefault(
                 seat["agentId"], OpponentProfile(agent_id=seat["agentId"])
             )
-            profile.hands_seen += 1
+            record_hand_seen(profile, hand_id)
 
     fold_winner, pot = run_betting_round(
         [player, bot],
@@ -842,7 +1042,6 @@ def play_hand(
 
     if action_observer is not None:
         action_observer(action="showdown")
-    ties, best_score = showdown([player, bot], board)
     if verbose:
         print(f"\n  {_bold('⚖ SHOWDOWN')}")
         print(f"  {_c(_DIM, '─────')}")
@@ -850,24 +1049,23 @@ def play_hand(
         print(f"  {_c(_YELLOW + _BOLD, 'Bot')}: {colour_hand(bot['holeCards'])}")
         print(f"  Board: {colour_hand(board)}")
         print(f"  Pot: {format_money(pot)}")
-    if len(ties) > 1:
+    button_seat_number = (
+        player["seatNumber"] if player_is_small_blind else bot["seatNumber"]
+    )
+    winnings = settle_pots([player, bot], board, button_seat_number=button_seat_number)
+    player_won = winnings.get(PLAYER_AGENT_ID, 0)
+    bot_won = winnings.get(BOT_AGENT_ID, 0)
+    if player_won > 0 and bot_won > 0:
         if verbose:
             print(f"  {_c(_CYAN, 'Split pot')} — hand is a tie.")
-        split = pot // len(ties)
-        player_stack = player["stackChips"] + split
-        bot_stack = bot["stackChips"] + split
+    elif player_won > 0:
+        if verbose:
+            print(f"  {_c(_GREEN + _BOLD, '✓ You win!')}")
     else:
-        winner = ties[0]
-        if winner["agentId"] == PLAYER_AGENT_ID:
-            if verbose:
-                print(f"  {_c(_GREEN + _BOLD, '✓ You win!')}")
-            player_stack = player["stackChips"] + pot
-            bot_stack = bot["stackChips"]
-        else:
-            if verbose:
-                print(f"  {_c(_RED + _BOLD, '✗ Bot wins.')}")
-            player_stack = player["stackChips"]
-            bot_stack = bot["stackChips"] + pot
+        if verbose:
+            print(f"  {_c(_RED + _BOLD, '✗ Bot wins.')}")
+    player_stack = player["stackChips"] + player_won
+    bot_stack = bot["stackChips"] + bot_won
     return player_stack, bot_stack
 
 
@@ -880,29 +1078,46 @@ def play_hand_multiway(
     action_observer=None,
     hand_id=None,
     verbose=False,
+    agent_ids=None,
+    small_blind=SMALL_BLIND,
+    big_blind=BIG_BLIND,
 ):
     if len(stacks) < 2 or len(stacks) > 6:
         raise ValueError("play_hand_multiway supports 2 to 6 players")
     if len(strategies) != len(stacks):
         raise ValueError("strategies must match stacks")
+    if agent_ids is None:
+        agent_ids = [
+            PLAYER_AGENT_ID if index == 0 else f"bot-agent-{index}"
+            for index in range(len(stacks))
+        ]
+    elif len(agent_ids) != len(stacks):
+        raise ValueError("agent_ids must match stacks")
 
     deck = build_deck(rng)
     board = []
     player_count = len(stacks)
-    small_blind_idx = (button_index + 1) % player_count
-    big_blind_idx = (button_index + 2) % player_count
+    if player_count == 2:
+        # Heads-up: the button posts the small blind and acts first
+        # preflop (last postflop). This is the opposite of the 3+ player
+        # indexing below, where the button itself never posts a blind.
+        small_blind_idx = button_index
+        big_blind_idx = (button_index + 1) % player_count
+    else:
+        small_blind_idx = (button_index + 1) % player_count
+        big_blind_idx = (button_index + 2) % player_count
 
     seats = []
     for index, stack in enumerate(stacks):
         blind = 0
         if index == small_blind_idx:
-            blind = SMALL_BLIND
+            blind = small_blind
         elif index == big_blind_idx:
-            blind = BIG_BLIND
+            blind = big_blind
         remaining, current_bet = post_blind(stack, blind)
         seats.append(
             {
-                "agentId": PLAYER_AGENT_ID if index == 0 else f"bot-agent-{index}",
+                "agentId": agent_ids[index],
                 "seatNumber": index + 1,
                 "holeCards": deal_cards(deck),
                 "stackChips": remaining,
@@ -916,7 +1131,7 @@ def play_hand_multiway(
             profile = opponent_profiles.setdefault(
                 seat["agentId"], OpponentProfile(agent_id=seat["agentId"])
             )
-            profile.hands_seen += 1
+            record_hand_seen(profile, hand_id)
 
     action_providers = {
         seat["agentId"]: strategy
@@ -940,6 +1155,8 @@ def play_hand_multiway(
         action_observer=action_observer,
         hand_id=hand_id,
         verbose=verbose,
+        small_blind=small_blind,
+        big_blind=big_blind,
     )
     if fold_winner:
         for seat in seats:
@@ -963,6 +1180,8 @@ def play_hand_multiway(
             action_observer=action_observer,
             hand_id=hand_id,
             verbose=verbose,
+            small_blind=small_blind,
+            big_blind=big_blind,
         )
         if fold_winner:
             for seat in seats:
@@ -973,12 +1192,9 @@ def play_hand_multiway(
 
     if action_observer is not None:
         action_observer(action="showdown")
-    ties, _best_score = showdown(seats, board)
-    if ties:
-        split = pot // len(ties)
-        remainder = pot % len(ties)
-        for index, seat in enumerate(ties):
-            seat["stackChips"] += split + (1 if index < remainder else 0)
+    winnings = settle_pots(seats, board, button_seat_number=button_seat_number)
+    for seat in seats:
+        seat["stackChips"] += winnings.get(seat["agentId"], 0)
     return [seat["stackChips"] for seat in seats]
 
 

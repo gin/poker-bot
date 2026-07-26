@@ -6,6 +6,7 @@ from poker_bot.strategies.adaptive import (
     BIG_BLIND,
     board_texture,
     capped,
+    card_values,
     has_top_pair_or_better,
     made_hand_rank,
     pot_odds,
@@ -304,6 +305,95 @@ def bully_context(table, my_seat):
     }
 
 
+def _hole_participates(hole_cards, board_cards) -> bool:
+    """Hero's rank uses a hole card: pocket pair or a hole rank pairing the
+    board. Board-owned ranks (e.g. AJ reading 'pair' from a paired board)
+    are shared strength, not bluff-catchers."""
+    values = card_values(hole_cards)
+    if len(values) == 2 and values[0] == values[1]:
+        return True
+    board_values = set(card_values(board_cards))
+    return any(v in board_values for v in values)
+
+def _fragile_rank_two_on_paired_board(
+    hole_cards, board_cards, made_rank, top_pair
+) -> bool:
+    """Return whether rank-two value is only a vulnerable paired-board hand."""
+    return (
+        made_rank == 2
+        and len(set(card_values(board_cards))) < len(board_cards)
+        and not top_pair
+    )
+
+
+
+
+def _raiser_checked_this_street(table) -> bool:
+    """Trap line: the current aggressor checked earlier THIS street before
+    raising (check-raise). Reads simulator actionHistory (round-scoped) and
+    arena recentEvents; missing data -> False (no trap read)."""
+    current_bet = int(table.get("currentBet") or 0)
+    if current_bet <= 0:
+        return False
+    street = table.get("street")
+    raiser_seats = {
+        seat.get("seatNumber")
+        for seat in table.get("seats", [])
+        if int(seat.get("currentBetChips") or 0) == current_bet
+    }
+    raiser_ids = {
+        seat.get("agentId")
+        for seat in table.get("seats", [])
+        if int(seat.get("currentBetChips") or 0) == current_bet
+    }
+    events = list(table.get("actionHistory") or table.get("action_history") or [])
+    for raw in table.get("recentEvents") or []:
+        summary = raw.get("summary") if isinstance(raw.get("summary"), dict) else raw
+        events.append(
+            {
+                "agentId": summary.get("agentId"),
+                "seatNumber": summary.get("seatNumber"),
+                "action": summary.get("action") or raw.get("action"),
+                "street": raw.get("street") or summary.get("street"),
+            }
+        )
+    for event in events:
+        if str(event.get("action", "")).lower() != "check":
+            continue
+        if event.get("street") not in (None, street):
+            continue
+        if (
+            event.get("agentId") in raiser_ids
+            or event.get("seatNumber") in raiser_seats
+        ):
+            return True
+    return False
+
+
+def _raiser_is_trap_prone(table) -> bool:
+    """Mined per-opponent read (opponent_playbook.json -> profile playbook):
+    this opponent's wake-up aggression is >= 70% real value by revealed
+    cards. Their raises are never 'bullying'."""
+    current_bet = int(table.get("currentBet") or 0)
+    if current_bet <= 0:
+        return False
+    profiles = table.get("opponentProfiles") or {}
+    for seat in table.get("seats", []):
+        if int(seat.get("currentBetChips") or 0) != current_bet:
+            continue
+        profile = profiles.get(seat.get("agentId"))
+        if profile is None:
+            continue
+        playbook = (
+            profile.get("playbook")
+            if isinstance(profile, dict)
+            else getattr(profile, "playbook", None)
+        )
+        if isinstance(playbook, dict) and playbook.get("trap_prone"):
+            return True
+    return False
+
+
 def anti_bully_action(table, my_seat) -> ActionDecision | None:
     ctx = bully_context(table, my_seat)
     if ctx is None:
@@ -320,8 +410,15 @@ def anti_bully_action(table, my_seat) -> ActionDecision | None:
     score = preflop_score(hole_cards)
     made_rank = made_hand_rank(hole_cards, board_cards) if board_cards else 0
     top_pair = has_top_pair_or_better(hole_cards, board_cards)
-    medium = made_rank == 1 or top_pair
-    strong = made_rank >= 2
+    # Live data (2026-07-10, table cmrfrslyinvmqi1x8qjeqm165): AJ-high read
+    # "medium" from a board pair and bluff-caught a made flush for -2660.
+    # Medium requires PRIVATE strength — a hole card must participate.
+    participates = _hole_participates(hole_cards, board_cards)
+    fragile_rank_two = _fragile_rank_two_on_paired_board(
+        hole_cards, board_cards, made_rank, top_pair
+    )
+    medium = (made_rank == 1 and participates) or top_pair or fragile_rank_two
+    strong = made_rank >= 2 and participates and not fragile_rank_two
     hand = hand_class(hole_cards)
 
     if street == "Preflop":
@@ -340,7 +437,18 @@ def anti_bully_action(table, my_seat) -> ActionDecision | None:
             return "call", price, f"anti-bully preflop defend {hand}"
         return None
 
-    if "raise" in available and strong:
+    stack = int(my_seat.get("stackChips") or 0)
+    medium_price_is_safe = stack <= 0 or price <= stack * 0.5
+
+    # Trap line: the aggressor checked this street then raised. A slow-player
+    # waking up is VALUE, not bullying — anti-bully's postflop aggression
+    # against these lines was the -732/fire turn disaster class. Their big
+    # stacks (built by trapping) are exactly what makes bully_context fire,
+    # so this branch self-selects for trappers. Downgrade: never raise, call
+    # only genuinely strong at a fair price, never A-high bluff-catch.
+    trapped = _raiser_checked_this_street(table) or _raiser_is_trap_prone(table)
+
+    if "raise" in available and strong and not trapped:
         current_bet = int(table.get("currentBet") or 0)
         target = current_bet + max(BIG_BLIND * 3, int(max(pot, BIG_BLIND) * 0.65))
         return (
@@ -349,11 +457,17 @@ def anti_bully_action(table, my_seat) -> ActionDecision | None:
             f"anti-bully value raise rank {made_rank}",
         )
     if "call" in available:
-        if strong and required <= 0.45:
+        if strong and required <= (0.30 if trapped else 0.45):
             return "call", price, f"anti-bully continue rank {made_rank}"
-        if medium and required <= (0.32 if ctx["known_aggressive"] else 0.24):
+        if trapped:
+            return None  # medium/air vs a check-raise: let the base logic fold
+        if (
+            medium
+            and medium_price_is_safe
+            and required <= (0.32 if ctx["known_aggressive"] else 0.24)
+        ):
             return "call", price, "anti-bully bluff catch"
-        if required <= 0.10:
+        if required <= 0.10 and (not medium or medium_price_is_safe):
             return "call", price, "anti-bully tiny price"
     return None
 

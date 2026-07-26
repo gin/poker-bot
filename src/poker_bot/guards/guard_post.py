@@ -19,6 +19,7 @@ from poker_bot.hand_utils import (
     board_dominated_two_pair,
     paired_board_ranks,
     pot_odds,
+    rank_counts,
     profile_value,
     profile_vpip_frequency,
     profile_call_frequency,
@@ -61,7 +62,7 @@ guard_post = guard_rail
     "two_pair_paired_board_overfold",
     "post",
     20,
-    ["hu"],
+    ["heads_up"],
     "Don't fold genuine two pair on paired boards (HU only, excludes fragile)",
 )
 def two_pair_paired_board_overfold(
@@ -117,7 +118,7 @@ def two_pair_paired_board_overfold(
     "board_assisted_two_pair",
     "post",
     25,
-    ["hu", "6max"],
+    ["all"],
     "Board-assisted two pair: suppress raises vs tight opponents",
 )
 def board_assisted_two_pair(
@@ -175,7 +176,7 @@ def board_assisted_two_pair(
     "turn_two_pair_bet_suppression",
     "post",
     30,
-    ["hu"],
+    ["heads_up"],
     "Turn two-pair: check back vs tight/passive (metric-driven)",
 )
 def turn_two_pair_bet_suppression(
@@ -230,7 +231,7 @@ def turn_two_pair_bet_suppression(
     "turn_weak_hand_fold_vs_tight_raise",
     "post",
     30,
-    ["hu"],
+    ["heads_up"],
     "Fold weak hand (non-top-pair / high card) vs tight turn raise",
 )
 def turn_weak_hand_fold_vs_tight_raise(
@@ -300,7 +301,7 @@ def turn_weak_hand_fold_vs_tight_raise(
     "flop_hu_bluffcatch",
     "post",
     35,
-    ["hu"],
+    ["heads_up"],
     "Flop/Turn HU bluff-catch vs bluffy opponents on dry boards",
 )
 def flop_hu_bluffcatch(
@@ -362,7 +363,7 @@ def flop_hu_bluffcatch(
     "river_two_pair_facing_bet_call",
     "post",
     35,
-    ["hu"],
+    ["heads_up"],
     "River two-pair: call instead of fold on paired boards (non-fragile)",
 )
 def river_two_pair_facing_bet_call(
@@ -407,7 +408,7 @@ def river_two_pair_facing_bet_call(
     "rank_two_facing_bet",
     "post",
     22,
-    ["hu", "6max"],
+    ["all"],
     "Two pair facing bet: call instead of raise (flop/turn)",
 )
 def rank_two_facing_bet(
@@ -452,10 +453,76 @@ def rank_two_facing_bet(
 
 
 @guard_rail.register(
+    "board_made_hand_guard",
+    "post",
+    15,
+    # 6max only: the HU gate rejected every version (hu008-style bots shove
+    # their own board-blind kickers, so HU calls win or split; -5 bb/100).
+    # Multiway, a sudden overbet into a tiny pot on a trips board is a
+    # wake-up trap — the environment the live disaster happened in.
+    ["full_table"],
+    "Board-owned rank: never stack off (fold expensive calls/raise-ins)",
+    # ACTIVE (2026-07-09): the one guard promoted out of default-shadow —
+    # after TWO narrowing rounds forced by the counterfactual gate:
+    # 1. pre-guard shape preempted the cores' smarter folds (HU test broke);
+    # 2. post-guard with bet-vetoes + 33% call threshold taxed the pools
+    #    (-5.5 vs s2base 6max, -11.3 vs hu008 HU) — the cores' board-owned
+    #    bets and cheap calls are profitable against real ranges.
+    # Final shape (3rd narrowing) = board TRIPS/QUADS with kicker-only:
+    # unlike board-made 5-card hands (calls often SPLIT — folding forfeits
+    # hero's share) or air on single-paired boards (profitable bluff-catches
+    # vs barreling ranges, per the -4.0/-3.8 gate failures of the wider
+    # version), board trips give hero NO split protection: any trip-holder
+    # or pocket pair dominates. The live loss this prevents: -957 full
+    # stack, AJo reading "trips" on 6-T-6-6 and calling a 440x-pot shove
+    # vs slow-played TT (table cmrdg5l9soa536xly5wnzzge6).
+    # Bets, checks, folds always stand.
+    shadow=False,
+)
+def board_made_hand_guard(
+    ctx: GuardContext, proposed: ActionDecision
+) -> ActionDecision | None:
+    action, _amount, _message = proposed
+    if ctx.street == "Preflop":
+        return None
+    if action not in ("call", "raise", "all-in"):
+        return None  # only stack-off actions; bets/checks/folds stand
+    if not ctx.facing_bet or ctx.call_price <= 0:
+        return None
+    if not ctx.is_board_made_or_kicker:
+        return None
+    # Kicker-only on board TRIPS/QUADS specifically: no split protection.
+    if max(rank_counts(ctx.board_cards).values(), default=0) < 3:
+        return None
+    if "fold" not in ctx.available_actions:
+        return None
+
+    # Read-gated: overbets on trips boards are kicker wars vs habitual
+    # shovers (calls win or SPLIT — folding taxed -4 to -5 on the sim
+    # pools, whose bots shove their own board-blind kickers) but death vs
+    # value-heavy opponents who woke up with a slow-played trip. Fold only
+    # on a confident low-bluff read; no read -> the core's call stands.
+    wasd = ctx.opponent_wasd
+    if wasd is None or wasd > 0.40 or ctx.opponent_is_bluffy:
+        return None
+
+    # Overbets only (>= 0.45 required equity ~ >= 3.5x-pot).
+    required = pot_odds(ctx.call_price, max(ctx.pot, 1))
+    if required >= 0.45:
+        return (
+            "fold",
+            None,
+            f"board-owned trips vs value-heavy: no stack-off at "
+            f"{required:.0%} price",
+        )
+    return None
+
+
+@guard_rail.register(
     "board_dominated_trips",
     "post",
     23,
-    ["hu", "6max"],
+    ["all"],
     "Board-dominated trips: suppress value raise, check back (flop)",
 )
 def board_dominated_trips(
@@ -497,7 +564,7 @@ def board_dominated_trips(
     "river_one_pair_over_call",
     "post",
     28,
-    ["hu", "6max"],
+    ["all"],
     "One pair on river/turn: fold vs >30% pot bet",
 )
 def river_one_pair_over_call(
@@ -532,7 +599,7 @@ def river_one_pair_over_call(
     "vulnerable_flush",
     "post",
     27,
-    ["hu", "6max"],
+    ["all"],
     "Non-nut flush on paired board: suppress raises (reverse implied odds)",
 )
 def vulnerable_flush(
@@ -582,7 +649,7 @@ def vulnerable_flush(
     "paired_board_pot_control",
     "post",
     26,
-    ["hu", "6max"],
+    ["all"],
     "Fragile two pair / non-nut full house on paired board: pot control",
 )
 def paired_board_pot_control(
@@ -650,16 +717,60 @@ def paired_board_pot_control(
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Guard 12: preflop_min_raise_war_cap (Layer 4, all sizes)
-# Cap preflop min-raise wars after 3 raise-backs.
+# Cap preflop wars: past 3 TOTAL raises only AA/KK keeps escalating.
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+def _preflop_war_level(table, hero_id) -> tuple[int, int]:
+    """(total preflop raises, distinct non-hero raisers) — the war signature.
+
+    Reads simulator actionHistory (round-scoped: during preflop it IS the
+    preflop history) and arena recentEvents. Missing data -> (0, 0).
+    """
+    count = 0
+    raisers: set = set()
+    events = list(table.get("actionHistory") or table.get("action_history") or [])
+    for raw in table.get("recentEvents") or []:
+        summary = raw.get("summary") if isinstance(raw.get("summary"), dict) else raw
+        events.append(
+            {
+                "agentId": summary.get("agentId"),
+                "seatNumber": summary.get("seatNumber"),
+                "action": summary.get("action") or raw.get("action"),
+                "street": raw.get("street") or summary.get("street"),
+            }
+        )
+    for event in events:
+        action = str(event.get("action", "")).lower()
+        if action not in ("raise", "all-in", "bet"):
+            continue
+        if event.get("street") not in (None, "Preflop"):
+            continue
+        count += 1
+        who = event.get("agentId") or event.get("seatNumber")
+        if who is not None and who != hero_id:
+            raisers.add(who)
+    return count, len(raisers)
 
 
 @guard_rail.register(
     "preflop_min_raise_war_cap",
     "post",
     40,
-    ["hu", "6max"],
-    "Preflop war cap: call/check after 3 raise-backs",
+    ["all"],
+    "Preflop war cap: past 3 total raises only AA/KK keeps escalating",
+    # ACTIVE (2026-07-11). Rewritten from the shadowed hero-raise-count
+    # version after table cmrfzix0fzabei1x8nvtd01br: anti-bully "value
+    # backraise JJ" jammed into a 4-bet AND a cold 5-bet (QQ and AJ both
+    # re-raising) for -3337. Live data across 3 DBs: AA/KK in 3+ raise wars
+    # avg +894 to +3541; QQ/JJ avg -79 escalating to -1504 in 5+ raise wars.
+    # Two conditions, both required (the pool gate rejected total-count
+    # alone at -30 to -43 bb/100 — sim bots 4-bet junk, so folding value to
+    # a single re-raiser burns the profit engine):
+    #   1. total preflop raises >= 3 (the escalation level), AND
+    #   2. >= 2 DISTINCT non-hero raisers — a multi-raiser war means someone
+    #      has it; one maniac re-raising means nothing.
+    shadow=False,
 )
 def preflop_min_raise_war_cap(
     ctx: GuardContext, proposed: ActionDecision
@@ -667,26 +778,36 @@ def preflop_min_raise_war_cap(
     action, _amount, _message = proposed
     if ctx.street != "Preflop":
         return None
-    if action not in ("raise", "bet"):
+    if action not in ("raise", "bet", "all-in"):
+        return None
+    hero_id = (ctx.my_seat or {}).get("agentId")
+    total, distinct_raisers = _preflop_war_level(ctx.table, hero_id)
+    if total < 3 or distinct_raisers < 2:
         return None
 
-    history = ctx.table.get("actionHistory") or ctx.table.get("action_history") or []
-    my_id = (ctx.my_seat or {}).get("agentId")
-    raise_count = sum(
-        1
-        for h in history
-        if h.get("agentId") == my_id
-        and h.get("action") in ("raise", "bet")
-        and h.get("street") == "Preflop"
-    )
-    if raise_count < 3:
+    # AA/KK: the war is exactly where they earn — let the core escalate.
+    values = card_values(ctx.hole_cards)
+    if len(values) == 2 and values[0] == values[1] and values[0] >= 13:
         return None
 
     available = ctx.available_actions
-    if action == "raise" and "call" in available:
-        return ("call", ctx.call_price, "preflop war cap: call after 3 raise-backs")
-    if action == "bet" and "check" in available:
-        return ("check", None, "preflop war cap: check after 3 raise-backs")
+    # Below AA/KK, stop putting in RAISES. Cheap continues stay calls —
+    # multiway wars at a small price are set-mining spots (folding them
+    # cost -8.3 vs simple in the gate); fold only when the price is
+    # substantial (> 22% required equity; the -3337 jam faced 37%).
+    # EFFECTIVE pot, not potChips: the simulator leaves potChips at 0
+    # preflop (live bets sit in currentBetChips), which made required
+    # compute ~100% and fold TT/AK/99 for 20 chips.
+    if "call" in available and ctx.call_price > 0:
+        required = pot_odds(ctx.call_price, max(ctx.effective_pot, ctx.pot, 1))
+        if required <= 0.22:
+            return ("call", ctx.call_price, "preflop war cap: call, no re-raise")
+        if "fold" in available:
+            return ("fold", None, "preflop war cap: no escalation below AA/KK")
+    if "check" in available:
+        return ("check", None, "preflop war cap: check, war already 3+ raises")
+    if "fold" in available:
+        return ("fold", None, "preflop war cap: no escalation below AA/KK")
     return None
 
 
@@ -700,7 +821,7 @@ def preflop_min_raise_war_cap(
     "postflop_marginal_hand_war_cap",
     "post",
     40,
-    ["hu", "6max"],
+    ["all"],
     "Postflop war cap: call/check marginal hands after 3 raises",
 )
 def postflop_marginal_hand_war_cap(
@@ -763,7 +884,7 @@ def postflop_marginal_hand_war_cap(
     "small_pair_multiway_fold",
     "post",
     45,
-    ["hu", "6max"],
+    ["all"],
     "Small pair multiway: fold below-77 pair at >5% stack in 3+ way pots",
 )
 def small_pair_multiway_fold(
@@ -813,7 +934,7 @@ def small_pair_multiway_fold(
     "medium_pair_paired_board_fold",
     "post",
     45,
-    ["hu", "6max"],
+    ["all"],
     "77 on paired board: fold (crushed against any reasonable range)",
 )
 def medium_pair_paired_board_fold(
@@ -855,7 +976,7 @@ def medium_pair_paired_board_fold(
     "medium_hand_multiway_fold",
     "post",
     45,
-    ["hu", "6max"],
+    ["all"],
     "Medium hand multiway: fold one pair in 3+ way pots at >20% price",
 )
 def medium_hand_multiway_fold(
@@ -902,7 +1023,7 @@ def medium_hand_multiway_fold(
     "cheap_postflop_continue",
     "post",
     48,
-    ["hu", "6max"],
+    ["all"],
     "Cheap postflop continue: call cheap bets with equity",
 )
 def cheap_postflop_continue(
@@ -944,7 +1065,7 @@ def cheap_postflop_continue(
     "postflop_draw_continue",
     "post",
     48,
-    ["hu", "6max"],
+    ["all"],
     "Draw continue: call flush/OESD draws at favorable odds",
 )
 def postflop_draw_continue(
@@ -998,7 +1119,7 @@ def postflop_draw_continue(
     "excessive_bet_size_cap",
     "post",
     50,
-    ["hu", "6max"],
+    ["all"],
     "Prevent absurdly large raises (> 3x pot)",
 )
 def excessive_bet_size_cap(
@@ -1030,7 +1151,7 @@ def excessive_bet_size_cap(
     "trips_on_paired_board_cap",
     "post",
     50,
-    ["hu", "6max"],
+    ["all"],
     "Cap massive overbets (>1.5x pot) with trips on paired board",
 )
 def trips_on_paired_board_cap(

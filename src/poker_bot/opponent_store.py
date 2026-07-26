@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as _dt
+import hashlib
 import json
 import os
 import sqlite3
@@ -30,6 +31,31 @@ TELEMETRY_DB_ENV = "POKER_BOT_TELEMETRY_DB"
 # may have changed play style, so stale data is worse than no data.
 LOCAL_MIN_HANDS = 20
 API_STALE_DAYS = 2
+
+
+def _worker_snapshot_digest(source_path):
+    """Hash the SQLite database and its WAL for a completed worker snapshot."""
+    digest = hashlib.sha256()
+    for suffix in ("", "-wal"):
+        component = Path(f"{source_path}{suffix}")
+        digest.update(suffix.encode())
+        if component.exists():
+            with component.open("rb") as snapshot:
+                for chunk in iter(lambda: snapshot.read(1024 * 1024), b""):
+                    digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _worker_snapshot_receipt(worker_path, worker_conn):
+    """Return a receipt key for an immutable, completed worker snapshot."""
+    source_path = Path(worker_path).expanduser().resolve()
+    run_identity = ",".join(
+        str(row[0])
+        for row in worker_conn.execute(
+            "select run_id from telemetry_runs order by run_id"
+        )
+    )
+    return str(source_path), run_identity, _worker_snapshot_digest(source_path)
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -86,6 +112,11 @@ def init_db(conn):
             hands_seen integer not null default 0,
             vpip integer not null default 0,
             pfr integer not null default 0,
+            preflop_hands_seen integer not null default 0,
+            profile_stats_schema_version integer not null default 2,
+            profile_stats_provenance text not null default 'canonical',
+            legacy_vpip_action_count integer not null default 0,
+            legacy_pfr_raise_count integer not null default 0,
             calls integer not null default 0,
             bets integer not null default 0,
             raises integer not null default 0,
@@ -110,9 +141,28 @@ def init_db(conn):
             pot integer,
             message text,
             facing_bet integer not null default 0,
+            voluntary integer,
+            is_preflop_raise integer,
             stack_chips integer,
             hero_stack_chips integer,
             created_at text not null default current_timestamp
+        );
+        create table if not exists opponent_preflop_hands (
+            opponent_id integer not null references opponents(id),
+            hand_id text not null,
+            vpip integer not null default 0,
+            pfr integer not null default 0,
+            primary key(opponent_id, hand_id)
+        );
+        create index if not exists idx_opponent_preflop_hands_opponent
+            on opponent_preflop_hands(opponent_id);
+
+        create table if not exists worker_merge_receipts (
+            source_path text not null,
+            run_identity text not null,
+            content_sha256 text not null,
+            merged_at text not null default current_timestamp,
+            primary key(source_path, run_identity, content_sha256)
         );
 
         create table if not exists opponent_external_stats (
@@ -205,9 +255,22 @@ def init_db(conn):
     )
     _ensure_columns(
         conn,
+        "opponent_stats",
+        {
+            "preflop_hands_seen": "integer not null default 0",
+            "profile_stats_schema_version": "integer not null default 0",
+            "profile_stats_provenance": "text not null default 'legacy_untrusted'",
+            "legacy_vpip_action_count": "integer not null default 0",
+            "legacy_pfr_raise_count": "integer not null default 0",
+        },
+    )
+    _ensure_columns(
+        conn,
         "opponent_actions",
         {
             "message": "text",
+            "voluntary": "integer",
+            "is_preflop_raise": "integer",
         },
     )
     _ensure_columns(
@@ -254,7 +317,104 @@ def init_db(conn):
             "where table_id is null and hand_id like '%:%'"
         )
     ensure_guard_overrides_table(conn)
+    _migrate_legacy_preflop_stats(conn)
     conn.commit()
+
+def _migrate_legacy_preflop_stats(conn):
+    """Convert only provably complete action histories to v2 hand facts."""
+    legacy_rows = conn.execute(
+        """
+        select opponent_id, hands_seen, vpip, pfr
+        from opponent_stats
+        where profile_stats_schema_version < 2
+        """
+    ).fetchall()
+    for row in legacy_rows:
+        opponent_id = row["opponent_id"]
+        hands_seen = int(row["hands_seen"])
+        coverage = conn.execute(
+            """
+            select count(distinct hand_id) as hand_count,
+                   sum(case when hand_id is null then 1 else 0 end) as null_count,
+                   sum(case when voluntary is null
+                                 or is_preflop_raise is null
+                            then 1 else 0 end) as unclassified_count
+            from opponent_actions
+            where opponent_id = ?
+            """,
+            (opponent_id,),
+        ).fetchone()
+        hand_count = int(coverage["hand_count"] or 0)
+        complete = (
+            hands_seen > 0
+            and hand_count == hands_seen
+            and not coverage["null_count"]
+            and not coverage["unclassified_count"]
+        )
+        conn.execute(
+            """
+            update opponent_stats
+            set legacy_vpip_action_count = vpip,
+                legacy_pfr_raise_count = pfr,
+                vpip = 0,
+                pfr = 0,
+                preflop_hands_seen = 0,
+                profile_stats_schema_version = 2,
+                profile_stats_provenance = ?
+            where opponent_id = ?
+            """,
+            ("canonical" if complete else "legacy_untrusted", opponent_id),
+        )
+        if not complete:
+            continue
+        rows = conn.execute(
+            """
+            select hand_id,
+                   max(case when street = 'Preflop' and voluntary = 1
+                            then 1 else 0 end) as vpip,
+                   max(case when street = 'Preflop'
+                              and voluntary = 1
+                              and is_preflop_raise = 1
+                            then 1 else 0 end) as pfr
+            from opponent_actions
+            where opponent_id = ?
+            group by hand_id
+            """,
+            (opponent_id,),
+        ).fetchall()
+        conn.executemany(
+            """
+            insert into opponent_preflop_hands(opponent_id, hand_id, vpip, pfr)
+            values (?, ?, ?, ?)
+            on conflict(opponent_id, hand_id) do update set
+                vpip = max(opponent_preflop_hands.vpip, excluded.vpip),
+                pfr = max(opponent_preflop_hands.pfr, excluded.pfr)
+            """,
+            [
+                (opponent_id, item["hand_id"], item["vpip"], item["pfr"])
+                for item in rows
+            ],
+        )
+        facts = conn.execute(
+            """
+            select count(*) as hand_count, coalesce(sum(vpip), 0) as vpip,
+                   coalesce(sum(pfr), 0) as pfr
+            from opponent_preflop_hands
+            where opponent_id = ?
+            """,
+            (opponent_id,),
+        ).fetchone()
+        conn.execute(
+            """
+            update opponent_stats
+            set preflop_hands_seen = ?,
+                vpip = ?,
+                pfr = ?
+            where opponent_id = ?
+            """,
+            (facts["hand_count"], facts["vpip"], facts["pfr"], opponent_id),
+        )
+
 
 
 def ensure_guard_overrides_table(conn) -> None:
@@ -437,20 +597,112 @@ def upsert_opponent(conn, platform, agent_id, handle=None, *, commit=True):
     return opponent_id
 
 
-def increment_hand_seen(conn, platform, agent_id, handle=None, *, commit=True):
+def increment_hand_seen(
+    conn, platform, agent_id, handle=None, *, hand_id=None, commit=True
+):
+    """Record one dealt hand, with a zeroed preflop fact when identifiable."""
     opponent_id = upsert_opponent(conn, platform, agent_id, handle, commit=False)
-    conn.execute(
-        """
-        update opponent_stats
-        set hands_seen = hands_seen + 1,
-            updated_at = current_timestamp
-        where opponent_id = ?
-        """,
-        (opponent_id,),
-    )
+    if hand_id:
+        cursor = conn.execute(
+            """
+            insert or ignore into opponent_preflop_hands(
+                opponent_id, hand_id, vpip, pfr
+            )
+            values (?, ?, 0, 0)
+            """,
+            (opponent_id, hand_id),
+        )
+        if cursor.rowcount:
+            conn.execute(
+                """
+                update opponent_stats
+                set hands_seen = hands_seen + 1,
+                    preflop_hands_seen = preflop_hands_seen + 1
+                where opponent_id = ?
+                """,
+                (opponent_id,),
+            )
+    else:
+        conn.execute(
+            """
+            update opponent_stats
+            set hands_seen = hands_seen + 1,
+                profile_stats_provenance = 'legacy_untrusted'
+            where opponent_id = ?
+            """,
+            (opponent_id,),
+        )
     if commit:
         conn.commit()
     return opponent_id
+
+def _record_canonical_preflop_action(
+    conn, opponent_id, hand_id, street, action, voluntary, is_preflop_raise
+):
+    """Idempotently update one opponent's hand-level preflop facts."""
+    if not hand_id:
+        conn.execute(
+            """
+            update opponent_stats
+            set profile_stats_provenance = 'legacy_untrusted'
+            where opponent_id = ?
+            """,
+            (opponent_id,),
+        )
+        return
+    if street != "Preflop":
+        return
+    vpip = int(voluntary)
+    pfr = int(voluntary and is_preflop_raise)
+    existing = conn.execute(
+        """
+        select vpip, pfr from opponent_preflop_hands
+        where opponent_id = ? and hand_id = ?
+        """,
+        (opponent_id, hand_id),
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            """
+            insert into opponent_preflop_hands(opponent_id, hand_id, vpip, pfr)
+            values (?, ?, ?, ?)
+            """,
+            (opponent_id, hand_id, vpip, pfr),
+        )
+        conn.execute(
+            """
+            update opponent_stats
+            set hands_seen = hands_seen + 1,
+                preflop_hands_seen = preflop_hands_seen + 1,
+                vpip = vpip + ?,
+                pfr = pfr + ?,
+                profile_stats_schema_version = 2
+            where opponent_id = ?
+            """,
+            (vpip, pfr, opponent_id),
+        )
+        return
+    old_vpip = int(existing["vpip"])
+    old_pfr = int(existing["pfr"])
+    vpip_delta = max(old_vpip, vpip) - old_vpip
+    pfr_delta = max(old_pfr, pfr) - old_pfr
+    if vpip_delta or pfr_delta:
+        conn.execute(
+            """
+            update opponent_preflop_hands
+            set vpip = max(vpip, ?), pfr = max(pfr, ?)
+            where opponent_id = ? and hand_id = ?
+            """,
+            (vpip, pfr, opponent_id, hand_id),
+        )
+        conn.execute(
+            """
+            update opponent_stats
+            set vpip = vpip + ?, pfr = pfr + ?
+            where opponent_id = ?
+            """,
+            (vpip_delta, pfr_delta, opponent_id),
+        )
 
 
 def record_external_agent_stats(
@@ -594,26 +846,21 @@ def apply_external_stats_merge(profile, *, today=None):
             "aggressive": 0.46,
         }.get(aggr_label)
 
-    # Overwrite the local counters that the strategy reads via
-    # profile_value(). vpip / pfr are reconstructed as
-    # ``api_vpip * api_sample`` rounded.
+    # API values are already hand-level rates. Keep their denominator explicit
+    # so profile consumers never divide canonical numerators by action counts.
     if api_vpip is not None:
         profile.vpip = int(round(api_vpip * api_sample))
     if api_pfr is not None:
         profile.pfr = int(round(api_pfr * api_sample))
 
-    # Record the API aggression frequency for any future reader
-    # that wants it. Don't touch local calls/bets/raises/folds —
-    # those are ground truth we observed.
+    # Record the API aggression frequency for any future reader.
     if api_aggr_freq is not None:
         profile.api_aggr_freq = api_aggr_freq
 
-    # Update hands_seen so the strategy's confidence gates
-    # (e.g. profile_confidence >= 0.4) reflect the API's larger
-    # sample. This is the user-spec'd behavior: if the local
-    # sample is too small, use the API's view as our "hands seen"
-    # for the rest of the decision.
     profile.hands_seen = api_sample
+    profile.preflop_hands_seen = api_sample
+    profile.profile_stats_schema_version = 2
+    profile.profile_stats_provenance = "canonical"
     profile.api_source_used = True
     profile.api_sample_size = api_sample
 
@@ -634,6 +881,7 @@ def record_observed_action(
     stack_chips=None,
     hero_stack_chips=None,
     voluntary=False,
+    is_preflop_raise=None,
     commit=True,
 ):
     opponent_id = upsert_opponent(conn, platform, agent_id, handle, commit=False)
@@ -649,14 +897,18 @@ def record_observed_action(
         and hero_stack_chips is not None
         and stack_chips > hero_stack_chips
     )
+    if is_preflop_raise is None:
+        is_preflop_raise = (
+            voluntary and street == "Preflop" and action in {"bet", "raise", "all-in"}
+        )
 
     conn.execute(
         """
         insert into opponent_actions(
             opponent_id, hand_id, street, action, amount, pot, message, facing_bet,
-            stack_chips, hero_stack_chips
+            voluntary, is_preflop_raise, stack_chips, hero_stack_chips
         )
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             opponent_id,
@@ -667,15 +919,26 @@ def record_observed_action(
             pot,
             message,
             int(facing_bet),
+            int(voluntary),
+            int(is_preflop_raise),
             stack_chips,
             hero_stack_chips,
         ),
     )
+    _record_canonical_preflop_action(
+        conn,
+        opponent_id,
+        hand_id,
+        street,
+        action,
+        voluntary,
+        is_preflop_raise,
+    )
     conn.execute(
         """
         update opponent_stats
-        set vpip = vpip + ?,
-            pfr = pfr + ?,
+        set legacy_vpip_action_count = legacy_vpip_action_count + ?,
+            legacy_pfr_raise_count = legacy_pfr_raise_count + ?,
             calls = calls + ?,
             bets = bets + ?,
             raises = raises + ?,
@@ -690,10 +953,10 @@ def record_observed_action(
         """,
         (
             int(voluntary),
-            int(action == "raise" and street == "Preflop"),
+            int(is_preflop_raise),
             int(action == "call"),
             int(action == "bet"),
-            int(action == "raise"),
+            int(action in {"raise", "all-in"}),
             int(action == "fold"),
             int(action == "fold" and facing_bet),
             int(facing_bet),
@@ -747,6 +1010,11 @@ def profile_to_mapping(profile: OpponentProfile):
         "hands_seen": profile.hands_seen,
         "vpip": profile.vpip,
         "pfr": profile.pfr,
+        "preflop_hands_seen": profile.preflop_hands_seen,
+        "profile_stats_schema_version": profile.profile_stats_schema_version,
+        "profile_stats_provenance": profile.profile_stats_provenance,
+        "legacy_vpip_action_count": profile.legacy_vpip_action_count,
+        "legacy_pfr_raise_count": profile.legacy_pfr_raise_count,
         "calls": profile.calls,
         "bets": profile.bets,
         "raises": profile.raises,
@@ -1225,16 +1493,31 @@ def summarize_losing_buckets(conn, run_id, min_spots=20, limit=20):
 def merge_worker_db(main_path, worker_path):
     """Merge a per-worker opponent DB into the main DB.
 
-    Used by parallel benchmark runs. Each worker writes to a private
-    SQLite file; this function copies the data into ``main_path``,
-    summing ``opponent_stats`` counters and de-duplicating unique
-    tables.
+    Used by parallel benchmark runs. Callers must pass completed, immutable
+    worker snapshots; changed snapshots are distinct merges, not incremental
+    deltas. This function copies event counters into ``main_path`` while
+    de-duplicating canonical preflop hand facts.
     """
     main_conn = connect(main_path)
     worker_conn = sqlite3.connect(worker_path)
     worker_conn.row_factory = sqlite3.Row
+    attached = False
     try:
+        receipt = _worker_snapshot_receipt(worker_path, worker_conn)
         main_conn.execute("ATTACH DATABASE ? AS worker", (str(worker_path),))
+        attached = True
+        receipt_cursor = main_conn.execute(
+            """
+            insert or ignore into worker_merge_receipts(
+                source_path, run_identity, content_sha256
+            )
+            values (?, ?, ?)
+            """,
+            receipt,
+        )
+        if not receipt_cursor.rowcount:
+            main_conn.commit()
+            return
         main_conn.execute(
             """
             INSERT OR IGNORE INTO opponents(
@@ -1269,20 +1552,6 @@ def merge_worker_db(main_path, worker_path):
             UPDATE opponent_stats
             SET hands_seen = hands_seen + coalesce((
                     SELECT sum(worker_stats.hands_seen)
-                    FROM worker.opponent_stats AS worker_stats
-                    JOIN worker_opponent_map AS map
-                      ON map.worker_id = worker_stats.opponent_id
-                    WHERE map.main_id = opponent_stats.opponent_id
-                ), 0),
-                vpip = vpip + coalesce((
-                    SELECT sum(worker_stats.vpip)
-                    FROM worker.opponent_stats AS worker_stats
-                    JOIN worker_opponent_map AS map
-                      ON map.worker_id = worker_stats.opponent_id
-                    WHERE map.main_id = opponent_stats.opponent_id
-                ), 0),
-                pfr = pfr + coalesce((
-                    SELECT sum(worker_stats.pfr)
                     FROM worker.opponent_stats AS worker_stats
                     JOIN worker_opponent_map AS map
                       ON map.worker_id = worker_stats.opponent_id
@@ -1372,6 +1641,61 @@ def merge_worker_db(main_path, worker_path):
         )
         main_conn.execute(
             """
+            INSERT INTO opponent_preflop_hands(opponent_id, hand_id, vpip, pfr)
+            SELECT map.main_id, hands.hand_id, hands.vpip, hands.pfr
+            FROM worker.opponent_preflop_hands AS hands
+            JOIN worker_opponent_map AS map ON map.worker_id = hands.opponent_id
+            WHERE 1
+            ON CONFLICT(opponent_id, hand_id) DO UPDATE SET
+                vpip = max(opponent_preflop_hands.vpip, excluded.vpip),
+                pfr = max(opponent_preflop_hands.pfr, excluded.pfr)
+            """
+        )
+        main_conn.execute(
+            """
+            UPDATE opponent_stats
+            SET preflop_hands_seen = coalesce((
+                    SELECT count(*)
+                    FROM opponent_preflop_hands AS hands
+                    WHERE hands.opponent_id = opponent_stats.opponent_id
+                ), 0),
+                vpip = coalesce((
+                    SELECT sum(hands.vpip)
+                    FROM opponent_preflop_hands AS hands
+                    WHERE hands.opponent_id = opponent_stats.opponent_id
+                ), 0),
+                pfr = coalesce((
+                    SELECT sum(hands.pfr)
+                    FROM opponent_preflop_hands AS hands
+                    WHERE hands.opponent_id = opponent_stats.opponent_id
+                ), 0),
+                profile_stats_schema_version = 2,
+                profile_stats_provenance = CASE
+                    WHEN profile_stats_provenance != 'canonical'
+                      OR EXISTS(
+                          SELECT 1
+                          FROM worker.opponent_stats AS worker_stats
+                          JOIN worker_opponent_map AS map
+                            ON map.worker_id = worker_stats.opponent_id
+                          WHERE map.main_id = opponent_stats.opponent_id
+                            AND (
+                                worker_stats.profile_stats_schema_version < 2
+                                OR worker_stats.profile_stats_provenance != 'canonical'
+                                OR worker_stats.preflop_hands_seen != (
+                                    SELECT count(*)
+                                    FROM worker.opponent_preflop_hands AS hands
+                                    WHERE hands.opponent_id = worker_stats.opponent_id
+                                )
+                            )
+                      )
+                    THEN 'legacy_untrusted'
+                    ELSE 'canonical'
+                END
+            WHERE opponent_id IN (SELECT main_id FROM worker_opponent_map)
+            """
+        )
+        main_conn.execute(
+            """
             INSERT OR IGNORE INTO opponent_external_stats (
                 opponent_id, competition_id, source, stats_json, fetched_at
             )
@@ -1386,11 +1710,13 @@ def merge_worker_db(main_path, worker_path):
             """
             INSERT INTO opponent_actions (
                 opponent_id, hand_id, street, action, amount, pot, message,
-                facing_bet, stack_chips, hero_stack_chips, created_at
+                facing_bet, voluntary, is_preflop_raise, stack_chips,
+                hero_stack_chips, created_at
             )
             SELECT map.main_id, actions.hand_id, actions.street, actions.action,
                    actions.amount, actions.pot, actions.message,
-                   actions.facing_bet, actions.stack_chips,
+                   actions.facing_bet, actions.voluntary,
+                   actions.is_preflop_raise, actions.stack_chips,
                    actions.hero_stack_chips, actions.created_at
             FROM worker.opponent_actions AS actions
             JOIN worker_opponent_map AS map
@@ -1444,8 +1770,12 @@ def merge_worker_db(main_path, worker_path):
             """
         )
         main_conn.commit()
+    except Exception:
+        main_conn.rollback()
+        raise
     finally:
-        main_conn.execute("DROP TABLE IF EXISTS worker_opponent_map")
-        main_conn.execute("DETACH DATABASE worker")
+        if attached:
+            main_conn.execute("DROP TABLE IF EXISTS worker_opponent_map")
+            main_conn.execute("DETACH DATABASE worker")
         main_conn.close()
         worker_conn.close()

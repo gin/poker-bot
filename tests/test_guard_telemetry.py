@@ -3,7 +3,12 @@
 from eval.selfplay import run_selfplay
 from poker_bot.guards.context import GuardContext
 from poker_bot.guards.registry import GuardRail
-from poker_bot.guards.telemetry import clear_events, drain_events
+from poker_bot.guards.telemetry import (
+    ERROR_GUARD_ID,
+    clear_events,
+    drain_events,
+    record_guard_error,
+)
 from poker_bot.opponent_store import (
     connect,
     create_telemetry_run,
@@ -54,7 +59,7 @@ def make_rail(guards):
     """Build a GuardRail from (guard_id, phase, precedence, shadow, func) specs."""
     rail = GuardRail()
     for guard_id, phase, precedence, shadow, func in guards:
-        rail.register(guard_id, phase, precedence, ["hu", "6max"], shadow=shadow)(func)
+        rail.register(guard_id, phase, precedence, ["all"], shadow=shadow)(func)
     return rail
 
 
@@ -154,9 +159,9 @@ def test_env_disable_override_skips_guard(monkeypatch):
     assert drain_events() == []
 
 
-def test_raising_guard_is_skipped_and_cascade_continues():
+def test_raising_post_guard_records_error_event_and_cascade_continues():
     def broken(ctx, proposed=None):
-        raise RuntimeError("boom")
+        raise RuntimeError("boom -- must never leak into telemetry")
 
     rail = make_rail(
         [
@@ -166,8 +171,49 @@ def test_raising_guard_is_skipped_and_cascade_continues():
     )
     ctx = make_ctx()
     decision, guard_id = rail.run_post(ctx, ("fold", None, "core fold"))
+    # A later healthy guard still runs and applies despite the earlier raise.
     assert guard_id == "g1"
     assert decision[0] == "call"
+
+    events = {e.guard_id: e for e in drain_events()}
+    assert events["g1"].applied is True
+    error_event = events[ERROR_GUARD_ID]
+    assert error_event.phase == "post"
+    assert error_event.applied is False
+    assert error_event.shadow is True
+    assert "RuntimeError" in error_event.reason
+    # Generic sanitized reason: the raw exception message never leaks.
+    assert "boom" not in error_event.reason
+
+
+def test_raising_pre_guard_records_error_event_and_cascade_continues():
+    def broken(ctx):
+        raise ValueError("hole cards AsKs -- must never leak into telemetry")
+
+    rail = make_rail(
+        [
+            ("broken", "pre", 10, False, broken),
+            ("g1", "pre", 20, False, fire_call),
+        ]
+    )
+    ctx = make_ctx()
+    result = rail.run_pre(ctx)
+    assert result is not None
+    (action, _amount, _msg), guard_id = result
+    # A later healthy guard still runs and applies despite the earlier raise.
+    assert guard_id == "g1"
+    assert action == "call"
+
+    events = {e.guard_id: e for e in drain_events()}
+    assert events["g1"].applied is True
+    error_event = events[ERROR_GUARD_ID]
+    assert error_event.phase == "pre"
+    assert error_event.applied is False
+    assert error_event.shadow is True
+    assert "ValueError" in error_event.reason
+    # Generic sanitized reason: the raw exception message never leaks.
+    assert "AsKs" not in error_event.reason
+    assert "leak" not in error_event.reason
 
 
 def test_non_firing_guards_record_no_events():
@@ -176,6 +222,43 @@ def test_non_firing_guards_record_no_events():
     decision, guard_id = rail.run_post(ctx, ("fold", None, "core fold"))
     assert guard_id == "approved"
     assert drain_events() == []
+
+
+# ── pipeline error events ───────────────────────────────────────────────────
+
+
+def test_record_guard_error_reports_class_and_phase_without_leaking_message():
+    record_guard_error("pre", ValueError("hole cards AsKs leaked here"))
+    events = drain_events()
+    assert len(events) == 1
+    event = events[0]
+    assert event.guard_id == ERROR_GUARD_ID
+    assert event.phase == "pre"
+    assert event.applied is False
+    assert event.shadow is True
+    assert "ValueError" in event.reason
+    assert "pre" in event.reason
+    # The exception's own message must never be persisted -- it can carry
+    # arbitrary state (hole cards, table contents, etc.).
+    assert "AsKs" not in event.reason
+    assert "leaked" not in event.reason
+
+
+def test_record_guard_error_never_calls_str_on_the_exception():
+    class Radioactive(Exception):
+        """An exception whose __str__ would leak state if ever invoked."""
+
+        def __str__(self):
+            raise AssertionError("record_guard_error must never call str(exc)")
+
+    # Must not raise (fail-open) AND must still record the event -- if the
+    # implementation ever called str(exc)/f"{exc}", __str__ would raise,
+    # get swallowed by record_guard_error's own guard, and silently drop
+    # the event, which the length assertion below would catch.
+    record_guard_error("post", Radioactive())
+    events = drain_events()
+    assert len(events) == 1
+    assert "Radioactive" in events[0].reason
 
 
 # ── DB-level ─────────────────────────────────────────────────────────────────

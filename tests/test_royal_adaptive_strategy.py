@@ -27,6 +27,9 @@ def make_profile(
         agent_id: {
             "name": agent_id,
             "hands_seen": hands_seen,
+            "preflop_hands_seen": hands_seen,
+            "profile_stats_schema_version": 2,
+            "profile_stats_provenance": "canonical",
             "vpip": vpip,
             "pfr": pfr,
             "calls": calls,

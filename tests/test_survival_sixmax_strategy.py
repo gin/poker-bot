@@ -147,6 +147,9 @@ def test_survival_sixmax_bluff_catches_top_pair_against_known_bully():
         profiles={
             "villain-1": {
                 "hands_seen": 20,
+                "preflop_hands_seen": 20,
+                "profile_stats_schema_version": 2,
+                "profile_stats_provenance": "canonical",
                 "vpip": 14,
                 "pfr": 8,
                 "bets": 8,

@@ -306,9 +306,9 @@ class PlayProfiler:
 
         # --- Preflop tracking ---
         if street == "Preflop":
-            if voluntary and action in ("call", "bet", "raise"):
+            if voluntary and action in ("call", "bet", "raise", "all-in"):
                 c.vpip = True
-            if action == "raise":
+            if voluntary and action in ("raise", "all-in"):
                 c.pfr = True
                 if facing_bet:
                     c.three_bet = True

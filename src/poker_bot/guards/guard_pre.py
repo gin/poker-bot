@@ -56,7 +56,7 @@ PREFLOP_COMMIT_CAP_AIR_BB = 2
     "preflop_commit_cap",
     "pre",
     2,
-    ["6max"],
+    ["full_table"],
     "Preflop commit cap: fold non-premium hands once total commitment "
     "exceeds tier cap (stops call-feeding raise wars)",
     shadow=True,
@@ -95,7 +95,7 @@ def preflop_commit_cap(ctx: GuardContext) -> ActionDecision | None:
     "spr_commitment_lock",
     "pre",
     0,
-    ["hu", "6max"],
+    ["all"],
     "Pot-committed: call with strong hand (two pair+) when SPR is low",
 )
 def spr_commitment_lock(ctx: GuardContext) -> ActionDecision | None:
@@ -106,8 +106,11 @@ def spr_commitment_lock(ctx: GuardContext) -> ActionDecision | None:
     if len(ctx.board_cards) < 3:
         return None
 
-    # Only rescue two pair or better.
-    if ctx.made_rank < 2:
+    # Only rescue two pair or better — and only PRIVATE strength. Board-owned
+    # ranks (e.g. board trips 6-6-6 reading as "hero has trips") poisoned this
+    # predicate: it endorsed calling a 440x-pot shove with A-high (the
+    # 2026-07-09 AJo/TT disaster).
+    if ctx.made_rank < 2 or ctx.is_board_made_or_kicker:
         return None
 
     # Cannot call if call exceeds stack.
@@ -151,7 +154,7 @@ def spr_commitment_lock(ctx: GuardContext) -> ActionDecision | None:
     "sliver_shove_guard",
     "pre",
     5,
-    ["hu", "6max"],
+    ["all"],
     "River sliver: call when pot odds <= 10% (any two cards have enough equity)",
 )
 def sliver_shove_guard(ctx: GuardContext) -> ActionDecision | None:
@@ -178,7 +181,7 @@ def sliver_shove_guard(ctx: GuardContext) -> ActionDecision | None:
     "royal_flush_predecision",
     "pre",
     10,
-    ["hu", "6max"],
+    ["all"],
     "Royal flush possible: force check/call only (never fold/raise)",
 )
 def royal_flush_predecision(ctx: GuardContext) -> ActionDecision | None:
@@ -217,36 +220,8 @@ def royal_flush_predecision(ctx: GuardContext) -> ActionDecision | None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-@guard_rail.register(
-    "board_made_hand_guard",
-    "pre",
-    15,
-    ["hu", "6max"],
-    "Board-made hand: no private value to raise/bet (check/fold instead)",
-)
-def board_made_hand_guard(ctx: GuardContext) -> ActionDecision | None:
-    if ctx.street == "Preflop":
-        return None
-    if not ctx.is_board_made_or_kicker:
-        return None
-
-    # This is a pre-guard: it fires before the core proposes anything.
-    # We can only decide based on whether hero is facing a bet.
-    available = ctx.available_actions
-
-    if ctx.facing_bet and ctx.call_price > 0:
-        # Facing a bet: fold if the price is expensive (>= 33% pot odds).
-        required = pot_odds(ctx.call_price, max(ctx.pot, 1))
-        if required >= 0.33 and "fold" in available:
-            return (
-                "fold",
-                None,
-                f"board-made hand: folded large bet at {required:.0%} price",
-            )
-        if "call" in available:
-            return ("call", ctx.call_price, "board-made hand: calling cheap bet")
-    else:
-        # Not facing a bet: check back.
-        if "check" in available:
-            return ("check", None, "board-made hand: check back shared strength")
-    return None
+# board_made_hand_guard MOVED to guard_post.py (2026-07-09): as a pre-guard
+# it preempted the cores' smarter contextual folds (e.g. hubase's fragile
+# two-pair fold vs tight); as a post-guard it only vetoes the core's
+# bets/raises/expensive calls with board-owned rank and never touches its
+# folds and checks.

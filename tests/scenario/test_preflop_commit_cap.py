@@ -92,8 +92,16 @@ class TestPreflopCommitCap:
         assert run_commit_cap(ctx) is None
 
     def test_heads_up_is_exempt(self):
-        # The guard is 6max-only; HU tables must be untouched.
+        # The guard is full_table-only; HU tables must be untouched.
         decision = run_commit_cap(
             _ctx(["AS", "3S"], committed=200, call=20, players=2)
+        )
+        assert decision is None
+
+    def test_three_handed_is_exempt(self):
+        # full_table-only explicitly excludes three_handed: this guard was
+        # validated against 6-max call-wars, not the new 3-handed regime.
+        decision = run_commit_cap(
+            _ctx(["AS", "3S"], committed=200, call=20, players=3)
         )
         assert decision is None
