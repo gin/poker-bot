@@ -286,14 +286,47 @@ def merge_stats_into(profile_dict, *, local_hands_seen, api_stats):
         profile_dict["pfr"] = int(round(pfr * sample))
         profile_dict["pfr_frequency"] = round(pfr, 3)
 
-    # AF -> aggression frequency, clamped like the live merge (an AF of
-    # 1.38 would otherwise read as an impossible 138% frequency).
+    # AF (aggressive actions / calls, 0..inf) -> aggression frequency
+    # (aggressive actions / all actions): af/(1+af). Live play's merge
+    # clamps raw AF instead — this conversion is the correct one; align
+    # opponent_store when convenient.
     try:
         af = float(api_stats.get("af"))
     except (TypeError, ValueError):
         af = None
     if af is not None:
-        profile_dict["aggression_frequency"] = round(min(0.70, max(0.0, af)), 3)
+        profile_dict["aggression_frequency"] = round(
+            min(0.70, max(0.0, af / (1.0 + af))), 3
+        )
+
+    # The tracker exports call_frequency / fold_to_bet_frequency computed
+    # from LOCAL counters, which are ~zero while the API governs — a
+    # "confident zero" ("8000 hands, never calls, never folds") that
+    # poisons the cores' calling-station and tightness reads. The API has
+    # no direct fields for these, but carries the signal — map proxies:
+    #
+    # - call_frequency ~ passivity: the vpip-pfr gap is voluntary money
+    #   that went in WITHOUT raising. Scaled to the [0, 0.75] range the
+    #   local counter version produces in practice.
+    # - fold_to_bet ~ 1 - wtsd: players who rarely reach showdown are the
+    #   ones folding to bets. Clamped to a sane band; heuristic — validate
+    #   against live reads when local samples accumulate.
+    # - weak_aggressive_showdown_frequency ~ bluffPct: both measure
+    #   "aggression shown down weak" — the bluff-catching gate.
+    if vpip is not None and pfr is not None:
+        profile_dict["call_frequency"] = round(
+            min(0.75, max(0.0, (vpip - pfr) * 0.75)), 3
+        )
+    wtsd = fraction(api_stats.get("wtsd"))
+    if wtsd is not None:
+        profile_dict["fold_to_bet_frequency"] = round(
+            min(0.75, max(0.15, 0.9 - wtsd)), 3
+        )
+    bluff = fraction(api_stats.get("bluffPct"))
+    if bluff is not None:
+        profile_dict["weak_aggressive_showdown_frequency"] = round(
+            min(1.0, max(0.0, bluff)), 3
+        )
 
     profile_dict["hands_seen"] = sample
     profile_dict["api_source_used"] = True

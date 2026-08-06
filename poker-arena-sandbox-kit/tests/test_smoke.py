@@ -3,7 +3,9 @@
 Cover the contract, the local engine, the bundle validator, and the offline
 submit flow. No network required.
 """
+
 import sys
+import types
 import zipfile
 from pathlib import Path
 
@@ -11,15 +13,24 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 STRATEGY = ROOT / "examples" / "poker" / "strategy.py"
 
-from arena_sdk import (run_match, load_strategy, normalize_action,
-                              build_bundle, BundleError, submit)
+from arena_sdk import (
+    run_match,
+    load_strategy,
+    normalize_action,
+    build_bundle,
+    BundleError,
+    submit,
+)
 from arena_sdk.poker.engine import bot_call
 
 
 def test_contract_normalize():
     assert normalize_action("call") == {"action": "call"}
     assert normalize_action(("raise", 8, "3-bet")) == {
-        "action": "raise", "amount": 8, "reasoning_text": "3-bet"}  # server's field name
+        "action": "raise",
+        "amount": 8,
+        "reasoning_text": "3-bet",
+    }  # server's field name
     assert normalize_action({"action": "fold"}) == {"action": "fold"}
 
 
@@ -36,6 +47,7 @@ def test_pack_builds_static_bundle():
 
 def test_harness_requires_strategy_py():
     import tempfile, os
+
     d = tempfile.mkdtemp()
     with open(os.path.join(d, "helper.py"), "w") as f:
         f.write("x = 1\n")
@@ -57,6 +69,7 @@ def test_pack_catches_missing_sibling():
     # The headline false-green guard: a strategy importing a module that won't be
     # in the bundle must FAIL locally (isolation import), not pass silently.
     import tempfile, os
+
     d = tempfile.mkdtemp()
     with open(os.path.join(d, "strategy.py"), "w") as f:
         f.write("import _nope_missing_mod\ndef act(t): return {'action': 'fold'}\n")
@@ -71,6 +84,7 @@ def test_pack_harness_multifile_ok():
     # A legit multi-file bot (strategy.py + sibling helper.py) bundled via harness
     # must pass isolation and ship both files.
     import tempfile, os, io as _io
+
     d = tempfile.mkdtemp()
     with open(os.path.join(d, "helper.py"), "w") as f:
         f.write("ACTION = 'fold'\n")
@@ -82,8 +96,9 @@ def test_pack_harness_multifile_ok():
 
 
 def test_submit_dry_run_pvp():
-    res = submit(str(STRATEGY), competition_id="demo", api_key=None,
-                 expect="pvp", dry_run=True)
+    res = submit(
+        str(STRATEGY), competition_id="demo", api_key=None, expect="pvp", dry_run=True
+    )
     assert res["status"] == "Succeeded"
     assert res.get("pvp", {}).get("status") == "Active"
 
@@ -94,45 +109,214 @@ def test_bb_option_labeled_raise():
     # it `bet` made self-play pass an action the server rejects.
     from pokerkit import NoLimitTexasHoldem
     from arena_sdk.poker.engine import _AUTO, build_table
+
     state = NoLimitTexasHoldem.create_state(
-        automations=_AUTO, ante_trimming_status=True, raw_antes=0,
-        raw_blinds_or_straddles=(1, 2), min_bet=2,
-        raw_starting_stacks=(200, 200), player_count=2)
-    state.check_or_call()                       # SB/button limp-calls → BB to act
+        automations=_AUTO,
+        ante_trimming_status=True,
+        raw_antes=0,
+        raw_blinds_or_straddles=(1, 2),
+        min_bet=2,
+        raw_starting_stacks=(200, 200),
+        player_count=2,
+    )
+    state.check_or_call()  # SB/button limp-calls → BB to act
     actor = state.actor_index
     allowed = build_table(state, actor, "t", big_blind=2)["allowedActions"]
     aa = allowed["availableActions"]
     assert "raise" in aa and "bet" not in aa, aa
     # full allowedActions surface matches the server (so a bot reading these
     # locally behaves the same online)
-    for k in ("canFold", "canCall", "canCheck", "canBet", "canRaise",
-              "canAllIn", "minRaiseTo", "allInToAmount"):
+    for k in (
+        "canFold",
+        "canCall",
+        "canCheck",
+        "canBet",
+        "canRaise",
+        "canAllIn",
+        "minRaiseTo",
+        "allInToAmount",
+    ):
         assert k in allowed, k
 
 
+def test_board_cards_are_plain_card_strings():
+    from pokerkit import NoLimitTexasHoldem
+    from arena_sdk.poker.engine import _AUTO, build_table
+
+    state = NoLimitTexasHoldem.create_state(
+        automations=_AUTO,
+        ante_trimming_status=True,
+        raw_antes=0,
+        raw_blinds_or_straddles=(1, 2),
+        min_bet=2,
+        raw_starting_stacks=(200, 200),
+        player_count=2,
+    )
+    state.check_or_call()
+    state.check_or_call()
+    table = build_table(state, state.actor_index, "t", big_blind=2)
+    assert len(table["boardCards"]) == 3
+    assert all(
+        len(card) == 2 and "[" not in card and "]" not in card
+        for card in table["boardCards"]
+    ), table["boardCards"]
+
+
+def test_luigi_harness_always_prefixes_profile_probe(monkeypatch):
+    import importlib.util
+
+    fake_hubase = types.ModuleType("hubase")
+    fake_hubase.act = lambda _table: ("call", None, "probe message")
+    monkeypatch.setitem(sys.modules, "hubase", fake_hubase)
+
+    path = ROOT / "luigi_bot" / "harness" / "strategy.py"
+    spec = importlib.util.spec_from_file_location("luigi_harness_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    no_profiles = mod.act({"opponentProfiles": {}})
+    assert no_profiles["message"] == "[] probe message"
+    assert no_profiles["reasoning_text"] == "[] probe message"
+
+    with_profiles = mod.act(
+        {
+            "opponentProfiles": {
+                "villain": {
+                    "hands_seen": 7,
+                    "vpip": 0.4,
+                    "fold_to_bet": 0.25,
+                    "weak_aggressive_showdowns": 2,
+                    "weak_aggressive_showdown_frequency": 0.5,
+                }
+            }
+        }
+    )
+    assert with_profiles["message"].startswith(
+        "[villain:hands=7 vpip=0.4 f2b=0.25 wasd=2 wasdf=0.50] "
+    )
+    assert with_profiles["reasoning_text"] == with_profiles["message"]
+
+
+def test_sandbox_tracker_builds_profiles_from_recent_events():
+    import importlib.util
+
+    path = ROOT / "luigi_bot" / "assets" / "sandbox_opponent_tracker.py"
+    spec = importlib.util.spec_from_file_location("sandbox_tracker_test", path)
+    tracker = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = tracker
+    spec.loader.exec_module(tracker)
+
+    table = {
+        "handId": "h1",
+        "tableId": "t1",
+        "street": "Preflop",
+        "selfSeatNumber": 1,
+        "currentBet": 2,
+        "seats": [
+            {"seatNumber": 1, "agentId": "hero"},
+            {"seatNumber": 2, "agentId": "villain-2", "agentName": "Villain"},
+        ],
+        "recentEvents": [
+            {
+                "id": "e1",
+                "type": "ActionTaken",
+                "street": "Preflop",
+                "summary": {"seatNumber": 2, "action": "call", "amount": 2},
+            }
+        ],
+    }
+
+    tracker.enrich_table(table)
+    tracker.enrich_table(table)
+
+    profile = table["opponentProfiles"]["villain-2"]
+    assert profile["hands_seen"] == 1
+    assert profile["calls"] == 1
+    assert profile["vpip"] == 1
+    assert profile["vpip_frequency"] == 1.0
+
+
+def test_luigi_harness_prefixes_locally_tracked_profiles(monkeypatch):
+    import importlib.util
+
+    fake_hubase = types.ModuleType("hubase")
+    fake_hubase.act = lambda _table: ("call", None, "probe message")
+    monkeypatch.setitem(sys.modules, "hubase", fake_hubase)
+    sys.modules.pop("sandbox_opponent_tracker", None)
+
+    path = ROOT / "luigi_bot" / "harness" / "strategy.py"
+    spec = importlib.util.spec_from_file_location("luigi_harness_tracker_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    out = mod.act(
+        {
+            "handId": "h2",
+            "tableId": "t1",
+            "street": "Preflop",
+            "selfSeatNumber": 1,
+            "currentBet": 2,
+            "seats": [
+                {"seatNumber": 1, "agentId": "hero"},
+                {"seatNumber": 2, "agentId": "villain-2", "agentName": "Villain"},
+            ],
+            "recentEvents": [
+                {
+                    "id": "e2",
+                    "type": "ActionTaken",
+                    "street": "Preflop",
+                    "summary": {"seatNumber": 2, "action": "raise", "toAmount": 6},
+                }
+            ],
+        }
+    )
+
+    assert out["message"].startswith(
+        "[villain-2:hands=1 vpip=1 f2b=0 wasd=0 wasdf=0.00] "
+    )
+    assert out["reasoning_text"] == out["message"]
+
+
 def test_normalize_action_edges():
-    assert normalize_action({"foo": 1}) == {"action": "fold"}   # dict w/o action
+    assert normalize_action({"foo": 1}) == {"action": "fold"}  # dict w/o action
     assert normalize_action(("raise", 8))["action"] == "raise"
-    assert normalize_action((123,))["action"] == "123"          # coerced to str
+    assert normalize_action((123,))["action"] == "123"  # coerced to str
     assert normalize_action(42) == {"action": "fold"}
 
 
 def test_clamp_to_range():
     from arena_sdk import clamp_to_range
+
     a = {"raiseRange": {"min": 40, "max": 1000}}
     assert clamp_to_range(a, "raise", 0.6, 100) == {"action": "raise", "amount": 60}
-    assert clamp_to_range(a, "raise", 100, 100)["amount"] == 1000   # clamped to max
-    assert clamp_to_range({"raiseRange": {"min": 0, "max": 0}}, "raise", 0.6, 100) is None
+    assert clamp_to_range(a, "raise", 100, 100)["amount"] == 1000  # clamped to max
+    assert (
+        clamp_to_range({"raiseRange": {"min": 0, "max": 0}}, "raise", 0.6, 100) is None
+    )
     # not in availableActions -> None even if a range is present
-    assert clamp_to_range({"availableActions": ["fold", "call"],
-                           "raiseRange": {"min": 40, "max": 1000}},
-                          "raise", 0.6, 100) is None
+    assert (
+        clamp_to_range(
+            {
+                "availableActions": ["fold", "call"],
+                "raiseRange": {"min": 40, "max": 1000},
+            },
+            "raise",
+            0.6,
+            100,
+        )
+        is None
+    )
 
 
 def test_multipart_encoding():
     from arena_sdk.submit import _multipart
-    ctype, body = _multipart({"competitionId": "cmq1", "template": "static-agent"},
-                             "file", "bundle.zip", b"PK\x03\x04")
+
+    ctype, body = _multipart(
+        {"competitionId": "cmq1", "template": "static-agent"},
+        "file",
+        "bundle.zip",
+        b"PK\x03\x04",
+    )
     s = body.decode("latin1")
     assert ctype.startswith("multipart/form-data; boundary=")
     assert 'name="competitionId"' in s and "cmq1" in s
@@ -150,23 +334,35 @@ def test_golden_pve_contract():
     # contract, not just the dry-run mock.
     import json
     from arena_sdk.submit import _print_final
+
     g = json.load(open(_FIX / "golden_pve.json"))
     assert g["status"] == "Succeeded" and g["pvp"] is None
     assert isinstance(g["rawBbPer100"], (int, float))
     assert isinstance(g["adjustedBbPer100"], (int, float))
-    for k in ("status", "completedHands", "targetHands", "errorCode", "error",
-              "traceObjectKey"):
+    for k in (
+        "status",
+        "completedHands",
+        "targetHands",
+        "errorCode",
+        "error",
+        "traceObjectKey",
+    ):
         assert k in g, f"real PvE response missing SDK-read field {k}"
-    _print_final(g)                       # must render without raising
+    _print_final(g)  # must render without raising
 
 
 def test_golden_pvp_contract():
     import json
     from arena_sdk.submit import _print_final, _pvp_rating
+
     g = json.load(open(_FIX / "golden_pvp.json"))
     assert g["status"] == "Succeeded" and isinstance(g["pvp"], dict)
     score, mu, sigma = _pvp_rating(g["pvp"])
-    assert all(isinstance(x, (int, float)) for x in (score, mu, sigma)), (score, mu, sigma)
+    assert all(isinstance(x, (int, float)) for x in (score, mu, sigma)), (
+        score,
+        mu,
+        sigma,
+    )
     for k in ("status", "completedHands", "targetHands"):
         assert k in g["pvp"], f"real PvP.pvp missing SDK-read field {k}"
     _print_final(g)
@@ -177,17 +373,28 @@ def test_dry_run_mock_matches_real_shape():
     # so dry-run can't go green while a real poll would print '?'.
     import json
     from arena_sdk.submit import _make_mock
+
     mock = _make_mock("pvp")
     url = "https://x/api/arena/submissions/sid"
-    mock("GET", url, "k")                 # Running
-    final = mock("GET", url, "k")         # Succeeded (+ pvp)
+    mock("GET", url, "k")  # Running
+    final = mock("GET", url, "k")  # Succeeded (+ pvp)
     real = json.load(open(_FIX / "golden_pvp.json"))
-    sdk_top = {"status", "completedHands", "targetHands", "rawBbPer100",
-               "adjustedBbPer100", "error", "errorCode", "traceObjectKey"}
+    sdk_top = {
+        "status",
+        "completedHands",
+        "targetHands",
+        "rawBbPer100",
+        "adjustedBbPer100",
+        "error",
+        "errorCode",
+        "traceObjectKey",
+    }
     for k in sdk_top:
         assert k in real, f"real golden missing SDK field {k}"
     # error/errorCode are failure-only (legitimately absent on a Succeeded response)
-    assert sdk_top - set(final) <= {"error", "errorCode"}, set(final)  # mock representative
+    assert sdk_top - set(final) <= {"error", "errorCode"}, set(
+        final
+    )  # mock representative
     assert any(k in real["pvp"] for k in ("trueskillScore", "scaleRating", "rating"))
     assert any(k in final["pvp"] for k in ("trueskillScore", "scaleRating", "rating"))
 
@@ -197,14 +404,28 @@ def test_table_has_real_server_fields():
     # logic is testable locally exactly as on the server.
     from pokerkit import NoLimitTexasHoldem
     from arena_sdk.poker.engine import _AUTO, build_table
+
     st = NoLimitTexasHoldem.create_state(
-        automations=_AUTO, ante_trimming_status=True, raw_antes=0,
-        raw_blinds_or_straddles=(1, 2), min_bet=2,
-        raw_starting_stacks=(200, 200), player_count=2)
-    t = build_table(st, st.actor_index, "t", small_blind=1, big_blind=2,
-                    starting_stack=200)
-    for k in ("smallBlindChips", "bigBlindChips", "currentBet", "currentSeatNumber",
-              "actionDeadlineAt", "recentEvents", "minRaiseTo"):
+        automations=_AUTO,
+        ante_trimming_status=True,
+        raw_antes=0,
+        raw_blinds_or_straddles=(1, 2),
+        min_bet=2,
+        raw_starting_stacks=(200, 200),
+        player_count=2,
+    )
+    t = build_table(
+        st, st.actor_index, "t", small_blind=1, big_blind=2, starting_stack=200
+    )
+    for k in (
+        "smallBlindChips",
+        "bigBlindChips",
+        "currentBet",
+        "currentSeatNumber",
+        "actionDeadlineAt",
+        "recentEvents",
+        "minRaiseTo",
+    ):
         assert k in t, k
     for k in ("status", "currentBetChips", "totalCommittedChips"):
         assert k in t["seats"][0], k
@@ -214,14 +435,22 @@ def test_position_inference_matches_blinds():
     # is_button must equal "I posted the small blind" at every hand, across the
     # rotated hero seat (guards the position-reading the docs teach).
     from arena_sdk import is_button, to_call, run_match
+
     seen, res = {}, {"ok": 0, "btn": 0, "bb": 0}
+
     def probe(t):
         tid = t["tableId"]
         if tid not in seen:
             seen[tid] = True
-            myblind = next((e["summary"]["amount"] for e in t["recentEvents"]
-                            if e["type"] == "BlindPosted"
-                            and e["summary"]["seatNumber"] == t["selfSeatNumber"]), None)
+            myblind = next(
+                (
+                    e["summary"]["amount"]
+                    for e in t["recentEvents"]
+                    if e["type"] == "BlindPosted"
+                    and e["summary"]["seatNumber"] == t["selfSeatNumber"]
+                ),
+                None,
+            )
             truth = myblind == t["smallBlindChips"]
             if is_button(t) == truth:
                 res["ok"] += 1
@@ -229,14 +458,20 @@ def test_position_inference_matches_blinds():
         a = t["allowedActions"]["availableActions"]
         if "check" in a:
             return {"action": "check"}
-        return {"action": "call"} if ("call" in a and to_call(t) <= 2) else {"action": "fold"}
+        return (
+            {"action": "call"}
+            if ("call" in a and to_call(t) <= 2)
+            else {"action": "fold"}
+        )
+
     run_match(probe, hands=200, opponent="call", players=2, seed=3)
-    assert res["ok"] == res["btn"] + res["bb"] and res["ok"] > 0, res   # all matched
-    assert res["btn"] > 0 and res["bb"] > 0, res                        # both positions seen
+    assert res["ok"] == res["btn"] + res["bb"] and res["ok"] > 0, res  # all matched
+    assert res["btn"] > 0 and res["bb"] > 0, res  # both positions seen
 
 
 def test_pot_odds_helper():
     from arena_sdk import pot_odds, to_call
+
     t = {"potChips": 100, "allowedActions": {"callChips": 50}}
     assert to_call(t) == 50 and abs(pot_odds(t) - (50 / 150)) < 1e-9
     assert pot_odds({"potChips": 100, "allowedActions": {"callChips": 0}}) == 0.0
@@ -246,21 +481,32 @@ def test_top_imports_flags_unavailable():
     # the bundle import-guard must flag a locally-installed-but-not-on-server
     # package (e.g. pokerkit), across comma / `as` / dotted forms, but not stdlib/numpy.
     from arena_sdk.pack import _top_imports, _SERVER_HAS
-    got = _top_imports("import json, pokerkit as pk\nfrom os.path import join\nimport numpy.linalg\n")
+
+    got = _top_imports(
+        "import json, pokerkit as pk\nfrom os.path import join\nimport numpy.linalg\n"
+    )
     assert {"json", "pokerkit", "os", "numpy"} <= got, got
     flagged = got - _SERVER_HAS
-    assert "pokerkit" in flagged                       # not on the sandbox -> flagged
-    assert "json" not in flagged and "numpy" not in flagged   # stdlib/numpy -> fine
+    assert "pokerkit" in flagged  # not on the sandbox -> flagged
+    assert "json" not in flagged and "numpy" not in flagged  # stdlib/numpy -> fine
 
 
 def test_button_is_heads_up_only():
     from arena_sdk.poker.read import button_seat, is_button
-    hu = {"selfSeatNumber": 2, "smallBlindChips": 1,
-          "seats": [{"seatNumber": 1}, {"seatNumber": 2}],
-          "recentEvents": [{"type": "BlindPosted", "summary": {"amount": 1, "seatNumber": 2}}]}
+
+    hu = {
+        "selfSeatNumber": 2,
+        "smallBlindChips": 1,
+        "seats": [{"seatNumber": 1}, {"seatNumber": 2}],
+        "recentEvents": [
+            {"type": "BlindPosted", "summary": {"amount": 1, "seatNumber": 2}}
+        ],
+    }
     six = {**hu, "seats": [{"seatNumber": i} for i in range(1, 7)]}
-    assert button_seat(hu) == 2 and is_button(hu) is True          # HU: SB poster = button
-    assert button_seat(six) is None and is_button(six) is False    # >2 seats: don't mislead
+    assert button_seat(hu) == 2 and is_button(hu) is True  # HU: SB poster = button
+    assert (
+        button_seat(six) is None and is_button(six) is False
+    )  # >2 seats: don't mislead
 
 
 if __name__ == "__main__":
